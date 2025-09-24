@@ -15,7 +15,7 @@ after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch =
     "catch-panics",
 ] }
 premiere = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
-bytemuck = "1.23.1"
+bytemuck = { version = "1.23.1", features = ["derive"] }
 parking_lot = "0.12.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1,9 +1,7 @@
 #![allow(clippy::drop_non_drop)]
-mod datas;
 mod params;
 mod wgpu_procs;
 
-use datas::*;
 use params::*;
 pub use themis::SERVER_PUBLIC_KEY;
 use themis::{
@@ -21,8 +19,39 @@ struct Plugin {
 impl Default for Plugin {
 	fn default() -> Self {
 		Self {
-			wgpu: WgpuProcessing::new(ProcShaderSource::Wgsl(include_str!("../shaders/shake.wgsl"))),
+			wgpu: if cfg!(shader_hotreload) && cfg!(debug_assertions) {
+				let main_shader_path = format!("{}/shaders/main.wgsl", std::env::current_dir().unwrap().display());
+				log::info!("Loading shaders on the fly. \n{}", main_shader_path);
+
+				let main_pass_path = std::fs::read_to_string(main_shader_path.clone()).unwrap();
+				let main_pass = ProcShaderSource::Wgsl(&main_pass_path);
+
+				WgpuProcessing::new(main_pass)
+			} else {
+				WgpuProcessing::new(ProcShaderSource::Wgsl(include_str!("../shaders/main.wgsl")))
+			},
 		}
+	}
+}
+
+#[repr(C)]
+struct FrameData {
+	main_params: KernelParams,
+}
+
+impl Plugin {
+	fn reload_shaders(&mut self) {
+		self.wgpu = if cfg!(shader_hotreload) && cfg!(debug_assertions) {
+			let main_shader_path = format!("{}/shaders/main.wgsl", std::env::current_dir().unwrap().display());
+			log::info!("Loading shaders on the fly. \n{}", main_shader_path);
+
+			let main_pass_path = std::fs::read_to_string(main_shader_path.clone()).unwrap();
+			let main_pass = ProcShaderSource::Wgsl(&main_pass_path);
+
+			WgpuProcessing::new(main_pass)
+		} else {
+			WgpuProcessing::new(ProcShaderSource::Wgsl(include_str!("../shaders/main.wgsl")))
+		};
 	}
 }
 
@@ -41,7 +70,7 @@ impl AdobePluginGlobal for Plugin {
 				Params::NoLicense,
 				"License check failed",
 				ae::ButtonDef::setup(|f| {
-					f.set_label(format!("Check status [{}]", LicenseState::debug_string_from_bits(themis::license::get_license_state().bits())).as_str());
+					f.set_label(format!("Retry [{}]", LicenseState::debug_string_from_bits(themis::license::get_license_state().bits())).as_str());
 				}),
 				|p| {
 					p.set_flag(ParamFlag::SUPERVISE, true);
@@ -50,13 +79,14 @@ impl AdobePluginGlobal for Plugin {
 				},
 			)?;
 
-			Ok(())
+			params::setup(params, in_data, out_data)
 		}
 	}
 
 	fn handle_command(&mut self, command: Command, in_data: InData, mut out_data: OutData, params: &mut Parameters<Params>) -> Result<(), Error> {
 		match command {
 			ae::Command::GlobalSetup => {
+				log::set_max_level(log::LevelFilter::Info);
 				if in_data.is_premiere() {
 					suites::Utility::new()?.effect_wants_checked_out_frames_to_match_render_pixel_format(in_data.effect_ref())?;
 				}
@@ -64,22 +94,44 @@ impl AdobePluginGlobal for Plugin {
 				let _option_button = in_data.effect().set_options_button_name("Infos");
 
 				themis::license::initialize(InitializationOptions {
-					product_id: 1,
+					product_id: 41,
 					authority_mode: AuthorityServerMode::Production,
 					reset: false,
 				});
 			}
 			ae::Command::About => {
-				let msg = format!("Exaecut - Milkshake\r\nVersion: {}", env!("CARGO_PKG_VERSION"));
+				let msg = format!("Exaecut - Hue Shift\r\nVersion: {}", env!("CARGO_PKG_VERSION"));
 				out_data.set_return_msg(msg.as_str());
 			}
 			ae::Command::UserChangedParam { param_index } => {
+				if params.type_at(param_index) == Params::ReloadShaders {
+					log::info!("Reloading shaders...");
+					self.reload_shaders();
+				}
+
 				if params.type_at(param_index) == Params::Help {
-					let _ = webbrowser::open("https://exaecut.io/milkshake/docs");
+					let _ = webbrowser::open("https://exaecut.io/docs/41");
+				}
+
+				if params.type_at(param_index) == Params::Feedback {
+					let _ = webbrowser::open("https://exaecut.io/feedback/41");
 				}
 
 				if params.type_at(param_index) == Params::NoLicense {
-					let _ = webbrowser::open("https://exaecut.io/no-license?id=1");
+					let result = themis::license::initialize(InitializationOptions {
+						product_id: 41,
+						authority_mode: AuthorityServerMode::Production,
+						reset: true,
+					});
+
+					if result {
+						self.reload_shaders();
+						let mut retry_button_param = params.get_mut(Params::NoLicense)?;
+						retry_button_param.set_ui_flag(ParamUIFlags::INVISIBLE, true);
+						retry_button_param.update_param_ui()?;
+
+						out_data.set_force_rerender();
+					}
 				}
 			}
 			ae::Command::FrameSetup { in_layer, .. } => {
@@ -87,34 +139,19 @@ impl AdobePluginGlobal for Plugin {
 					return Ok(());
 				}
 
-				let amplitude = params.get(Params::Amplitude)?.as_float_slider()?.value() as f32;
-				let h_amplitude = params.get(Params::HorizontalShakeAmplitude)?.as_float_slider()?.value() as f32;
-				let v_amplitude = params.get(Params::VerticalShakeAmplitude)?.as_float_slider()?.value() as f32;
+				out_data.set_width(in_layer.width() as _);
+				out_data.set_height(in_layer.height() as _);
 
-				let time = in_data.current_time() as f32 / in_data.time_scale() as f32;
-				let xframe_size = amplitude * (h_amplitude + v_amplitude);
+				out_data.set_origin(ae::Point { h: 0, v: 0 });
 
-				let (xframe_x, xframe_y) = (xframe_size * f32::from(in_data.downsample_x()), xframe_size * f32::from(in_data.downsample_y()));
+				let time = in_data.current_timestamp();
 
-				out_data.set_width((2.0 * xframe_x + in_layer.width() as f32).round() as _);
-				out_data.set_height((2.0 * xframe_y + in_layer.height() as f32).round() as _);
-
-				out_data.set_origin(ae::Point {
-					h: xframe_x as _,
-					v: xframe_y as _,
+				out_data.set_frame_data::<FrameData>(FrameData {
+					main_params: KernelParams::from_params(params, time as f32, (f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())), in_data)?,
 				});
-
-				out_data.set_frame_data::<KernelParams>(KernelParams::from_params(
-					params,
-					None,
-					None,
-					(f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())),
-					time,
-					in_data,
-				)?);
 			}
 			ae::Command::FrameSetdown => {
-				in_data.destroy_frame_data::<KernelParams>();
+				in_data.destroy_frame_data::<FrameData>();
 			}
 			ae::Command::Render { in_layer, mut out_layer } => {
 				let in_size = (in_layer.width(), in_layer.height(), in_layer.buffer_stride());
@@ -123,10 +160,12 @@ impl AdobePluginGlobal for Plugin {
 					return Ok(());
 				}
 
-				let _time = std::time::Instant::now();
+				let _out_pixel_format = out_layer.pr_pixel_format();
+				println!("out pixel format: {:?}", _out_pixel_format);
 
-				let params = in_data.frame_data::<KernelParams>().unwrap();
-				self.wgpu.run_compute(params, in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
+				let params = in_data.frame_data::<FrameData>().unwrap();
+				self.wgpu
+					.run_compute(&params.main_params, in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
 			}
 			ae::Command::SmartPreRender { mut extra } => {
 				let req = extra.output_request();
@@ -142,38 +181,28 @@ impl AdobePluginGlobal for Plugin {
 					return Ok(());
 				}
 
-				let amplitude = params.get(Params::Amplitude)?.as_float_slider()?.value() as f32;
-				let h_amplitude = params.get(Params::HorizontalShakeAmplitude)?.as_float_slider()?.value() as f32;
-				let v_amplitude = params.get(Params::VerticalShakeAmplitude)?.as_float_slider()?.value() as f32;
-
-				let time = in_data.current_time() as f32 / in_data.time_scale() as f32;
-				let xframe_size = amplitude * (h_amplitude + v_amplitude) + in_data.width().max(in_data.height()) as f32 * 0.5;
-
 				if let Ok(in_result) = extra
 					.callbacks()
 					.checkout_layer(0, 0, &req, in_data.current_time(), in_data.time_step(), in_data.time_scale())
 				{
 					let mut res_rect = ae::Rect::from(in_result.max_result_rect);
-					let (xframe_x, xframe_y) = (xframe_size * f32::from(in_data.downsample_x()), xframe_size * f32::from(in_data.downsample_y()));
+
 					res_rect.set_origin(ae::Point {
-						h: -xframe_x as _,
-						v: -xframe_y as _,
+						h: res_rect.origin().h as _,
+						v: res_rect.origin().v as _,
 					});
 
-					res_rect.set_width((xframe_x + res_rect.width() as f32).round() as _);
-					res_rect.set_height((xframe_y + res_rect.height() as f32).round() as _);
+					res_rect.set_width((res_rect.width() as f32).round() as _);
+					res_rect.set_height((res_rect.height() as f32).round() as _);
 
 					let _ = extra.union_result_rect(res_rect);
 					let _ = extra.union_max_result_rect(res_rect);
 
-					extra.set_pre_render_data::<KernelParams>(KernelParams::from_params(
-						params,
-						Some(xframe_size),
-						Some(in_result),
-						(f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())),
-						time,
-						in_data,
-					)?);
+					let time = in_data.current_timestamp();
+
+					extra.set_pre_render_data::<FrameData>(FrameData {
+						main_params: KernelParams::from_params(params, time as f32, (f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())), in_data)?,
+					});
 
 					extra.set_returns_extra_pixels(true);
 				}
@@ -197,8 +226,9 @@ impl AdobePluginGlobal for Plugin {
 
 				let _time = std::time::Instant::now();
 
-				let params = extra.pre_render_data::<KernelParams>().unwrap();
-				self.wgpu.run_compute(params, in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
+				let params = extra.pre_render_data::<FrameData>().unwrap();
+				self.wgpu
+					.run_compute(&params.main_params, in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
 
 				cb.checkin_layer_pixels(0)?;
 			}

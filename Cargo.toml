@@ -1,5 +1,5 @@
 [workspace]
-members = ["echo", "godrays", "milkshake", "mindglow", "plasma", "radialblur"]
+members = ["echo", "godrays", "hueshift", "milkshake", "mindglow", "pixelsort", "plasma", "radialblur", "retrovhs", "vignette"]
 resolver = "3"
 
 [profile.release]

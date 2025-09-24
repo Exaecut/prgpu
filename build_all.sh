@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# If set, build only these space separated plugin dirs (eg: "chromaticaberration retrovhs")
+CHANGED_PLUGIN_DIRS="${CHANGED_PLUGIN_DIRS:-}"
+
 relpath() {
     local target=$1
     local base=$2
@@ -81,6 +84,34 @@ is_in_workspace() {
     done
     return 1
 }
+
+# ----------------------
+# Fast path: only changed plugins
+# ----------------------
+if [ -n "${CHANGED_PLUGIN_DIRS}" ]; then
+    echo "🎯 Building only changed plugins: ${CHANGED_PLUGIN_DIRS}"
+    for dir in ${CHANGED_PLUGIN_DIRS}; do
+        dir="${dir#./}"
+        if [ ! -f "$dir/Cargo.toml" ]; then
+            echo "⚠️  Skipping $dir - no Cargo.toml found"
+            continue
+        fi
+
+        if ! is_in_workspace "$dir"; then
+            echo "⚠️  Skipping $dir - not in [workspace].members"
+            continue
+        fi
+
+        echo "============================"
+        echo ">>> Building plugin: $(basename "$dir")"
+        echo "============================"
+        bash "$PLUGIN_BUILD" --manifest "$dir/Cargo.toml" --profile "$PROFILE"
+        echo "----------------------------"
+    done
+
+    echo "✅ Selected plugins built for profile: $PROFILE"
+    exit 0
+fi
 
 if [ -n "$FROM_FILE" ]; then
     TARGET_DIR="$(dirname "$(realpath "$FROM_FILE")")"

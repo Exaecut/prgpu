@@ -100,13 +100,13 @@ echo "🔧 Selected GPU backend   : $BACKEND"
 # ----------------------
 if [[ "$OS" == "Darwin" && "$PROFILE" == "release" ]]; then
     rustup target add aarch64-apple-darwin x86_64-apple-darwin
-    cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --target x86_64-apple-darwin --features "$BACKEND"
-    cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --target aarch64-apple-darwin --features "$BACKEND"
+    cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --target x86_64-apple-darwin --features "prgpu/$BACKEND"
+    cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --target aarch64-apple-darwin --features "prgpu/$BACKEND"
 else
     if [[ "$PROFILE" == "release" ]]; then
-        cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --no-default-features --features "$BACKEND"
+        cargo build --release --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --no-default-features --features "prgpu/$BACKEND"
     else
-        cargo build --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --no-default-features --features "$BACKEND"
+        cargo build --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" --no-default-features --features "prgpu/$BACKEND"
     fi
 fi
 

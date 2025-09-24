@@ -1,0 +1,64 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "./build_all.sh",
+            "args": [
+                "${input:profile}",
+                "from",
+                "${file}"
+            ],
+            "options": {
+                "env": {
+                    "EX_SHADER_HOTRELOAD": "${input:shaderHotReload}"
+                }
+            },
+            "problemMatcher": "$rustc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Build only the plugin containing the current file (debug or release depending on input)"
+        },
+        {
+            "label": "Build All",
+            "type": "shell",
+            "command": "./build_all.sh",
+            "args": [
+                "${input:profile}"
+            ],
+            "options": {
+                "env": {
+                    "EX_SHADER_HOTRELOAD": "${input:shaderHotReload}"
+                }
+            },
+            "problemMatcher": "$rustc",
+            "group": "build",
+            "detail": "Build all plugins"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "profile",
+            "type": "pickString",
+            "description": "Choose build profile",
+            "options": [
+                "debug",
+                "release"
+            ],
+            "default": "debug"
+        },
+        {
+            "id": "shaderHotReload",
+            "type": "pickString",
+            "description": "Enable shader hot-reload ?",
+            "options": [
+                "true",
+                "false"
+            ],
+            "default": "true"
+        }
+    ]
+}

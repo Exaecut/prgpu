@@ -1,0 +1,10 @@
+{
+    "terminal.integrated.env.osx": {
+        "ADOBE_PREMIERE_PATH": "/Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro 2025.app/Contents/MacOS/Adobe Premiere Pro 2025",
+        "ADOBE_AFTEREFFECTS_PATH": "/Applications/Adobe After Effects 2025/Adobe After Effects 2025.app/Contents/MacOS/After Effects"
+    },
+    "terminal.integrated.env.windows": {
+        "ADOBE_PREMIERE_PATH": "${env:ProgramFiles}/Adobe/Adobe Premiere Pro 2025/Adobe Premiere Pro.exe",
+        "ADOBE_AFTEREFFECTS_PATH": "${env:ProgramFiles}/Adobe/Adobe After Effects 2025/Support Files/AfterFX.exe"
+    }
+}

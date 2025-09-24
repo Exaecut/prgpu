@@ -1,6 +1,6 @@
 [package]
-name = "echo"
-version = "1.0.0"
+name = "pixel_sort"
+version = "1.0.1"
 authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
 edition = "2021"
 
@@ -27,8 +27,7 @@ themis = { git = "https://github.com/Exaecut/themis.git", features = [
     "license",
 ] }
 home = "0.5.11"
-bytemuck = "1.23.1"
-crevice = "0.18.0"
+bytemuck = "1.13.1"
 
 [build-dependencies]
 pipl = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }

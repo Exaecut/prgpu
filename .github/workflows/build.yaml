@@ -1,11 +1,12 @@
 name: "Build Effects"
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 jobs:
   build:
-    name: Build all plugins on ${{ matrix.os }}
+    name: Build changed plugins on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: true
@@ -23,8 +24,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: recursive
+          fetch-depth: 0 # we need history for diffs
       - name: Authenticate Git for Private Dependencies
+        shell: bash
         run: |
           git config --global url."https://${{ secrets.PAT }}@github.com/".insteadOf "https://github.com/"
       - name: Install rust toolchain
@@ -41,9 +44,85 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.27
         with:
           cuda: '12.5.0'
-      - name: Run build_all.sh
-        run: bash ./build_all.sh release
+      - name: Detect changed plugins
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Identify diff range for both push and PR events
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE="origin/${{ github.base_ref }}"
+            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
+            HEAD="${{ github.sha }}"
+          else
+            HEAD="${{ github.sha }}"
+            BASE="${{ github.event.before }}"
+            if [[ -z "${BASE}" || "${BASE}" == "0000000000000000000000000000000000000000" ]]; then
+              BASE="$(git rev-parse "${HEAD}^" || echo "")"
+            fi
+          fi
+          echo "Diff base: ${BASE}"
+          echo "Diff head: ${HEAD}"
+
+          CHANGED_FILES="$(git diff --name-only "${BASE}" "${HEAD}" || true)"
+          echo "Changed files:"
+          echo "${CHANGED_FILES}"
+
+          # Gather all plugin dirs dynamically: have Cargo.toml and build.rs at depth 2
+          mapfile -t ALL_PLUGINS < <(find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; \
+            | awk -F/ 'NF==2' \
+            | sort -u \
+            | while read d; do [[ -f "$d/build.rs" ]] && echo "${d#./}"; done)
+
+          echo "All plugins: ${ALL_PLUGINS[*]}"
+
+          # If shared crate or root infra changed, build all plugins
+          GLOBAL=false
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            case "$f" in
+              Cargo.toml|Cargo.lock|build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu/*)
+                GLOBAL=true
+                break
+                ;;
+            esac
+          done <<< "${CHANGED_FILES}"
+
+          if $GLOBAL; then
+            CHANGED_DIRS="${ALL_PLUGINS[*]}"
+          else
+            # Map changed files to their nearest plugin dir
+            declare -A uniq
+            while IFS= read -r f; do
+              [[ -z "$f" ]] && continue
+              dir="$f"
+              while [[ "$dir" != "." && "$dir" != "/" ]]; do
+                if [[ -f "$dir/Cargo.toml" && -f "$dir/build.rs" ]]; then
+                  rel="${dir#./}"
+                  uniq["$rel"]=1
+                  break
+                fi
+                dir="$(dirname "$dir")"
+              done
+            done <<< "${CHANGED_FILES}"
+            CHANGED_DIRS="$(printf "%s " "${!uniq[@]}" | xargs -n1 | sort -u | xargs)"
+          fi
+
+          COUNT=$(wc -w <<< "${CHANGED_DIRS}" | tr -d ' ')
+          echo "Changed plugin dirs: ${CHANGED_DIRS}"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          # Space separated list is easy to export as env to the next step
+          echo "CHANGED_PLUGIN_DIRS=${CHANGED_DIRS}" >> "$GITHUB_ENV"
+      - name: No changes - skip build
+        if: ${{ steps.changes.outputs.count == '0' }}
+        run: echo "No plugin changes detected. Skipping build."
+      - name: Run build_all.sh for changed plugins
+        if: ${{ steps.changes.outputs.count != '0' }}
+        shell: bash
         env:
           NO_INSTALL: true
           NO_SIGN: true
           CICD: true
+        run: |
+          echo "Will build: ${CHANGED_PLUGIN_DIRS}"
+          bash ./build_all.sh release

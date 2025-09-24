@@ -8,6 +8,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+prgpu = { path = "../prgpu" }
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
     "catch-panics",
 ] }
@@ -27,21 +28,6 @@ bytemuck = "1.13.1"
 
 [build-dependencies]
 pipl = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
-
-[profile.release]
-opt-level = 'z'
-lto = true
-codegen-units = 1
-strip = true
-debug = false
-panic = "unwind"
-
-[profile.dev]
-opt-level = 0
-debug = "full"
-strip = "none"
-split-debuginfo = "packed"
-panic = "unwind"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)"] }

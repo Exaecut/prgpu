@@ -30,23 +30,3 @@ bytemuck = "1.13.1"
 
 [build-dependencies]
 pipl = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
-
-[profile.release]
-opt-level = 'z'
-lto = true
-codegen-units = 1
-strip = true
-debug = false
-panic = "unwind"
-
-[profile.dev.package.themis]
-debug = true
-strip = "none"
-opt-level = 0
-
-[profile.dev]
-opt-level = 0
-debug = "full"
-strip = "none"
-split-debuginfo = "packed"
-panic = "unwind"

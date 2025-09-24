@@ -23,6 +23,31 @@ relpath() {
     echo "${result%/}"
 }
 
+# ----------------------
+# Build plugin
+# ----------------------
+build_plugin() {
+    local manifest="$1"
+    local dir
+    dir="$(dirname "$manifest")"
+    local name
+    name="$(basename "$dir")"
+
+    # Ensure we never fail just because the sub-crate has no Cargo.lock
+    if [ ! -f Cargo.lock ]; then
+        echo "⚠️  Root Cargo.lock missing, generating..."
+        cargo generate-lockfile --manifest-path "$WORKSPACE_TOML"
+    fi
+
+    echo ">>> Building plugin: $name"
+    bash "$PLUGIN_BUILD" --manifest "$manifest" --profile "$PROFILE" || {
+        echo "❌ Build failed for $name"
+        exit 1
+    }
+    echo "----------------------------"
+}
+
+
 PROFILE="debug"
 export CARGO_TARGET_DIR="$(pwd)/target"
 FROM_FILE=""
@@ -102,11 +127,7 @@ if [ -n "${CHANGED_PLUGIN_DIRS}" ]; then
             continue
         fi
 
-        echo "============================"
-        echo ">>> Building plugin: $(basename "$dir")"
-        echo "============================"
-        bash "$PLUGIN_BUILD" --manifest "$dir/Cargo.toml" --profile "$PROFILE"
-        echo "----------------------------"
+        build_plugin "$dir/Cargo.toml"
     done
 
     echo "✅ Selected plugins built for profile: $PROFILE"
@@ -139,7 +160,7 @@ if [ -n "$FROM_FILE" ]; then
     echo "============================"
     echo ">>> Building plugin from file: $(basename "$FOUND")"
     echo "============================"
-    bash "$PLUGIN_BUILD" --manifest "$FOUND/Cargo.toml" --profile "$PROFILE"
+    build_plugin "$FOUND/Cargo.toml"
     echo "✅ Built plugin: $(basename "$FOUND")"
 
 else
@@ -156,7 +177,7 @@ else
         echo "============================"
         echo ">>> Building plugin: $(basename "$DIR")"
         echo "============================"
-        bash "$PLUGIN_BUILD" --manifest "$manifest" --profile "$PROFILE"
+        build_plugin "$DIR/Cargo.toml"
         echo "----------------------------"
     done
 

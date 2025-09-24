@@ -6,7 +6,7 @@ const PF_PLUG_IN_SUBVERS: u16 = 28;
 #[rustfmt::skip]
 fn main() {
     let shader_hotreload = std::env::var("EX_SHADER_HOTRELOAD").unwrap_or("false".to_string());
-    println!("cargo:warning=Shader hot reload flags: {}", shader_hotreload);
+    println!("cargo:warning=Shader hot reload flags: {shader_hotreload}");
 
     if shader_hotreload == "true" {
         println!("cargo:rustc-check-cfg=cfg(shader_hotreload)");

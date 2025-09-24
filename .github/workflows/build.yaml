@@ -1,0 +1,49 @@
+name: "Build Effects"
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    name: Build all plugins on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+      BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+      INSTALLER_CERTIFICATE_BASE64: ${{ secrets.INSTALLER_CERTIFICATE_BASE64 }}
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM: ${{ secrets.APPLE_TEAM }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Authenticate Git for Private Dependencies
+        run: |
+          git config --global url."https://${{ secrets.PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-pc-windows-msvc,x86_64-apple-darwin
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-cache-${{ matrix.os }}-${{ hashFiles('**/Cargo.toml') }}"
+      - name: cuda-toolkit
+        id: cuda-toolkit
+        if: ${{ matrix.os == 'windows-latest' }}
+        uses: Jimver/cuda-toolkit@v0.2.27
+        with:
+          cuda: '12.5.0'
+      - name: Run build_all.sh
+        run: bash ./build_all.sh release
+        env:
+          NO_INSTALL: true
+          NO_SIGN: true
+          CICD: true

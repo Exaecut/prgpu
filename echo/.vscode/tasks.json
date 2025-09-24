@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Milkshake: Build debug",
+            "type": "shell",
+            "command": "just build",
+            "problemMatcher": "$rustc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Build and install extension using debug profile",
+        },
+        {
+            "label": "Milkshake: Build release",
+            "type": "shell",
+            "command": "just release",
+            "problemMatcher": "$rustc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Build and install extension using release profile",
+        },
+    ],
+}

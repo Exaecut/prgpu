@@ -1,0 +1,21 @@
+[workspace]
+members = ["echo", "godrays", "milkshake", "mindglow", "plasma", "radialblur"]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+debug = false
+panic = "unwind"
+
+[profile.dev]
+opt-level = 0
+debug = "full"
+strip = "none"
+split-debuginfo = "packed"
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 3

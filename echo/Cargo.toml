@@ -33,21 +33,6 @@ crevice = "0.18.0"
 [build-dependencies]
 pipl = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 
-[profile.release]
-opt-level = 'z'
-lto = true
-codegen-units = 1
-strip = true
-debug = false
-panic = "unwind"
-
-[profile.dev]
-opt-level = 1
-debug = "full"
-strip = "none"
-split-debuginfo = "packed"
-panic = "unwind"
-
 [profile.dev.package."*"]
 opt-level = 3
 

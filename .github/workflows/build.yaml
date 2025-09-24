@@ -44,6 +44,9 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.27
         with:
           cuda: '12.5.0'
+          method: 'local'
+          use-github-cache: false
+          use-local-cache: false
       - name: Detect changed plugins
         id: changes
         shell: bash

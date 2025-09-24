@@ -63,14 +63,20 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
 
 /// Low-level creator: returns a new MTLBuffer* with given length.
 /// Storage mode: Shared (options = 0). Adjust if you later need Private.
-/// Safety: `device` must be a valid MTLDevice*.
+/// 
+/// # Safety
+/// - `device` must be a valid pointer to an MTLDevice*.
+/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
 pub unsafe fn create_raw_buffer(device: *mut Object, length_bytes: u64) -> *mut Object {
 	let buf: *mut Object = msg_send![device, newBufferWithLength: length_bytes options: 0u64];
 	buf
 }
 
 /// Create an "image-like" buffer sized width*height with the given bytes_per_pixel.
-/// Safety: `device` must be a valid MTLDevice*.
+/// 
+/// # Safety
+/// - `device` must be a valid pointer to an MTLDevice*.
+/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
 pub unsafe fn create_texture_buffer(device: *mut Object, width: u32, height: u32, bytes_per_pixel: u32) -> *mut Object {
 	let length = compute_length_bytes(width, height, bytes_per_pixel);
 	unsafe { create_raw_buffer(device, length) }
@@ -78,7 +84,10 @@ pub unsafe fn create_texture_buffer(device: *mut Object, width: u32, height: u32
 
 /// Get a cached buffer or create-and-cache one if absent.
 /// Returns an `ImageBuffer` view with useful stride info populated.
-/// Safety: `device` must be a valid MTLDevice*.
+/// 
+/// # Safety
+/// - `device` must be a valid pointer to an MTLDevice*.
+/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
 pub unsafe fn get_or_create(device: *mut Object, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
 	let key = BufferKey {
 		device: device as usize,
@@ -114,7 +123,10 @@ pub unsafe fn get_or_create(device: *mut Object, width: u32, height: u32, bytes_
 }
 
 /// Release all cached buffers. Call this from your plugin's global_destroy.
-/// Safety: only call when you are sure no GPU work still references these buffers.
+/// 
+/// # Safety
+/// - This function must only be called when you are certain that no GPU work still references these buffers.
+/// - Ensure that no other threads are accessing the cached buffers while this function is being executed.
 pub unsafe fn cleanup() {
 	if let Some(map) = CACHE.get() {
 		let mut guard = map.lock();

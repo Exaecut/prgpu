@@ -5,12 +5,22 @@ use objc::{class, msg_send, runtime::Object, sel, sel_impl};
 use std::os::raw::c_void;
 use std::time::Instant;
 
+/// Converts a Rust string slice into an Objective-C NSString object.
+///
+/// # Safety
+/// - The caller must ensure that the input string `s` is valid and does not contain null bytes.
+/// - The returned pointer must be used in accordance with Objective-C memory management rules.
 pub unsafe fn nsstring_utf8(s: &str) -> *mut Object {
     let c = CString::new(s).unwrap();
     let ns: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()];
     ns
 }
 
+/// Logs information about a Metal buffer.
+///
+/// # Safety
+/// - The caller must ensure that `raw` is a valid pointer to a Metal buffer object.
+/// - Passing an invalid or null pointer may result in undefined behavior.
 pub unsafe fn log_buffer_info(tag: &str, raw: *mut core::ffi::c_void) {
     use objc::{msg_send, runtime::Object, sel, sel_impl};
     if raw.is_null() {
@@ -29,6 +39,11 @@ pub unsafe fn log_buffer_info(tag: &str, raw: *mut core::ffi::c_void) {
     );
 }
 
+/// Converts an Objective-C NSError object into a Rust `Option<String>` representation.
+///
+/// # Safety
+/// - The caller must ensure that `err` is a valid pointer to an Objective-C NSError object or null.
+/// - Passing an invalid or dangling pointer may result in undefined behavior.
 pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
     if err.is_null() {
         return None;
@@ -106,7 +121,7 @@ pub fn run<UP>(
     entry: &'static str,
 ) -> Result<(), &'static str> {
     use objc::rc::autoreleasepool;
-    return autoreleasepool(|| {
+    autoreleasepool(|| {
         use objc::{msg_send, runtime::Object, sel, sel_impl};
 
         if config.device_handle.is_null() || config.command_queue_handle.is_null() {
@@ -159,7 +174,7 @@ pub fn run<UP>(
         let user_params_len = std::mem::size_of::<UP>();
 
         #[cfg(debug_assertions)]
-        log::info!("User params buffer size: {}", user_params_len);
+        log::info!("User params buffer size: {user_params_len}");
 
         let user_params_buffer: *mut Object = unsafe {
             msg_send![
@@ -233,12 +248,9 @@ pub fn run<UP>(
 
         #[cfg(debug_assertions)]
         log::info!(
-            "[Metal] kernel `{}` took {:.3} ms (GPU), {:?} (CPU wall-time)",
-            entry,
-            gpu_ms,
-            cpu_elapsed
+            "[Metal] kernel `{entry}` took {gpu_ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
         );
 
         Ok(())
-    });
+    })
 }

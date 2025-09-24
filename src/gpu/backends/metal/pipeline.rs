@@ -50,6 +50,21 @@ fn hash_str(s: &str) -> u64 {
 
 static CACHE: OnceLock<Mutex<HashMap<Key, Pipelines>>> = OnceLock::new();
 
+/// Retrieves a pair of pipeline state objects (PSOs) for the given device and shader source.
+///
+/// # Arguments
+/// - `device`: A pointer to the Metal device.
+/// - `shader_src`: The source code of the shader.
+/// - `fname`: The name of the function to retrieve.
+///
+/// # Returns
+/// A `Result` containing a tuple of two raw pointers to the PSOs (`pso_full` and `pso_half`) on success,
+/// or an error message on failure.
+///
+/// # Safety
+/// - The `device` pointer must be a valid Metal device pointer.
+/// - The `shader_src` and `fname` must point to valid static strings.
+/// - The caller must ensure that the returned pointers are used correctly and released appropriately.
 pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname: &'static str) -> Result<(*mut Object, *mut Object), &'static str> {
 	let key = Key {
 		device: device as usize,
@@ -176,6 +191,11 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 	Ok((pso_f32, pso_f16))
 }
 
+/// Cleans up the pipeline cache by releasing all retained Metal objects.
+///
+/// # Safety
+/// - This function must only be called when no other threads are accessing the pipeline cache.
+/// - The caller must ensure that the Metal objects being released are no longer in use elsewhere.
 pub unsafe fn cleanup() {
 	if let Some(map) = CACHE.get() {
 		let mut guard = map.lock();

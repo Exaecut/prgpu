@@ -44,6 +44,6 @@ pub mod pipeline {
 
 	#[cfg(feature = "cuda")]
 	mod imp {
-		pub use crate::gpu::backends::cuda::cache::*;
+		pub use crate::gpu::backends::cuda::pipeline::*;
 	}
 }

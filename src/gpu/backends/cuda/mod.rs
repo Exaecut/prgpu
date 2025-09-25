@@ -2,15 +2,23 @@ use after_effects::log;
 use parking_lot::Mutex;
 use std::{borrow::Cow, collections::HashMap, ffi::c_void, sync::OnceLock};
 
-use cudarc::driver::sys as cu;
+use cudarc::driver::sys as cuda;
+
+pub mod pipeline;
+pub use pipeline::*;
+
+pub mod buffer;
+pub use buffer::*;
+
+use crate::{Configuration, TransitionParams};
 
 #[inline]
-fn check(res: cu::CUresult, what: &str) -> Result<(), &'static str> {
-    if res == cu::CUresult::CUDA_SUCCESS {
+fn check(res: cuda::CUresult, what: &str) -> Result<(), &'static str> {
+    if res == cuda::CUresult::CUDA_SUCCESS {
         return Ok(());
     }
     let mut err_str: *const i8 = std::ptr::null();
-    unsafe { cu::cuGetErrorString(res, &mut err_str) };
+    unsafe { cuda::cuGetErrorString(res, &mut err_str) };
     let msg = if err_str.is_null() {
         what.to_string()
     } else {
@@ -25,14 +33,14 @@ fn check(res: cu::CUresult, what: &str) -> Result<(), &'static str> {
 }
 
 #[inline]
-unsafe fn compute_capability(dev: cu::CUdevice) -> Result<(i32, i32), &'static str> {
+unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static str> {
     let mut major = 0;
     let mut minor = 0;
     check(
         unsafe {
-            cu::cuDeviceGetAttribute(
+            cuda::cuDeviceGetAttribute(
                 &mut major,
-                cu::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                cuda::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
                 dev,
             )
         },
@@ -40,9 +48,9 @@ unsafe fn compute_capability(dev: cu::CUdevice) -> Result<(i32, i32), &'static s
     )?;
     check(
         unsafe {
-            cu::cuDeviceGetAttribute(
+            cuda::cuDeviceGetAttribute(
                 &mut minor,
-                cu::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                cuda::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
                 dev,
             )
         },
@@ -52,10 +60,18 @@ unsafe fn compute_capability(dev: cu::CUdevice) -> Result<(i32, i32), &'static s
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Launches a CUDA kernel with the specified parameters.
+///
+/// # Safety
+/// - `ctx` must be a valid CUDA context.
+/// - `stream` must be a valid CUDA stream.
+/// - `func` must be a valid CUDA kernel function.
+/// - `params` must point to valid device memory and match the kernel's expected arguments.
+/// - The caller must ensure that the kernel launch parameters (`grid_x`, `grid_y`, `block_x`, `block_y`) are valid.
 pub unsafe fn dispatch(
     ctx: *mut c_void,
     stream: *mut c_void,
-    func: cu::CUfunction,
+    func: cuda::CUfunction,
     grid_x: u32,
     grid_y: u32,
     block_x: u32,
@@ -67,12 +83,12 @@ pub unsafe fn dispatch(
         return Err("null handle");
     }
     check(
-        unsafe { cu::cuCtxSetCurrent(ctx as cu::CUcontext) },
+        unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) },
         "cuCtxSetCurrent",
     )?;
     check(
         unsafe {
-            cu::cuLaunchKernel(
+            cuda::cuLaunchKernel(
                 func,
                 grid_x,
                 grid_y,
@@ -81,7 +97,7 @@ pub unsafe fn dispatch(
                 block_y,
                 1,
                 0,
-                stream as cu::CUstream,
+                stream as cuda::CUstream,
                 params.as_mut_ptr(),
                 std::ptr::null_mut(),
             )
@@ -92,13 +108,18 @@ pub unsafe fn dispatch(
     #[cfg(debug_assertions)]
     {
         check(
-            unsafe { cu::cuStreamSynchronize(stream as cu::CUstream) },
+            unsafe { cuda::cuStreamSynchronize(stream as cuda::CUstream) },
             "cuStreamSynchronize",
         )?;
     }
     Ok(())
 }
 
+/// Logs information about a CUDA device pointer.
+///
+/// # Safety
+/// - `ptr` must be a valid CUDA device pointer or null.
+/// - The caller must ensure that the pointer is valid for the duration of this function call.
 pub unsafe fn log_device_ptr_info(tag: &str, ptr: *mut c_void) {
     if ptr.is_null() {
         log::error!("[cuda] {tag}: null");
@@ -106,17 +127,14 @@ pub unsafe fn log_device_ptr_info(tag: &str, ptr: *mut c_void) {
     }
     let mut mem_type: i32 = 0;
     let _ = unsafe {
-        cu::cuPointerGetAttribute(
+        cuda::cuPointerGetAttribute(
             &mut mem_type as *mut _ as *mut c_void,
-            cu::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+            cuda::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
             ptr as u64,
         )
     };
     log::info!("[cuda] {tag}: CUdeviceptr={ptr:?}, memory_type={mem_type}");
 }
-
-pub mod pipeline;
-pub use pipeline::*;
 
 pub fn run<UP>(
     config: &Configuration,
@@ -153,7 +171,7 @@ pub fn run<UP>(
     let mut d_incoming = config.incoming_data as u64;
     let mut d_dest = config.dest_data as u64;
 
-    let mut p = super::TransitionParams {
+    let mut p = TransitionParams {
         out_pitch: config.outgoing_pitch_px as u32,
         in_pitch: config.incoming_pitch_px as u32,
         dest_pitch: config.dest_pitch_px as u32,
@@ -187,8 +205,8 @@ pub fn run<UP>(
     let cpu_start = Instant::now();
 
     unsafe {
-        cuda::cuEventRecord(start_event, config.command_queue_handle);
-        cuda::dispatch(
+        cuda::cuEventRecord(start_event, config.command_queue_handle as cuda::CUstream);
+        dispatch(
             config.context_handle.unwrap(),
             config.command_queue_handle,
             func,
@@ -198,25 +216,22 @@ pub fn run<UP>(
             block_y,
             &mut params,
         )?;
-        cuda::cuEventRecord(end_event, config.command_queue_handle);
+        cuda::cuEventRecord(end_event, config.command_queue_handle as cuda::CUstream);
         cuda::cuEventSynchronize(end_event);
-    }?;
+    };
 
     let cpu_elapsed = cpu_start.elapsed();
 
     let mut ms: f32 = 0.0;
     unsafe {
         cuda::cuEventElapsedTime(&mut ms as *mut f32, start_event, end_event);
-        cuda::cuEventDestroy(start_event);
-        cuda::cuEventDestroy(end_event);
+        cuda::cuEventDestroy_v2(start_event);
+        cuda::cuEventDestroy_v2(end_event);
     }
 
     #[cfg(debug_assertions)]
     log::info!(
-        "[CUDA] kernel `{}` took {:.3} ms (GPU), {:?} (CPU wall-time)",
-        KERNEL_ENTRY_POINT,
-        ms,
-        cpu_elapsed
+        "[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
     );
 
     Ok(())

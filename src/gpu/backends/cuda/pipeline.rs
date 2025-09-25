@@ -1,4 +1,5 @@
 use cudarc::nvrtc::{CompileOptions, Ptx, compile_ptx_with_opts};
+use cudarc::driver::sys as cu;
 use super::*;
 
 pub struct KernelPair {

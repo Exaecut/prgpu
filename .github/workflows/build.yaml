@@ -1,15 +1,28 @@
 name: "Build Effects"
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+concurrency:
+  group: build-effects-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build changed plugins on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     env:
+      CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
+      # Use sccache for compiler output caching across runs
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true" # native GitHub Actions cache backend
+      SCCACHE_CACHE_SIZE: "10G"
+      CARGO_INCREMENTAL: "0" # better cache hits in CI with sccache
+      # Signing and Apple creds
       BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
       INSTALLER_CERTIFICATE_BASE64: ${{ secrets.INSTALLER_CERTIFICATE_BASE64 }}
       P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -20,40 +33,64 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0 # we need history for diffs
+          fetch-depth: 0
+
       - name: Authenticate Git for Private Dependencies
         shell: bash
         run: |
           git config --global url."https://${{ secrets.PAT }}@github.com/".insteadOf "https://github.com/"
+
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-pc-windows-msvc,x86_64-apple-darwin
-      - name: Setup cache
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-msvc
+
+      # Install sccache and wire it up to use the GitHub Actions cache backend.
+      # This does NOT cache CUDA toolkit.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      # Cache Cargo target dir, registry and git index. This avoids rebuilding dependencies.
+      # The cache key includes OS and lockfiles plus Cargo.toml to bust when deps change.
+      - name: Setup rust build cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "build-cache-${{ matrix.os }}-${{ hashFiles('**/Cargo.toml') }}"
+          # keep one target dir at repo root so the cache benefits all members
+          workspaces: |
+            . -> target
+          cache-on-failure: true
+          save-if: ${{ always() }}
+          shared-key: >
+            build-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      # Windows CUDA toolkit install without any cache
       - name: cuda-toolkit
         id: cuda-toolkit
         if: ${{ matrix.os == 'windows-latest' }}
         uses: N-Storm/cuda-toolkit@v0.2.27m
         with:
-          cuda: '12.5.0'
-          method: 'local'
+          cuda: "12.5.0"
+          method: "local"
           use-github-cache: false
           use-local-cache: false
+
+      # Optional: warm the registry to improve first-build hit rate
+      - name: Cargo fetch
+        shell: bash
+        run: cargo fetch
+
       - name: Detect changed plugins
         id: changes
         shell: bash
         run: |
           set -euo pipefail
 
-          # Figure out the diff range
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
             BASE="origin/${{ github.base_ref }}"
@@ -72,7 +109,6 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "${CHANGED_FILES}"
 
-          # List all plugin dirs: one level deep, must contain Cargo.toml + build.rs
           ALL_PLUGINS="$(
             find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; \
             | awk -F/ 'NF==2' \
@@ -86,7 +122,6 @@ jobs:
           echo "All plugins:"
           printf '%s\n' "${ALL_PLUGINS}"
 
-          # If shared crates or infra changed, rebuild all
           GLOBAL=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
@@ -101,7 +136,6 @@ jobs:
           if $GLOBAL; then
             CHANGED_DIRS="$(printf '%s\n' "${ALL_PLUGINS}" | tr '\n' ' ' | sed 's/ $//')"
           else
-            # Map changed files to nearest plugin dir
             TMP_LIST=""
             while IFS= read -r f; do
               [[ -z "$f" ]] && continue
@@ -115,12 +149,9 @@ jobs:
                 dir="$(dirname "$dir")"
               done
             done <<< "${CHANGED_FILES}"
-
-            # Unique and space separate
             CHANGED_DIRS="$(printf '%b' "${TMP_LIST}" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
           fi
 
-          # Count items
           if [[ -n "${CHANGED_DIRS:-}" ]]; then
             COUNT=$(wc -w <<< "${CHANGED_DIRS}" | tr -d ' ')
           else
@@ -130,9 +161,14 @@ jobs:
           echo "Changed plugin dirs: ${CHANGED_DIRS}"
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "CHANGED_PLUGIN_DIRS=${CHANGED_DIRS}" >> "$GITHUB_ENV"
+
       - name: No changes - skip build
         if: ${{ steps.changes.outputs.count == '0' }}
         run: echo "No plugin changes detected. Skipping build."
+
+      - name: Show sccache stats before build
+        run: sccache --show-stats || true
+
       - name: Run build_all.sh for changed plugins
         if: ${{ steps.changes.outputs.count != '0' }}
         shell: bash
@@ -143,3 +179,7 @@ jobs:
         run: |
           echo "Will build: ${CHANGED_PLUGIN_DIRS}"
           bash ./build_all.sh release
+
+      - name: Show sccache stats after build
+        if: ${{ steps.changes.outputs.count != '0' }}
+        run: sccache --show-stats || true

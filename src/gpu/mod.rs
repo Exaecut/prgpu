@@ -23,12 +23,12 @@ pub mod shaders;
 pub mod buffer {
 	pub use imp::*;
 
-	#[cfg(feature = "metal")]
+	#[cfg(all(feature = "metal", target_os = "macos"))]
 	mod imp {
 		pub use crate::gpu::backends::metal::buffer::*;
 	}
 
-	#[cfg(feature = "cuda")]
+	#[cfg(all(feature = "cuda", target_os = "windows"))]
 	mod imp {
 		pub use crate::gpu::backends::cuda::buffer::*;
 	}
@@ -37,12 +37,12 @@ pub mod buffer {
 pub mod pipeline {
 	pub use imp::*;
 
-	#[cfg(feature = "metal")]
+	#[cfg(all(feature = "metal", target_os = "macos"))]
 	mod imp {
 		pub use crate::gpu::backends::metal::pipeline::*;
 	}
 
-	#[cfg(feature = "cuda")]
+	#[cfg(all(feature = "cuda", target_os = "windows"))]
 	mod imp {
 		pub use crate::gpu::backends::cuda::pipeline::*;
 	}

@@ -94,6 +94,9 @@ case "$OS" in
 esac
 
 echo "🔧 Selected GPU backend   : $BACKEND"
+echo "🔧 Enabled features for $PLUGIN_NAME:"
+cargo tree --manifest-path "$MANIFEST" --edges features | grep prgpu || true
+
 
 # ----------------------
 # Build

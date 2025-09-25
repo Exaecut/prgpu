@@ -17,9 +17,6 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: "10G"
       CARGO_INCREMENTAL: "0"
       BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
       INSTALLER_CERTIFICATE_BASE64: ${{ secrets.INSTALLER_CERTIFICATE_BASE64 }}
@@ -49,17 +46,6 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-msvc
 
-      - name: Setup sccache binary
-        uses: mozilla-actions/sccache-action@v0.0.4
-
-      - name: Cache sccache storage
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/sccache
-            C:\Users\runneradmin\AppData\Local\Mozilla\sccache\cache
-          key: sccache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-
       - name: Setup rust build cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +53,8 @@ jobs:
             . -> target
           cache-on-failure: true
           shared-key: build-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          cache-all-crates: true
+          cache-targets: true
 
       - name: cuda-toolkit
         id: cuda-toolkit
@@ -163,9 +151,6 @@ jobs:
         if: ${{ steps.changes.outputs.count == '0' }}
         run: echo "No plugin changes detected. Skipping build."
 
-      - name: Show sccache stats before build
-        run: sccache --show-stats || true
-
       - name: Run build_all.sh for changed plugins
         if: ${{ steps.changes.outputs.count != '0' }}
         shell: bash
@@ -176,7 +161,3 @@ jobs:
         run: |
           echo "Will build: ${CHANGED_PLUGIN_DIRS}"
           bash ./build_all.sh release
-
-      - name: Show sccache stats after build
-        if: ${{ steps.changes.outputs.count != '0' }}
-        run: sccache --show-stats || true

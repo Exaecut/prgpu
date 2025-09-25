@@ -41,9 +41,9 @@ jobs:
       - name: cuda-toolkit
         id: cuda-toolkit
         if: ${{ matrix.os == 'windows-latest' }}
-        uses: N-Storm/cuda-toolkit@v0.2.27m
+        uses: Jimver/cuda-toolkit@v0.2.24
         with:
-          cuda: '13.0.0'
+          cuda: '12.5.0'
           method: 'local'
           use-github-cache: false
           use-local-cache: false

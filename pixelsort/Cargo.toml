@@ -1,5 +1,5 @@
 [package]
-name = "pixel_sort"
+name = "pixelsort"
 version = "1.0.1"
 authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
 edition = "2021"

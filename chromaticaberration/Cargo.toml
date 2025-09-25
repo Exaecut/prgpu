@@ -1,5 +1,5 @@
 [package]
-name = "chromatic_aberration"
+name = "chromaticaberration"
 version = "1.0.1"
 authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
 edition = "2021"

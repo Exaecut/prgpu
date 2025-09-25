@@ -17,12 +17,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
-      # Use sccache for compiler output caching across runs
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true" # native GitHub Actions cache backend
+      SCCACHE_GHA_ENABLED: "true"
       SCCACHE_CACHE_SIZE: "10G"
-      CARGO_INCREMENTAL: "0" # better cache hits in CI with sccache
-      # Signing and Apple creds
+      CARGO_INCREMENTAL: "0"
       BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
       INSTALLER_CERTIFICATE_BASE64: ${{ secrets.INSTALLER_CERTIFICATE_BASE64 }}
       P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -51,36 +49,27 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-msvc
 
-      # Install sccache and wire it up to use the GitHub Actions cache backend.
-      # This does NOT cache CUDA toolkit.
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.4
 
-      # Cache Cargo target dir, registry and git index. This avoids rebuilding dependencies.
-      # The cache key includes OS and lockfiles plus Cargo.toml to bust when deps change.
       - name: Setup rust build cache
         uses: Swatinem/rust-cache@v2
         with:
-          # keep one target dir at repo root so the cache benefits all members
           workspaces: |
             . -> target
           cache-on-failure: true
-          save-if: ${{ always() }}
-          shared-key: >
-            build-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          shared-key: build-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
-      # Windows CUDA toolkit install without any cache
       - name: cuda-toolkit
         id: cuda-toolkit
         if: ${{ matrix.os == 'windows-latest' }}
         uses: N-Storm/cuda-toolkit@v0.2.27m
         with:
-          cuda: "12.5.0"
-          method: "local"
+          cuda: '12.5.0'
+          method: 'local'
           use-github-cache: false
           use-local-cache: false
 
-      # Optional: warm the registry to improve first-build hit rate
       - name: Cargo fetch
         shell: bash
         run: cargo fetch

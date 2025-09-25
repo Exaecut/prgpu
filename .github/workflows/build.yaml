@@ -18,6 +18,7 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
       RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
       SCCACHE_CACHE_SIZE: "10G"
       CARGO_INCREMENTAL: "0"
       BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
@@ -48,8 +49,16 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-msvc
 
-      - name: Setup sccache
+      - name: Setup sccache binary
         uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache sccache storage
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/sccache
+            C:\Users\runneradmin\AppData\Local\Mozilla\sccache\cache
+          key: sccache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
       - name: Setup rust build cache
         uses: Swatinem/rust-cache@v2
@@ -68,15 +77,6 @@ jobs:
           method: 'local'
           use-github-cache: false
           use-local-cache: false
-
-      - name: Force sccache to fallback on daemon startup errors
-        shell: bash
-        run: |
-          # Attempt to start the sccache server, but if it errors, fallback to local mode
-          if ! sccache --start-server; then
-            echo "⚠️ sccache server startup failed; disabling GitHub cache fallback"
-            export SCCACHE_GHA_ENABLED=false
-          fi
 
       - name: Cargo fetch
         shell: bash
@@ -108,13 +108,13 @@ jobs:
 
           ALL_PLUGINS="$(
             find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; \
-              | awk -F/ 'NF==2' \
-              | while read d; do
-                  if [[ -f "$d/build.rs" ]]; then
-                    printf '%s\n' "${d#./}"
-                  fi
-                done \
-              | sort -u
+            | awk -F/ 'NF==2' \
+            | while read d; do
+                if [[ -f "$d/build.rs" ]]; then
+                  printf '%s\n' "${d#./}"
+                fi
+              done \
+            | sort -u
           )"
           echo "All plugins:"
           printf '%s\n' "${ALL_PLUGINS}"

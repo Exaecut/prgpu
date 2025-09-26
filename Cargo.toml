@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["cargo-clippy", "metal"] # build with no GPU backend by default
+default = ["cargo-clippy", "metal"] # build with no Metal backend by default
 cuda = ["cudarc"]                   # enable CUDA backend
-metal = []                          # enable Metal backend
+metal = ["objc"]                    # enable Metal backend
 cargo-clippy = []
 shader_hotreload = []               # enable shader hot-reloading (for development only)
 

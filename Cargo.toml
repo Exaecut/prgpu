@@ -19,7 +19,7 @@ bytemuck = { version = "1.23.1", features = ["derive"] }
 parking_lot = "0.12.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc = { version = "0.2.7" }
+objc = { version = "0.2.7", optional = true}
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cudarc = { version = "0.17.3", features = ["cuda-12050"], optional = true }

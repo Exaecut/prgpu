@@ -8,7 +8,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-prgpu = { path = "../prgpu" }
+prgpu = { path = "../prgpu", default-features = false }
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
     "catch-panics",
 ] }

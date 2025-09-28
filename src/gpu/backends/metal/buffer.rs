@@ -1,5 +1,5 @@
 // src/gpu/metal/buffer.rs
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::c_void};
 use std::sync::OnceLock;
 
 use objc::{msg_send, runtime::Object, sel, sel_impl};
@@ -88,7 +88,7 @@ pub unsafe fn create_texture_buffer(device: *mut Object, width: u32, height: u32
 /// # Safety
 /// - `device` must be a valid pointer to an MTLDevice*.
 /// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
-pub unsafe fn get_or_create(device: *mut Object, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
+pub unsafe fn get_or_create(device: *mut c_void, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
 	let key = BufferKey {
 		device: device as usize,
 		width,
@@ -103,7 +103,7 @@ pub unsafe fn get_or_create(device: *mut Object, width: u32, height: u32, bytes_
 	let buf = if let Some(existing) = guard.get(&key) {
 		*existing
 	} else {
-		let raw = unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
+		let raw = unsafe { create_texture_buffer(device as *mut Object, width, height, bytes_per_pixel) };
 		let obj = BufferObj { raw };
 		guard.insert(key, obj);
 		obj

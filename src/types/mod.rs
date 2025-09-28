@@ -7,5 +7,5 @@ pub use pixel::*;
 pub mod pr_rect;
 pub use pr_rect::*;
 
-pub mod kernel;
-pub use kernel::*;
+pub mod config;
+pub use config::*;

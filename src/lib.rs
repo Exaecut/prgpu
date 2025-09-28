@@ -5,3 +5,6 @@ pub use gpu::*;
 
 pub mod types;
 pub use types::*;
+
+
+pub use paste;

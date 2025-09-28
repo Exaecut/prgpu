@@ -1,4 +1,3 @@
-// src/gpu/metal/buffer.rs
 use std::{collections::HashMap, ffi::c_void};
 use std::sync::OnceLock;
 

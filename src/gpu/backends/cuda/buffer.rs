@@ -58,7 +58,7 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
 	(width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
-pub unsafe fn create_raw_buffer(device: *mut Object, length_bytes: u64) -> *mut Object {
+pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut c_void {
 	todo!("Implement raw buffer creation for CUDA backend");
 }
 
@@ -67,7 +67,7 @@ pub unsafe fn create_raw_buffer(device: *mut Object, length_bytes: u64) -> *mut 
 /// # Safety
 /// - `device` must be a valid pointer to an CUDevice*.
 /// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
-pub unsafe fn create_texture_buffer(device: *mut Object, width: u32, height: u32, bytes_per_pixel: u32) -> *mut Object {
+pub unsafe fn create_texture_buffer(device: *mut c_void, width: u32, height: u32, bytes_per_pixel: u32) -> *mut c_void {
 	let length = compute_length_bytes(width, height, bytes_per_pixel);
 	unsafe { create_raw_buffer(device, length) }
 }

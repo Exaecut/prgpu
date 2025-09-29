@@ -58,7 +58,7 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
 	(width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
-pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut c_void {
+pub unsafe fn create_raw_buffer(_device: *mut c_void, _length_bytes: u64) -> *mut c_void {
 	todo!("Implement raw buffer creation for CUDA backend");
 }
 

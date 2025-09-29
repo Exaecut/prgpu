@@ -21,6 +21,7 @@ paste = "1.0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = { version = "0.2.7", optional = true}
+cudarc = { version = "0.17.3", features = ["cuda-12050"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cudarc = { version = "0.17.3", features = ["cuda-12050"], optional = true }

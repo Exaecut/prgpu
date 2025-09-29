@@ -108,7 +108,6 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
 }
 
 pub mod pipeline;
-pub use pipeline::{Pipelines, cleanup, get_pso_pair, hot_reload};
 
 use crate::{Configuration, TransitionParams};
 

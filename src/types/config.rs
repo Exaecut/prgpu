@@ -1,5 +1,7 @@
 use std::ffi::c_void;
 
+use crate::GPUFramework;
+
 #[repr(C)]
 pub struct MTLSize {
     pub width: usize,

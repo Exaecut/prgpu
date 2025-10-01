@@ -1,5 +1,4 @@
-use cudarc::driver::CudaSlice;
-use cudarc::driver::sys::CUdevice;
+use cudarc::driver::sys::{CUcontext, CUdeviceptr, CUresult, cuCtxSetCurrent, cuMemAlloc_v2};
 use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::{collections::HashMap, ffi::c_void};
@@ -60,22 +59,21 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
     (width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
-pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut c_void {
-    // Reinterpret the opaque device pointer as a CudaDevice reference.
-    let dev: &mut CUdevice = unsafe { &mut *(device as *mut CUdevice) };
+pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut CUdeviceptr {
+    let ctx = device as CUcontext;
+    unsafe { cuCtxSetCurrent(ctx) };
 
-    // Allocate a raw uninitialized buffer on the device (like cudaMalloc).
-    // We allocate bytes (u8) because we don't know the element type.
-    let slice: CudaSlice<u8> = dev
-        .(length_bytes as usize)
-        .expect("Failed to allocate CUDA buffer");
+    let buf: *mut CUdeviceptr = std::ptr::null_mut();
+    let result = unsafe { cuMemAlloc_v2(buf, length_bytes as usize) };
 
-    // Turn the safe wrapper into a raw device pointer (*mut c_void).
-    // NOTE: into_device_ptr() consumes the slice and returns a DevicePtr<u8>.
-    // We then cast it to *mut c_void to store in BufferObj.
-    slice.into_device_ptr().as_raw_mut() as *mut c_void
-
-    // todo!("Implement raw buffer creation for CUDA backend");
+    match result {
+        CUresult::CUDA_SUCCESS => {
+            return buf;
+        }
+        err => {
+            panic!("cuMemAlloc_v2 failed: {:?}", err);
+        }
+    };
 }
 
 /// Create an "image-like" buffer sized width*height with the given bytes_per_pixel.
@@ -88,7 +86,7 @@ pub unsafe fn create_texture_buffer(
     width: u32,
     height: u32,
     bytes_per_pixel: u32,
-) -> *mut c_void {
+) -> *mut CUdeviceptr {
     let length = compute_length_bytes(width, height, bytes_per_pixel);
     unsafe { create_raw_buffer(device, length) }
 }
@@ -121,7 +119,9 @@ pub unsafe fn get_or_create(
         *existing
     } else {
         let raw = unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
-        let obj = BufferObj { raw };
+        let obj = BufferObj {
+            raw: raw as *mut c_void,
+        };
         guard.insert(key, obj);
         obj
     };
@@ -140,5 +140,11 @@ pub unsafe fn get_or_create(
 }
 
 pub unsafe fn cleanup() {
-    todo!("Implement clean for CUDA backend");
+    if let Some(map) = CACHE.get() {
+        let mut guard = map.lock();
+        for (_key, buf) in guard.drain() {
+            let ptr = buf.raw as *mut CUdeviceptr;
+            let _ = unsafe { cudarc::driver::sys::cuMemFree_v2(*ptr) };
+        }
+    }
 }

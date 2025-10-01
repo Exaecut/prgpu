@@ -4,15 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["cargo-clippy", "metal"] # build with no Metal backend by default
-cuda = ["cudarc"]                   # enable CUDA backend
-metal = ["objc"]                    # enable Metal backend
+default = ["cargo-clippy", "cuda"] # build with no Metal backend by default
+cuda = ["cudarc"]                  # enable CUDA backend
+metal = ["objc"]                   # enable Metal backend
 cargo-clippy = []
-shader_hotreload = []               # enable shader hot-reloading (for development only)
+shader_hotreload = []              # enable shader hot-reloading (for development only)
+
 
 [dependencies]
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
-    "catch-panics",
+	"catch-panics",
 ] }
 premiere = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 bytemuck = { version = "1.23.1", features = ["derive"] }
@@ -20,7 +21,7 @@ parking_lot = "0.12.3"
 paste = "1.0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc = { version = "0.2.7", optional = true}
+objc = { version = "0.2.7", optional = true }
 cudarc = { version = "0.17.3", features = ["cuda-12050"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -28,8 +29,8 @@ cudarc = { version = "0.17.3", features = ["cuda-12050"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    "cfg(shader_hotreload)",
-    "cfg(does_dialog)",
-    "cfg(with_premiere)",
-    "cfg(threaded_rendering)",
+	"cfg(shader_hotreload)",
+	"cfg(does_dialog)",
+	"cfg(with_premiere)",
+	"cfg(threaded_rendering)",
 ] }

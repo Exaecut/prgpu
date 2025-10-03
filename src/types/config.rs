@@ -1,6 +1,11 @@
 use std::ffi::c_void;
 
-use crate::GPUFramework;
+use premiere::suites::GPUDevice;
+
+pub enum DeviceHandleInit<'a> {
+    FromPtr(*mut c_void),
+    FromSuite((u32, &'a GPUDevice)),
+}
 
 #[repr(C)]
 pub struct MTLSize {

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["cargo-clippy", "cuda"] # build with no Metal backend by default
+default = ["cargo-clippy", "metal"] # build with no Metal backend by default
 cuda = ["cudarc"]                  # enable CUDA backend
 metal = ["objc"]                   # enable Metal backend
 cargo-clippy = []

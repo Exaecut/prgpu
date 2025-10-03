@@ -3,6 +3,8 @@ use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::{collections::HashMap, ffi::c_void};
 
+use crate::DeviceHandleInit;
+
 /// Key that uniquely identifies a cached GPU buffer allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BufferKey {
@@ -98,44 +100,89 @@ pub unsafe fn create_texture_buffer(
 /// - `device` must be a valid pointer to an CUDevice*.
 /// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
 pub unsafe fn get_or_create(
-    device: *mut c_void,
+    device: DeviceHandleInit,
     width: u32,
     height: u32,
     bytes_per_pixel: u32,
     tag: u32,
 ) -> ImageBuffer {
-    let key = BufferKey {
-        device: device as usize,
-        width,
-        height,
-        bytes_per_pixel,
-        tag,
-    };
+    match device {
+        DeviceHandleInit::FromPtr(device) => {
+            let key = BufferKey {
+                device: device as usize,
+                width,
+                height,
+                bytes_per_pixel,
+                tag,
+            };
 
-    let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = map.lock();
+            let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut guard = map.lock();
 
-    let buf = if let Some(existing) = guard.get(&key) {
-        *existing
-    } else {
-        let raw = unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
-        let obj = BufferObj {
-            raw: raw as *mut c_void,
-        };
-        guard.insert(key, obj);
-        obj
-    };
+            let buf = if let Some(existing) = guard.get(&key) {
+                *existing
+            } else {
+                let raw = unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
+                let obj = BufferObj {
+                    raw: raw as *mut c_void,
+                };
+                guard.insert(key, obj);
+                obj
+            };
 
-    let row_bytes = compute_row_bytes(width, bytes_per_pixel);
-    let pitch_px = width;
+            let row_bytes = compute_row_bytes(width, bytes_per_pixel);
+            let pitch_px = width;
 
-    ImageBuffer {
-        buf,
-        width,
-        height,
-        bytes_per_pixel,
-        row_bytes,
-        pitch_px,
+            ImageBuffer {
+                buf,
+                width,
+                height,
+                bytes_per_pixel,
+                row_bytes,
+                pitch_px,
+            }
+        }
+        DeviceHandleInit::FromSuite((device_index, suite)) => {
+            if let Ok(allocated) = suite.allocate_device_memory(
+                device_index,
+                compute_length_bytes(width, height, bytes_per_pixel) as usize,
+            ) {
+                let key = BufferKey {
+                    device: suite.device_info(device_index).unwrap().outDeviceHandle as usize,
+                    width,
+                    height,
+                    bytes_per_pixel,
+                    tag,
+                };
+
+                let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+                let mut guard = map.lock();
+
+                let buf = if let Some(existing) = guard.get(&key) {
+                    *existing
+                } else {
+                    let obj = BufferObj {
+                        raw: allocated as *mut c_void,
+                    };
+                    guard.insert(key, obj);
+                    obj
+                };
+
+                let row_bytes = compute_row_bytes(width, bytes_per_pixel);
+                let pitch_px = width;
+
+                ImageBuffer {
+                    buf,
+                    width,
+                    height,
+                    bytes_per_pixel,
+                    row_bytes,
+                    pitch_px,
+                }
+            } else {
+                panic!("Failed to allocate device memory via GPUDevice suite");
+            }
+        }
     }
 }
 

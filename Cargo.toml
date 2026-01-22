@@ -1,6 +1,31 @@
 [workspace]
-members = ["chromaticaberration", "echo", "godrays", "hueshift", "milkshake", "mindglow", "pixelsort", "plasmawaves", "radialblur", "retrovhs", "vignette"]
+members = [
+    "chromaticaberration",
+    "echo",
+    "godrays",
+    "hueshift",
+    "milkshake",
+    "mindglow",
+    "pixelsort",
+    "plasmawaves",
+    "radialblur",
+    "retrovhs",
+    "vignette",
+]
 resolver = "3"
+
+[workspace.metadata.products]
+chromaticaberration = { identifier = "io.exaecut.effects.chromaticaberration", product-id = 40 }
+echo = { identifier = "io.exaecut.effects.echo", product-id = 46 }
+godrays = { identifier = "io.exaecut.effects.godrays", product-id = 45 }
+hueshift = { identifier = "io.exaecut.effects.hueshift", product-id = 41 }
+milkshake = { identifier = "io.exaecut.effects.milkshake", product-id = 1 }
+mindglow = { identifier = "io.exaecut.effects.mindglow", product-id = 36 }
+pixelsort = { identifier = "io.exaecut.effects.pixelsort", product-id = 37 }
+plasmawaves = { identifier = "io.exaecut.effects.plasmawaves", product-id = 42 }
+radialblur = { identifier = "io.exaecut.effects.radialblur", product-id = 35 }
+retrovhs = { identifier = "io.exaecut.effects.retrovhs", product-id = 38 }
+vignette = { identifier = "io.exaecut.effects.vignette", product-id = 43 }
 
 [profile.release]
 opt-level = 3

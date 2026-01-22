@@ -14,6 +14,9 @@ jobs:
   build:
     name: Build changed plugins on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    outputs:
+      plugin_count: ${{ steps.changes.outputs.count }}
+      changed_plugins: ${{ steps.changes.outputs.CHANGED_PLUGIN_DIRS }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
@@ -61,8 +64,8 @@ jobs:
         if: ${{ matrix.os == 'windows-latest' }}
         uses: N-Storm/cuda-toolkit@v0.2.27m
         with:
-          cuda: '12.5.0'
-          method: 'local'
+          cuda: "12.5.0"
+          method: "local"
           use-github-cache: false
           use-local-cache: false
 
@@ -143,9 +146,12 @@ jobs:
             COUNT=0
           fi
 
-          echo "Changed plugin dirs: ${CHANGED_DIRS}"
+          # Ensure we export to OUTPUT for cross-job access
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
           echo "CHANGED_PLUGIN_DIRS=${CHANGED_DIRS}" >> "$GITHUB_ENV"
+          # Create the bridge file for the deployment workflow
+          echo "${CHANGED_DIRS}" | tr ' ' ',' > changed_plugins.txt
 
       - name: No changes - skip build
         if: ${{ steps.changes.outputs.count == '0' }}
@@ -161,3 +167,20 @@ jobs:
         run: |
           echo "Will build: ${CHANGED_PLUGIN_DIRS}"
           bash ./build_all.sh release
+      - name: Upload built plugins as artifacts
+        if: ${{ steps.changes.outputs.count != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: effects-${{ runner.os }}
+          path: |
+            target/release/*.aex
+            target/release/*.plugin
+            Cargo.toml
+            changed_plugin.txt
+          if-no-files-found: error
+          retention-days: 7
+      - uses: Exaecut/publish-exaecut-product@main
+        with:
+          artifact-name: effects-${{ matrix.os == 'macos-latest' && 'macOS' || 'windows' }}
+          secret-key: ${{ secrets.EXAECUT_SECRET_KEY }}
+          endpoint: ${{ secrets.EXAECUT_ENDPOINT }}

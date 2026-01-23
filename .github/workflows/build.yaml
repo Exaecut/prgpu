@@ -97,7 +97,12 @@ jobs:
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              Cargo.toml|Cargo.lock|build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu|prgpu/*) GLOBAL=true; break ;;
+              # REQ 1 Fix: Removed Cargo.toml and Cargo.lock from global triggers.
+              # They are now handled by the directory-crawling logic below.
+              build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu|prgpu/*)
+                GLOBAL=true
+                break
+                ;;
             esac
           done <<< "${CHANGED_FILES}"
 

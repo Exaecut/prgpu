@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["cargo-clippy", "metal"] # build with no Metal backend by default
-cuda = ["cudarc"]                  # enable CUDA backend
-metal = ["objc"]                   # enable Metal backend
+default = ["cargo-clippy"] # build with no Metal backend by default
+cuda = ["cudarc"]          # enable CUDA backend
+metal = ["objc"]           # enable Metal backend
 cargo-clippy = []
-shader_hotreload = []              # enable shader hot-reloading (for development only)
-
+shader_hotreload = []      # enable shader hot-reloading (for development only)
 
 [dependencies]
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [

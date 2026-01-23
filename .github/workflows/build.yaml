@@ -1,4 +1,4 @@
-name: "Build Effects"
+name: "Build and Deploy Effects"
 
 on:
   push:
@@ -11,12 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build changed plugins on ${{ matrix.os }}
+  build_and_deploy:
+    name: Build & Deploy on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    outputs:
-      plugin_count: ${{ steps.changes.outputs.count }}
-      changed_plugins: ${{ steps.changes.outputs.CHANGED_PLUGIN_DIRS }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
@@ -29,6 +26,7 @@ jobs:
       APPLE_TEAM: ${{ secrets.APPLE_TEAM }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
 
@@ -90,34 +88,15 @@ jobs:
               BASE="$(git rev-parse "${HEAD}^" || echo "")"
             fi
           fi
-          echo "Diff base: ${BASE}"
-          echo "Diff head: ${HEAD}"
 
           CHANGED_FILES="$(git diff --name-only "${BASE}" "${HEAD}" || true)"
-          echo "Changed files:"
-          printf '%s\n' "${CHANGED_FILES}"
-
-          ALL_PLUGINS="$(
-            find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; \
-            | awk -F/ 'NF==2' \
-            | while read d; do
-                if [[ -f "$d/build.rs" ]]; then
-                  printf '%s\n' "${d#./}"
-                fi
-              done \
-            | sort -u
-          )"
-          echo "All plugins:"
-          printf '%s\n' "${ALL_PLUGINS}"
+          ALL_PLUGINS="$(find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; | awk -F/ 'NF==2' | while read d; do if [[ -f "$d/build.rs" ]]; then printf '%s\n' "${d#./}"; fi; done | sort -u)"
 
           GLOBAL=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              Cargo.toml|Cargo.lock|build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu|prgpu/*)
-                GLOBAL=true
-                break
-                ;;
+              Cargo.toml|Cargo.lock|build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu|prgpu/*) GLOBAL=true; break ;;
             esac
           done <<< "${CHANGED_FILES}"
 
@@ -130,8 +109,7 @@ jobs:
               dir="$f"
               while [[ "$dir" != "." && "$dir" != "/" ]]; do
                 if [[ -f "$dir/Cargo.toml" && -f "$dir/build.rs" ]]; then
-                  rel="${dir#./}"
-                  TMP_LIST="${TMP_LIST}\n${rel}"
+                  TMP_LIST="${TMP_LIST}\n${dir#./}"
                   break
                 fi
                 dir="$(dirname "$dir")"
@@ -146,16 +124,10 @@ jobs:
             COUNT=0
           fi
 
-          # Ensure we export to OUTPUT for cross-job access
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
-
           echo "CHANGED_PLUGIN_DIRS=${CHANGED_DIRS}" >> "$GITHUB_ENV"
-          # Create the bridge file for the deployment workflow
+          # REQ 1: Create bridge file for the deployment scripts
           echo "${CHANGED_DIRS}" | tr ' ' ',' > changed_plugins.txt
-
-      - name: No changes - skip build
-        if: ${{ steps.changes.outputs.count == '0' }}
-        run: echo "No plugin changes detected. Skipping build."
 
       - name: Run build_all.sh for changed plugins
         if: ${{ steps.changes.outputs.count != '0' }}
@@ -164,10 +136,9 @@ jobs:
           NO_INSTALL: true
           NO_SIGN: true
           CICD: true
-        run: |
-          echo "Will build: ${CHANGED_PLUGIN_DIRS}"
-          bash ./build_all.sh release
-      - name: Upload built plugins as artifacts
+        run: bash ./build_all.sh release
+
+      - name: Upload artifacts
         if: ${{ steps.changes.outputs.count != '0' }}
         uses: actions/upload-artifact@v4
         with:
@@ -176,11 +147,14 @@ jobs:
             target/release/*.aex
             target/release/*.plugin
             Cargo.toml
-            changed_plugin.txt
+            changed_plugins.txt
           if-no-files-found: error
-          retention-days: 7
-      - uses: Exaecut/publish-exaecut-product@main
+
+      - name: Publish artifacts to Exaecut
+        if: ${{ steps.changes.outputs.count != '0' }}
+        uses: Exaecut/publish-exaecut-product@main
         with:
-          artifact-name: effects-${{ matrix.os == 'macos-latest' && 'macOS' || 'windows' }}
-          secret-key: ${{ secrets.EXAECUT_SECRET_KEY }}
           endpoint: ${{ secrets.EXAECUT_ENDPOINT }}
+          secret-key: ${{ secrets.EXAECUT_SECRET_KEY }}
+          artifact-name: effects-${{ runner.os }}
+          dry-run: "false"

@@ -7,18 +7,18 @@ CHANGED_PLUGIN_DIRS="${CHANGED_PLUGIN_DIRS:-}"
 relpath() {
     local target=$1
     local base=$2
-
+    
     target=$(cd "$target" && pwd)   # absolute target
     base=$(cd "$base" && pwd)       # absolute base
-
+    
     local common=$base
     local result=""
-
+    
     while [[ "$target" != "$common"* ]]; do
         common=$(dirname "$common")
         result="../$result"
     done
-
+    
     result+="${target#$common/}"
     echo "${result%/}"
 }
@@ -32,13 +32,13 @@ build_plugin() {
     dir="$(dirname "$manifest")"
     local name
     name="$(basename "$dir")"
-
+    
     # Ensure we never fail just because the sub-crate has no Cargo.lock
     if [ ! -f Cargo.lock ]; then
         echo "⚠️  Root Cargo.lock missing, generating..."
         cargo generate-lockfile --manifest-path "$WORKSPACE_TOML"
     fi
-
+    
     echo ">>> Building plugin: $name"
     bash "$PLUGIN_BUILD" --manifest "$manifest" --profile "$PROFILE" || {
         echo "❌ Build failed for $name"
@@ -73,7 +73,7 @@ for ((i=1; i<=$#; i++)); do
             fi
         ;;
         *)
-            ;;
+        ;;
     esac
 done
 
@@ -92,11 +92,8 @@ fi
 # ----------------------
 # Parse workspace members from root Cargo.toml
 # ----------------------
-WORKSPACE_MEMBERS=$(sed -n '/^\[workspace\]/,/^\[/p' "$WORKSPACE_TOML" \
-    | grep 'members' \
-    | sed -E 's/^[^[]*\[([^]]*)\].*/\1/' \
-    | tr -d '",' \
-    | xargs)
+# This handles both single-line and multi-line members = [...] arrays
+WORKSPACE_MEMBERS=$(awk '/members = \[/,/\]/' "$WORKSPACE_TOML" | sed 's/members = \[//' | tr -d '[]",' | xargs)
 
 echo "📦 Workspace members: $WORKSPACE_MEMBERS"
 
@@ -121,15 +118,15 @@ if [ -n "${CHANGED_PLUGIN_DIRS}" ]; then
             echo "⚠️  Skipping $dir - no Cargo.toml found"
             continue
         fi
-
+        
         if ! is_in_workspace "$dir"; then
             echo "⚠️  Skipping $dir - not in [workspace].members"
             continue
         fi
-
+        
         build_plugin "$dir/Cargo.toml"
     done
-
+    
     echo "✅ Selected plugins built for profile: $PROFILE"
     exit 0
 fi
@@ -144,42 +141,42 @@ if [ -n "$FROM_FILE" ]; then
         fi
         TARGET_DIR="$(dirname "$TARGET_DIR")"
     done
-
+    
     if [ -z "$FOUND" ]; then
         echo "❌ No Cargo.toml found in parent directories of $FROM_FILE"
         exit 1
     fi
-
+    
     RELATIVE_PATH=$(relpath "$FOUND" "$(pwd)")
-
+    
     if ! is_in_workspace "$RELATIVE_PATH"; then
         echo "⚠️  Warning: $RELATIVE_PATH is not listed in [workspace].members, skipping"
         exit 0
     fi
-
+    
     echo "============================"
     echo ">>> Building plugin from file: $(basename "$FOUND")"
     echo "============================"
     build_plugin "$FOUND/Cargo.toml"
     echo "✅ Built plugin: $(basename "$FOUND")"
-
+    
 else
     PLUGINS=$(find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml | sort)
     for manifest in $PLUGINS; do
         DIR=$(dirname "$manifest")
         RELATIVE_PATH=$(relpath "$DIR" "$(pwd)")
-
+        
         if ! is_in_workspace "$RELATIVE_PATH"; then
             echo "⚠️  Warning: $RELATIVE_PATH is not listed in [workspace].members, skipping"
             continue
         fi
-
+        
         echo "============================"
         echo ">>> Building plugin: $(basename "$DIR")"
         echo "============================"
         build_plugin "$DIR/Cargo.toml"
         echo "----------------------------"
     done
-
+    
     echo "✅ All plugins built for profile: $PROFILE"
 fi

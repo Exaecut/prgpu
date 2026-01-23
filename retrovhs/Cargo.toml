@@ -1,6 +1,6 @@
 [package]
 name = "retrovhs"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
 edition = "2021"
 

@@ -22,7 +22,9 @@ parking_lot = "0.12.3"
 num_cpus = "1.16"
 webbrowser = "1.0.4"
 hex = "0.4.3"
-themis = { git = "https://github.com/Exaecut/themis.git", features = ["license"] }
+themis = { git = "https://github.com/Exaecut/themis.git", features = [
+    "license",
+] }
 home = "0.5.11"
 bytemuck = "1.13.1"
 

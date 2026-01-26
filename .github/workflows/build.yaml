@@ -54,7 +54,7 @@ jobs:
           workspaces: |
             . -> target
           cache-on-failure: true
-          shared-key: build-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          shared-key: build-cache-${{ runner.os }}
           cache-all-crates: true
           cache-targets: true
 

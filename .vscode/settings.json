@@ -6,5 +6,13 @@
     "terminal.integrated.env.windows": {
         "ADOBE_PREMIERE_PATH": "${env:ProgramFiles}/Adobe/Adobe Premiere Pro 2025/Adobe Premiere Pro.exe",
         "ADOBE_AFTEREFFECTS_PATH": "${env:ProgramFiles}/Adobe/Adobe After Effects 2025/Support Files/AfterFX.exe"
-    }
+    },
+    "C_Cpp.default.includePath": [
+        "${env:CUDA_PATH}/include/",
+        "${env:CUDA_PATH}/include/**",
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/shaders/utils/",
+        "${workspaceFolder}/shaders/utils/**",
+    ],
+    "C_Cpp.default.defines": ["__CUDACC__"]
 }

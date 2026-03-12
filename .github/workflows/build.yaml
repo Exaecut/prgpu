@@ -58,15 +58,30 @@ jobs:
           cache-all-crates: true
           cache-targets: true
 
-      - name: cuda-toolkit
+      - name: Install CUDA Toolkit
         id: cuda-toolkit
-        if: ${{ matrix.os == 'windows-latest' }}
-        uses: N-Storm/cuda-toolkit@v0.2.27m
-        with:
-          cuda: "12.5.0"
-          method: "local"
-          use-github-cache: false
-          use-local-cache: false
+        shell: pwsh
+        run: |
+          $version = "12.5.0"
+          $short   = "12.5"
+          $url     = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
+
+          Write-Host "Downloading CUDA $version network installer..."
+          Invoke-WebRequest -Uri $url -OutFile cuda_installer.exe -UseBasicParsing
+
+          Write-Host "Installing selected sub-packages (nvcc, cudart, cudart_dev, cublas, cublas_dev)..."
+          $packages = "nvcc_$short cudart_$short cudart_dev_$short cublas_$short cublas_dev_$short"
+          Start-Process -FilePath .\cuda_installer.exe `
+            -ArgumentList "-s $packages" `
+            -Wait -NoNewWindow
+
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
+          Write-Host "CUDA installed at: $cudaPath"
+
+          # Replicate the outputs that Jimver/cuda-toolkit provides so downstream
+          # steps using steps.cuda-toolkit.outputs.CUDA_PATH require no changes.
+          "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_OUTPUT
+          "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_ENV
 
       - name: Cargo fetch
         shell: bash

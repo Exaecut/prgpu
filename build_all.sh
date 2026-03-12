@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
 CHANGED_PLUGIN_DIRS="${CHANGED_PLUGIN_DIRS:-}"

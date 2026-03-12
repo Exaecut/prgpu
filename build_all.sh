@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# If set, build only these space separated plugin dirs (eg: "chromaticaberration retrovhs")
 CHANGED_PLUGIN_DIRS="${CHANGED_PLUGIN_DIRS:-}"
+
+TARGET=""
 
 relpath() {
     local target=$1
     local base=$2
     
-    target=$(cd "$target" && pwd)   # absolute target
-    base=$(cd "$base" && pwd)       # absolute base
+    target=$(cd "$target" && pwd)
+    base=$(cd "$base" && pwd)
     
     local common=$base
     local result=""
@@ -33,20 +34,33 @@ build_plugin() {
     local name
     name="$(basename "$dir")"
     
-    # Ensure we never fail just because the sub-crate has no Cargo.lock
     if [ ! -f Cargo.lock ]; then
         echo "⚠️  Root Cargo.lock missing, generating..."
         cargo generate-lockfile --manifest-path "$WORKSPACE_TOML"
     fi
     
     echo ">>> Building plugin: $name"
-    bash "$PLUGIN_BUILD" --manifest "$manifest" --profile "$PROFILE" || {
-        echo "❌ Build failed for $name"
-        exit 1
-    }
+    
+    if [ -n "$TARGET" ]; then
+        echo "🎯 Target: $TARGET"
+        bash "$PLUGIN_BUILD" \
+        --manifest "$manifest" \
+        --profile "$PROFILE" \
+        --target "$TARGET" || {
+            echo "❌ Build failed for $name"
+            exit 1
+        }
+    else
+        bash "$PLUGIN_BUILD" \
+        --manifest "$manifest" \
+        --profile "$PROFILE" || {
+            echo "❌ Build failed for $name"
+            exit 1
+        }
+    fi
+    
     echo "----------------------------"
 }
-
 
 PROFILE="debug"
 export CARGO_TARGET_DIR="$(pwd)/target"
@@ -61,6 +75,16 @@ for ((i=1; i<=$#; i++)); do
         ;;
         release|debug)
             PROFILE="$arg"
+        ;;
+        --target)
+            next_index=$((i+1))
+            if [ $next_index -le $# ]; then
+                TARGET="${!next_index}"
+                i=$next_index
+            else
+                echo "Error: --target requires a target triple" >&2
+                exit 1
+            fi
         ;;
         from)
             next_index=$((i+1))
@@ -90,12 +114,15 @@ if [ ! -f "$PLUGIN_BUILD" ]; then
 fi
 
 # ----------------------
-# Parse workspace members from root Cargo.toml
+# Parse workspace members
 # ----------------------
-# This handles both single-line and multi-line members = [...] arrays
 WORKSPACE_MEMBERS=$(awk '/members = \[/,/\]/' "$WORKSPACE_TOML" | sed 's/members = \[//' | tr -d '[]",' | xargs)
 
 echo "📦 Workspace members: $WORKSPACE_MEMBERS"
+
+if [ -n "$TARGET" ]; then
+    echo "🧱 Cross compilation target: $TARGET"
+fi
 
 is_in_workspace() {
     local candidate="$1"
@@ -108,7 +135,7 @@ is_in_workspace() {
 }
 
 # ----------------------
-# Fast path: only changed plugins
+# Fast path: changed plugins
 # ----------------------
 if [ -n "${CHANGED_PLUGIN_DIRS}" ]; then
     echo "🎯 Building only changed plugins: ${CHANGED_PLUGIN_DIRS}"
@@ -134,6 +161,7 @@ fi
 if [ -n "$FROM_FILE" ]; then
     TARGET_DIR="$(dirname "$(realpath "$FROM_FILE")")"
     FOUND=""
+    
     while [ "$TARGET_DIR" != "/" ]; do
         if [ -f "$TARGET_DIR/Cargo.toml" ]; then
             FOUND="$TARGET_DIR"
@@ -157,11 +185,14 @@ if [ -n "$FROM_FILE" ]; then
     echo "============================"
     echo ">>> Building plugin from file: $(basename "$FOUND")"
     echo "============================"
+    
     build_plugin "$FOUND/Cargo.toml"
+    
     echo "✅ Built plugin: $(basename "$FOUND")"
     
 else
     PLUGINS=$(find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml | sort)
+    
     for manifest in $PLUGINS; do
         DIR=$(dirname "$manifest")
         RELATIVE_PATH=$(relpath "$DIR" "$(pwd)")
@@ -174,7 +205,9 @@ else
         echo "============================"
         echo ">>> Building plugin: $(basename "$DIR")"
         echo "============================"
+        
         build_plugin "$DIR/Cargo.toml"
+        
         echo "----------------------------"
     done
     

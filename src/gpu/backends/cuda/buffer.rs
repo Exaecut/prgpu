@@ -61,6 +61,10 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
     (width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
+/// Create a raw CUDA buffer of the given length in bytes.
+/// # Safety
+/// - `device` must be a valid pointer to an CUDevice*.
+/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
 pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut CUdeviceptr {
     let ctx = device as CUcontext;
     unsafe { cuCtxSetCurrent(ctx) };
@@ -69,13 +73,11 @@ pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut 
     let result = unsafe { cuMemAlloc_v2(buf, length_bytes as usize) };
 
     match result {
-        CUresult::CUDA_SUCCESS => {
-            return buf;
-        }
+        CUresult::CUDA_SUCCESS => buf,
         err => {
             panic!("cuMemAlloc_v2 failed: {:?}", err);
         }
-    };
+    }
 }
 
 /// Create an "image-like" buffer sized width*height with the given bytes_per_pixel.
@@ -162,7 +164,7 @@ pub unsafe fn get_or_create(
                     *existing
                 } else {
                     let obj = BufferObj {
-                        raw: allocated as *mut c_void,
+                        raw: allocated,
                     };
                     guard.insert(key, obj);
                     obj
@@ -186,6 +188,9 @@ pub unsafe fn get_or_create(
     }
 }
 
+/// Cleanup all cached buffers. Call this when you are done with all GPU operations.
+/// # Safety
+/// This will free all cached buffers. Ensure no other code is using these buffers when calling this
 pub unsafe fn cleanup() {
     if let Some(map) = CACHE.get() {
         let mut guard = map.lock();

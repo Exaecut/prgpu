@@ -1,7 +1,7 @@
-#[cfg(feature = "metal")]
+#[cfg(gpu_backend = "metal")]
 pub mod metal;
 
-#[cfg(feature = "cuda")]
+#[cfg(gpu_backend = "cuda")]
 pub mod cuda;
 
 use crate::types::Configuration;
@@ -13,13 +13,20 @@ pub fn dispatch_kernel<UP>(
     entry: &'static str,
 ) -> Result<(), &'static str>
 {
-    #[cfg(feature = "metal")]
+    #[cfg(gpu_backend = "metal")]
     {
         return metal::run::<UP>(config, user_params, shader_src, entry);
     }
-    #[cfg(all(not(feature = "metal"), feature = "cuda"))]
+
+    #[cfg(gpu_backend = "cuda")]
     {
         return cuda::run::<UP>(config, user_params, shader_src, entry);
+    }
+
+    #[cfg(gpu_backend = "opencl")]
+    {
+        unimplemented!("OpenCL backend not yet implemented");
+        // return opencl::run::<UP>(config, user_params, shader_src, entry);
     }
 
     #[allow(unreachable_code)]

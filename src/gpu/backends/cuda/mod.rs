@@ -4,8 +4,8 @@ use std::{borrow::Cow, collections::HashMap, ffi::c_void, sync::OnceLock};
 
 use cudarc::driver::sys as cuda;
 
-pub mod pipeline;
 pub mod buffer;
+pub mod pipeline;
 
 use crate::{Configuration, TransitionParams};
 
@@ -227,9 +227,7 @@ pub fn run<UP>(
     }
 
     #[cfg(debug_assertions)]
-    log::info!(
-        "[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
-    );
+    log::info!("[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)");
 
     Ok(())
 }

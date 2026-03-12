@@ -348,7 +348,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chromaticaberration"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "after-effects",
  "bincode 1.3.3",
@@ -1277,7 +1277,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hueshift"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "after-effects",
  "bincode 1.3.3",
@@ -2151,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "pixelsort"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "after-effects",
  "bincode 1.3.3",

@@ -59,6 +59,7 @@ jobs:
           cache-targets: true
 
       - name: Install CUDA Toolkit
+        if: ${{ matrix.os == 'windows-latest' }}
         id: cuda-toolkit
         shell: pwsh
         run: |

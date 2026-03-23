@@ -140,16 +140,15 @@ fn compile_ptx(src: &str, fname: &str, dev_handle: *mut c_void) -> Result<Ptx, &
     if dev_handle.is_null() {
         return Err("null device handle");
     }
+
     let dev = dev_handle as cu::CUdevice;
 
     let (major, minor) = unsafe { super::compute_capability(dev)? };
     let arch = format!("compute_{}{}", major, minor);
 
     let mut opts = CompileOptions::default();
-    // Ajoute le flag d’arch
     opts.options.push(format!("--gpu-architecture={arch}"));
-    // Pour debug : donner un nom symbolique
-    opts.name = Some(format!("{fname}.cu"));
+    opts.name = Some(format!("{fname}.shader"));
 
     match compile_ptx_with_opts(src, opts) {
         Ok(ptx) => Ok(ptx),

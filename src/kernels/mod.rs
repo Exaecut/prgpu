@@ -2,7 +2,7 @@
 /// ## Declare a GPU kernel (CUDA & Metal) and a rust wrapper
 /// Usage:
 /// ```
-/// declare_kernel!("crossfade", UserParams);
+/// declare_kernel!(crossfade, UserParams);
 /// ```
 /// ## Will generate:
 /// - const CROSSFADE_SHADER

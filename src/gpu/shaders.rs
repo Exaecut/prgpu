@@ -10,18 +10,18 @@ macro_rules! include_shader {
             env!("OUT_DIR"),
             "/",
             stringify!($name),
-            "_flat.metal"
+            "_flat.shader"
         ))
     }};
 
-    ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.metal")) }};
+    ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader")) }};
 
     ($name:literal, metal) => {
-        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.metal"))
+        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader"))
     };
 
     ($name:literal, cuda) => {
-        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.cu"))
+        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader"))
     };
 }
 

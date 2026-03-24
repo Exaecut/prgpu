@@ -221,7 +221,7 @@ pub fn run<UP>(
 
     let mut ms: f32 = 0.0;
     unsafe {
-        cuda::cuEventElapsedTime(&mut ms as *mut f32, start_event, end_event);
+        cuda::cuEventElapsedTime_v2(&mut ms as *mut f32, start_event, end_event);
         cuda::cuEventDestroy_v2(start_event);
         cuda::cuEventDestroy_v2(end_event);
     }

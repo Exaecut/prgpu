@@ -1,6 +1,5 @@
 use super::*;
 use cudarc::driver::sys as cu;
-use cudarc::nvrtc::{CompileOptions, Ptx, compile_ptx_with_opts};
 
 pub struct KernelPair {
     pub module_f32: cu::CUmodule,
@@ -34,7 +33,6 @@ pub unsafe fn get_pso_pair(
     ctx: cu::CUcontext,
     shader_src: &'static str,
     fname: &'static str,
-    device_handle: *mut c_void,
 ) -> Result<(cu::CUfunction, cu::CUfunction), &'static str> {
     if ctx.is_null() {
         log::error!("[CUDA] null context");
@@ -93,11 +91,8 @@ pub unsafe fn get_pso_pair(
     let src_f32 = raw_src.as_ref().to_string();
     let src_f16 = format!("#define USE_HALF_PRECISION 1\n{}", raw_src.as_ref());
 
-    let ptx_f32 = compile_ptx(&src_f32, fname, device_handle)?;
-    let ptx_f16 = compile_ptx(&src_f16, fname, device_handle)?;
-
-    let (module_f32, func_f32) = unsafe { load_module_and_func(ptx_f32.to_src(), fname) }?;
-    let (module_f16, func_f16) = unsafe { load_module_and_func(ptx_f16.to_src(), fname) }?;
+    let (module_f32, func_f32) = unsafe { load_module_and_func(src_f32, fname) }?;
+    let (module_f16, func_f16) = unsafe { load_module_and_func(src_f16, fname) }?;
 
     cache().lock().insert(
         key,
@@ -134,41 +129,6 @@ pub unsafe fn cleanup() {
 pub fn hot_reload() {
     unsafe { cleanup() };
     log::info!("[CUDA] Hot reload requested - cache cleared; next frame will recompile.");
-}
-
-fn compile_ptx(src: &str, fname: &str, dev_handle: *mut c_void) -> Result<Ptx, &'static str> {
-    if dev_handle.is_null() {
-        return Err("null device handle");
-    }
-
-    let dev = dev_handle as cu::CUdevice;
-
-    let (major, minor) = unsafe { super::compute_capability(dev)? };
-    let arch = format!("compute_{}{}", major, minor);
-
-    let mut opts = CompileOptions::default();
-    opts.options.push(format!("--gpu-architecture={arch}"));
-    opts.name = Some(format!("{fname}.shader"));
-
-    match compile_ptx_with_opts(src, opts) {
-        Ok(ptx) => Ok(ptx),
-        Err(e) => {
-            log::warn!(
-                "[CUDA] NVRTC compile with arch={} failed: {e:?}. Retrying without arch flag...",
-                arch
-            );
-
-            let fallback_opts: CompileOptions = CompileOptions {
-                name: Some(format!("{fname}.cu")),
-                ..CompileOptions::default()
-            };
-
-            compile_ptx_with_opts(src, fallback_opts).map_err(|e2| {
-                log::error!("[CUDA] NVRTC compile fallback also failed: {e2:?}");
-                "NVRTC compile error"
-            })
-        }
-    }
 }
 
 /// # Safety

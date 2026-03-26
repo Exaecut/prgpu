@@ -15,14 +15,6 @@ macro_rules! include_shader {
     }};
 
     ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader")) }};
-
-    ($name:literal, metal) => {
-        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader"))
-    };
-
-    ($name:literal, cuda) => {
-        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader"))
-    };
 }
 
 pub fn expand_includes_runtime(

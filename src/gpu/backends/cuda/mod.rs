@@ -159,7 +159,6 @@ pub fn run<UP>(
             config.context_handle.unwrap() as _,
             shader_src,
             entry,
-            config.device_handle,
         )
     }?;
     let func = if config.is16f { func_f16 } else { func_f32 };

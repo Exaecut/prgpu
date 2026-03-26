@@ -8,6 +8,7 @@ default = ["cargo-clippy"] # build with no Metal backend by default
 opencl = ["opencl3"]       # enable OpenCL backend
 cargo-clippy = []
 shader_hotreload = []      # enable shader hot-reloading (for development only)
+build = []
 
 [dependencies]
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
@@ -22,14 +23,14 @@ paste = "1.0.15"
 objc = { version = "0.2.7" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading"] }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 opencl3 = { version = "0.12.1", optional = true }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-version-from-build-system"] }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-version-from-build-system"] }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

@@ -3268,7 +3268,7 @@ name = "vignette"
 version = "1.0.0"
 dependencies = [
  "after-effects",
- "bincode 1.3.3",
+ "bincode 2.0.1",
  "bytemuck",
  "crevice",
  "env_logger",
@@ -3284,7 +3284,6 @@ dependencies = [
  "serde",
  "themis",
  "webbrowser",
- "wgpu 25.0.2",
 ]
 
 [[package]]

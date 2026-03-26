@@ -1,12 +1,18 @@
+use std::error::Error;
+
 use pipl::*;
+
+use prgpu::build::compile_shaders;
 
 const PF_PLUG_IN_VERSION: u16 = 13;
 const PF_PLUG_IN_SUBVERS: u16 = 28;
 
 #[rustfmt::skip]
-fn main() {
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let shader_hotreload = std::env::var("EX_SHADER_HOTRELOAD").unwrap_or("false".to_string());
     println!("cargo:warning=Shader hot reload flag: {}", shader_hotreload);
+
+    compile_shaders("./shaders")?;
 
     if shader_hotreload == "true" {
         println!("cargo:rustc-check-cfg=cfg(shader_hotreload)");
@@ -58,5 +64,7 @@ fn main() {
         Property::AE_Effect_Match_Name("EXAE Vignette"),
         Property::AE_Reserved_Info(0),
         Property::AE_Effect_Support_URL("https://exaecut.io/vignette/issues"),
-    ])
+    ]);
+    
+    Ok(())
 }

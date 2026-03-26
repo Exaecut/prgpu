@@ -1,6 +1,7 @@
 #![allow(clippy::drop_non_drop)]
 mod params;
-mod wgpu_procs;
+mod premiere;
+mod kernel;
 
 use crevice::std140::AsStd140;
 use params::*;
@@ -9,20 +10,11 @@ use themis::{
 	license::InitializationOptions,
 	types::{AuthorityServerMode, LicenseState},
 };
-use wgpu_procs::*;
 
 use after_effects::{self as ae, Error, Parameters};
 
 pub mod utils {
 	use crate::ae::log;
-	use crate::wgpu_procs::ProcShaderSource;
-
-	pub fn prepare_shader(name: &str) -> ProcShaderSource {
-		let shader_path = format!("{}/shaders/{}.wgsl", std::env::current_dir().unwrap().display(), name);
-		log::info!("Loading shader on the fly: {}", shader_path);
-		let shader = std::fs::read_to_string(shader_path).unwrap();
-		ProcShaderSource::Wgsl(shader)
-	}
 
 	pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 		a + (b - a) * t
@@ -35,18 +27,12 @@ pub mod utils {
 }
 
 struct Plugin {
-	wgpu: wgpu_procs::WgpuProcessing<Std140KernelParams>,
 	plugin_id: ae::aegp::PluginId,
 }
 
 impl Default for Plugin {
 	fn default() -> Self {
 		Self {
-			wgpu: if cfg!(shader_hotreload) && cfg!(debug_assertions) {
-				WgpuProcessing::new(utils::prepare_shader("main"))
-			} else {
-				WgpuProcessing::new(ProcShaderSource::Wgsl(include_str!("../shaders/main.wgsl").to_string()))
-			},
 			plugin_id: ae::aegp::PluginId::default(),
 		}
 	}
@@ -59,11 +45,7 @@ struct FrameData {
 
 impl Plugin {
 	fn reload_shaders(&mut self) {
-		self.wgpu = if cfg!(shader_hotreload) && cfg!(debug_assertions) {
-			WgpuProcessing::new(utils::prepare_shader("main"))
-		} else {
-			WgpuProcessing::new(ProcShaderSource::Wgsl(include_str!("../shaders/main.wgsl").to_string()))
-		};
+		prgpu::gpu::pipeline::hot_reload();
 	}
 }
 
@@ -168,20 +150,12 @@ impl AdobePluginGlobal for Plugin {
 				out_data.set_width((in_layer.width() as f32).round() as _);
 				out_data.set_height((in_layer.height() as f32).round() as _);
 
-				out_data.set_origin(Point {
-					h: 0 as _,
-					v: 0 as _,
-				});
+				out_data.set_origin(Point { h: 0 as _, v: 0 as _ });
 
 				let time = in_data.current_timestamp();
 
 				out_data.set_frame_data::<FrameData>(FrameData {
-					main_params: KernelParams::from_params(
-						params,
-						time as f32,
-						in_data,
-						(f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())),
-					)?,
+					main_params: KernelParams::from_params(params, time as f32, in_data, (f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())))?,
 				});
 			}
 			ae::Command::FrameSetdown => {
@@ -190,6 +164,7 @@ impl AdobePluginGlobal for Plugin {
 			ae::Command::Render { in_layer, mut out_layer } => {
 				let in_size = (in_layer.width(), in_layer.height(), in_layer.buffer_stride());
 				let out_size = (out_layer.width(), out_layer.height(), out_layer.buffer_stride());
+
 				if !themis::license::is_valid(false) {
 					return Ok(());
 				}
@@ -197,90 +172,8 @@ impl AdobePluginGlobal for Plugin {
 				let _out_pixel_format = out_layer.pr_pixel_format();
 
 				let frame_data = in_data.frame_data::<FrameData>().unwrap();
-				self.wgpu.run_compute(
-					&frame_data.main_params.as_std140(),
-					in_size,
-					out_size,
-					in_layer.buffer(),
-					out_layer.buffer_mut(),
-				);
-			}
-			ae::Command::SmartPreRender { mut extra } => {
-				let req = extra.output_request();
-
-				if !themis::license::is_valid(false) {
-					if let Ok(in_result) = extra
-						.callbacks()
-						.checkout_layer(0, 0, &req, in_data.current_time(), in_data.time_step(), in_data.time_scale())
-					{
-						let _ = extra.union_max_result_rect(ae::Rect::from(in_result.max_result_rect));
-					}
-
-					return Ok(());
-				}
-
-				if let Ok(in_result) = extra
-					.callbacks()
-					.checkout_layer(0, 0, &req, in_data.current_time(), in_data.time_step(), in_data.time_scale())
-				{
-					let mut res_rect = ae::Rect::from(in_result.result_rect);
-
-					res_rect.set_origin(ae::Point {
-						h: res_rect.origin().h as _,
-						v: res_rect.origin().v as _,
-					});
-
-					res_rect.set_width((res_rect.width() as f32).round() as _);
-					res_rect.set_height((res_rect.height() as f32).round() as _);
-
-					let _ = extra.union_result_rect(res_rect);
-					let _ = extra.union_max_result_rect(res_rect);
-
-					let time = in_data.current_timestamp();
-
-					extra.set_pre_render_data::<FrameData>(FrameData {
-						main_params: KernelParams::from_params(
-							params,
-							time as f32,
-							in_data,
-							(f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())),
-						)?,
-					});
-
-					extra.set_returns_extra_pixels(true);
-				}
-			}
-			ae::Command::SmartRender { extra } => {
-				if !themis::license::is_valid(false) {
-					return Ok(());
-				}
-
-				let cb = extra.callbacks();
-				let Some(in_layer) = cb.checkout_layer_pixels(0)? else {
-					return Ok(());
-				};
-
-				let Some(mut out_layer) = cb.checkout_output()? else {
-					return Ok(());
-				};
-
-				let in_size = (in_layer.width(), in_layer.height(), in_layer.buffer_stride());
-				let out_size = (out_layer.width(), out_layer.height(), out_layer.buffer_stride());
-
-				log::info!("Smart render: {:?}x{:?} -> {:?}x{:?}", in_size.0, in_size.1, out_size.0, out_size.1);
-
-				let _time = std::time::Instant::now();
-
-				let frame_data = extra.pre_render_data::<FrameData>().unwrap();
-				self.wgpu.run_compute(
-					&frame_data.main_params.as_std140(),
-					in_size,
-					out_size,
-					in_layer.buffer(),
-					out_layer.buffer_mut(),
-				);
-
-				cb.checkin_layer_pixels(0)?;
+				// RUN THE SHADER ON CPU. LOAD CPU SHADER MODULE AT RUNTIME RESOLVE THE FUNCTION AND RUN IT.
+				// 	.run_compute(&frame_data.main_params.as_std140(), in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
 			}
 			_ => {}
 		}

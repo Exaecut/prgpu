@@ -14,5 +14,8 @@
         "${workspaceFolder}/shaders/utils/",
         "${workspaceFolder}/shaders/utils/**",
     ],
-    "C_Cpp.default.defines": ["__CUDACC__"]
+    "C_Cpp.default.defines": ["__CUDACC__"],
+    "files.associations": {
+        "*.shader": "cuda-cpp"
+    }
 }

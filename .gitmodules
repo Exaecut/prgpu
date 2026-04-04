@@ -1,8 +1,0 @@
-[submodule "shaders/utils"]
-	path = shaders/utils
-	url = https://github.com/Exaecut/shader-utils
-	branch = staging
-[submodule "prgpu"]
-	path = prgpu
-	url = https://github.com/exaecut/prgpu
-	branch = staging

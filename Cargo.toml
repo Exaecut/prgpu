@@ -8,7 +8,7 @@ default = ["cargo-clippy"] # build with no Metal backend by default
 opencl = ["opencl3"]       # enable OpenCL backend
 cargo-clippy = []
 shader_hotreload = []      # enable shader hot-reloading (for development only)
-build = []
+build = ["cc", "regex-lite"]
 
 [dependencies]
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
@@ -18,6 +18,8 @@ premiere = { git = "https://github.com/Exaecut/after-effects.git", branch = "mas
 bytemuck = { version = "1.23.1", features = ["derive"] }
 parking_lot = "0.12.3"
 paste = "1.0.15"
+cc = { version = "1", optional = true }
+regex-lite = { version = "0.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = { version = "0.2.7" }

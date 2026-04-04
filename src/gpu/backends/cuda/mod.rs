@@ -1,6 +1,6 @@
 use after_effects::log;
 use parking_lot::Mutex;
-use std::{borrow::Cow, collections::HashMap, ffi::c_void, sync::OnceLock};
+use std::{collections::HashMap, ffi::c_void, ptr::null_mut, sync::OnceLock};
 
 use cudarc::driver::sys as cuda;
 
@@ -146,25 +146,25 @@ pub fn run<UP>(
         log::error!("[CUDA] invalid handles");
         return Err("Invalid CUDA handles");
     }
-    if config.outgoing_data.is_null()
-        || config.incoming_data.is_null()
-        || config.dest_data.is_null()
-    {
-        log::error!("[CUDA] one of buffers is null");
+    if config.dest_data.is_null() {
+        log::error!("[CUDA] dest_data can't be null");
         return Err("null buffers");
     }
 
     let (func_f32, func_f16) = unsafe {
-        gpu::pipeline::get_pso_pair(
-            config.context_handle.unwrap() as _,
-            shader_src,
-            entry,
-        )
-    }?;
+        gpu::pipeline::get_or_load_kernel(config.context_handle.unwrap() as _, shader_src, entry)
+    }
+    .map_err(|e| {
+        log::error!("[CUDA] {e}");
+        "kernel load failed"
+    })?;
     let func = if config.is16f { func_f16 } else { func_f32 };
 
-    let mut d_outgoing = config.outgoing_data as u64;
-    let mut d_incoming = config.incoming_data as u64;
+    let outgoing_data = config.outgoing_data.unwrap_or(null_mut());
+    let incoming_data = config.incoming_data.unwrap_or(null_mut());
+
+    let mut d_outgoing = outgoing_data as u64;
+    let mut d_incoming = incoming_data as u64;
     let mut d_dest = config.dest_data as u64;
 
     let mut p = TransitionParams {

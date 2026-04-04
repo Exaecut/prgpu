@@ -5,6 +5,9 @@ use premiere::{self as pr, PixelFormat, Property};
 
 use crate::PrRect;
 
+pub mod backends;
+pub mod shaders;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GPUFramework {
     Metal,
@@ -24,11 +27,8 @@ impl GPUFramework {
     }
 }
 
-pub mod backends;
-pub mod shaders;
-
-#[derive(Debug, Clone)]
-pub struct GPURenderProperties {
+#[derive(Clone)]
+pub struct GPURenderProperties<'a> {
     pub progress: f32,
     pub gpu_index: u32,
     pub pixel_format: PixelFormat,
@@ -37,15 +37,20 @@ pub struct GPURenderProperties {
     pub output_frame: pr::sys::PPixHand,
     pub frames: (pr::sys::PPixHand, pr::sys::PPixHand),
     pub bytes_per_pixel: i32,
+
+    filter: &'a premiere::GpuFilterData,
 }
 
 #[inline]
 fn frames_as_slice<'a>(
     frames: *const pr::sys::PPixHand,
     frame_count: usize,
-) -> &'a [pr::sys::PPixHand] {
-    assert!(!frames.is_null(), "frames pointer was null");
-    unsafe { slice::from_raw_parts(frames, frame_count) }
+) -> Result<&'a [pr::sys::PPixHand], pr::Error> {
+    if frames.is_null() || frame_count == 0 {
+        return Err(pr::Error::Fail);
+    }
+
+    Ok(unsafe { slice::from_raw_parts(frames, frame_count) })
 }
 
 fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
@@ -56,33 +61,35 @@ fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
     }
 }
 
-impl GPURenderProperties {
-    pub fn new(
-        filter: &premiere::GpuFilterData,
+impl<'a> GPURenderProperties<'a> {
+    /// # Safety
+    /// Dereferences raw pointers (`filter.instance_ptr`, `frames`, `out_frame`) which must be valid, non-null, and properly aligned.
+    /// `frames` must reference an array of at least `frame_count` valid `PPixHand` elements.
+    /// Assumes all Premiere SDK suite calls return handles tied to the same GPU device and lifetime context.
+    /// Caller must guarantee no aliasing or concurrent mutation of underlying frame data during execution.
+    pub unsafe fn new(
+        filter: &'a premiere::GpuFilterData,
         render_params: premiere::RenderParams,
         frames: *const premiere::sys::PPixHand,
         frame_count: usize,
+        out_frame: *mut premiere::sys::PPixHand,
     ) -> Result<Self, premiere::Error> {
         unsafe {
             (*filter.instance_ptr).outIsRealtime = 1;
         }
 
-        if frame_count < 2 || frames.is_null() {
-            log::error!("Invalid frame count or null frames pointer");
-            return Err(pr::Error::Fail);
-        }
+        let is_transition = frame_count >= 2 && pr::suites::Transition::new().is_ok();
 
-        let frames = frames_as_slice(frames, frame_count);
-        let outgoing = frames[0];
-        let incoming = frames[1];
+        let frames = frames_as_slice(frames, frame_count)?;
 
-        if incoming.is_null() || outgoing.is_null() {
-            log::error!("Incoming or outgoing frame is null");
-            return Err(pr::Error::Fail);
-        }
+        let outgoing = frames.first().copied().ok_or(pr::Error::Fail)?;
+        let incoming = if is_transition {
+            frames.get(1).copied().ok_or(pr::Error::Fail)?
+        } else {
+            std::ptr::null_mut()
+        };
 
-        let transition_suite = pr::suites::Transition::new();
-        let key = if transition_suite.is_ok() {
+        let key = if is_transition {
             Property::Transition_Duration
         } else {
             Property::Effect_EffectDuration
@@ -103,8 +110,12 @@ impl GPURenderProperties {
 
         let properties = if !incoming.is_null() {
             incoming
-        } else {
+        } else if !outgoing.is_null() {
             outgoing
+        } else if !out_frame.is_null() {
+            unsafe { *out_frame }
+        } else {
+            return Err(pr::Error::Fail);
         };
 
         let gpu_index = match filter.gpu_device_suite.gpu_ppix_device_index(properties) {
@@ -179,7 +190,12 @@ impl GPURenderProperties {
             output_frame,
             bytes_per_pixel,
             frames: (incoming, outgoing),
+            filter,
         })
+    }
+
+    pub fn get_filter(&self) -> &premiere::GpuFilterData {
+        self.filter
     }
 }
 

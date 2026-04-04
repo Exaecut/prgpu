@@ -7,7 +7,7 @@ fn main() {
     let is_windows = target.contains("windows");
     let is_apple = target.contains("apple-darwin") || target.contains("apple-ios");
 
-    let mut backend = if is_apple {
+    let backend = if is_apple {
         "metal"
     } else if is_windows {
         // Default to cuda on windows unless opencl feature is on

@@ -25,6 +25,7 @@ jobs:
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM: ${{ secrets.APPLE_TEAM }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +38,11 @@ jobs:
           token: ${{ secrets.PAT }}
           submodules: recursive
           fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Authenticate Git for Private Dependencies
         shell: bash
@@ -60,32 +66,25 @@ jobs:
 
       - name: Install CUDA Toolkit
         if: ${{ matrix.os == 'windows-latest' }}
-        id: cuda-toolkit
         shell: pwsh
         run: |
           $version = "12.5.0"
           $short   = "12.5"
           $url     = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
 
-          Write-Host "Downloading CUDA $version network installer..."
           Invoke-WebRequest -Uri $url -OutFile cuda_installer.exe -UseBasicParsing
 
-          Write-Host "Installing selected sub-packages (nvcc, cudart, cudart_dev, cublas, cublas_dev)..."
           $packages = "nvcc_$short cudart_$short cudart_dev_$short cublas_$short cublas_dev_$short"
           Start-Process -FilePath .\cuda_installer.exe `
             -ArgumentList "-s $packages" `
             -Wait -NoNewWindow
 
           $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
-          Write-Host "CUDA installed at: $cudaPath"
 
-          # Replicate the outputs that Jimver/cuda-toolkit provides so downstream
-          # steps using steps.cuda-toolkit.outputs.CUDA_PATH require no changes.
           "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_OUTPUT
           "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_ENV
 
       - name: Cargo fetch
-        shell: bash
         run: cargo fetch
 
       - name: Detect changed plugins
@@ -107,15 +106,14 @@ jobs:
           fi
 
           CHANGED_FILES="$(git diff --name-only "${BASE}" "${HEAD}" || true)"
-          ALL_PLUGINS="$(find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; | awk -F/ 'NF==2' | while read d; do if [[ -f "$d/build.rs" ]]; then printf '%s\n' "${d#./}"; fi; done | sort -u)"
+
+          ALL_PLUGINS="$(python -m scripts.gen_lockfiles >/dev/null 2>&1 || true; find . -mindepth 2 -maxdepth 2 -type f -name Cargo.toml -exec dirname {} \; | awk -F/ 'NF==2' | while read d; do if [[ -f "$d/build.rs" ]]; then printf '%s\n' "${d#./}"; fi; done | sort -u)"
 
           GLOBAL=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              # REQ 1 Fix: Removed Cargo.toml and Cargo.lock from global triggers.
-              # They are now handled by the directory-crawling logic below.
-              build_all.sh|plugin_build.sh|new_effect.sh|.github/workflows/*|prgpu|prgpu/*)
+              scripts/*|.github/workflows/*|prgpu|prgpu/*)
                 GLOBAL=true
                 break
                 ;;
@@ -137,6 +135,7 @@ jobs:
                 dir="$(dirname "$dir")"
               done
             done <<< "${CHANGED_FILES}"
+
             CHANGED_DIRS="$(printf '%b' "${TMP_LIST}" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
           fi
 
@@ -148,17 +147,17 @@ jobs:
 
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "CHANGED_PLUGIN_DIRS=${CHANGED_DIRS}" >> "$GITHUB_ENV"
-          # REQ 1: Create bridge file for the deployment scripts
           echo "${CHANGED_DIRS}" | tr ' ' ',' > changed_plugins.txt
 
-      - name: Run build_all.sh for changed plugins
+      - name: Run Python build_all
         if: ${{ steps.changes.outputs.count != '0' }}
-        shell: bash
         env:
           NO_INSTALL: true
           NO_SIGN: true
           CICD: true
-        run: bash ./build_all.sh release
+          CHANGED_PLUGIN_DIRS: ${{ env.CHANGED_PLUGIN_DIRS }}
+        run: |
+          python -m scripts.build_all release
 
       - name: Upload artifacts
         if: ${{ steps.changes.outputs.count != '0' }}

@@ -27,7 +27,6 @@ themis = { git = "https://github.com/Exaecut/themis.git", features = [
 ] }
 home = "0.5.11"
 bytemuck = "1.23.1"
-crevice = "0.18.0"
 
 [build-dependencies]
 pipl = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }

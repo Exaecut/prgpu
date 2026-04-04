@@ -1,10 +1,10 @@
 #![allow(clippy::drop_non_drop)]
+mod kernel;
 mod params;
 mod premiere;
-mod kernel;
 
-use crevice::std140::AsStd140;
 use params::*;
+use prgpu::params::SetupParams;
 pub use themis::SERVER_PUBLIC_KEY;
 use themis::{
 	license::InitializationOptions,
@@ -13,9 +13,9 @@ use themis::{
 
 use after_effects::{self as ae, Error, Parameters};
 
-pub mod utils {
-	use crate::ae::log;
+use crate::kernel::VignetteParams;
 
+pub mod utils {
 	pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 		a + (b - a) * t
 	}
@@ -26,21 +26,14 @@ pub mod utils {
 	}
 }
 
+#[derive(Default)]
 struct Plugin {
 	plugin_id: ae::aegp::PluginId,
 }
 
-impl Default for Plugin {
-	fn default() -> Self {
-		Self {
-			plugin_id: ae::aegp::PluginId::default(),
-		}
-	}
-}
-
 #[repr(C)]
 struct FrameData {
-	main_params: KernelParams,
+	main_params: VignetteParams,
 }
 
 impl Plugin {
@@ -57,8 +50,7 @@ impl AdobePluginGlobal for Plugin {
 	fn params_setup(&self, params: &mut Parameters<Params>, in_data: InData, out_data: OutData) -> Result<(), Error> {
 		if themis::license::is_valid(false) {
 			let _option_button = in_data.effect().set_options_button_name("Infos");
-
-			params::setup(params, in_data, out_data)
+			Params::setup(params, in_data, out_data)
 		} else {
 			params.add_customized(
 				Params::NoLicense,
@@ -73,7 +65,7 @@ impl AdobePluginGlobal for Plugin {
 				},
 			)?;
 
-			params::setup(params, in_data, out_data)
+			Params::setup(params, in_data, out_data)
 		}
 	}
 
@@ -101,13 +93,13 @@ impl AdobePluginGlobal for Plugin {
 				out_data.set_return_msg(msg.as_str());
 			}
 			ae::Command::UpdateParamsUi => {
-				let mut params_copy = params.clone();
+				let mut _params_copy = params.clone();
 
 				if in_data.is_after_effects() {
 					let effect = in_data.effect();
 					{
 						let plugin_id = self.plugin_id;
-						let aegp_plugin = effect.aegp_effect(plugin_id)?;
+						let _aegp_plugin = effect.aegp_effect(plugin_id)?;
 
 						// ...
 					}
@@ -152,18 +144,22 @@ impl AdobePluginGlobal for Plugin {
 
 				out_data.set_origin(Point { h: 0 as _, v: 0 as _ });
 
-				let time = in_data.current_timestamp();
+				let _time = in_data.current_timestamp();
 
 				out_data.set_frame_data::<FrameData>(FrameData {
-					main_params: KernelParams::from_params(params, time as f32, in_data, (f32::from(in_data.downsample_x()), f32::from(in_data.downsample_x())))?,
+					main_params: VignetteParams { softness: 0.0, strength: 1.0 },
 				});
 			}
 			ae::Command::FrameSetdown => {
 				in_data.destroy_frame_data::<FrameData>();
 			}
-			ae::Command::Render { in_layer, mut out_layer } => {
-				let in_size = (in_layer.width(), in_layer.height(), in_layer.buffer_stride());
-				let out_size = (out_layer.width(), out_layer.height(), out_layer.buffer_stride());
+			ae::Command::Render {
+				in_layer,
+				#[allow(unused_mut)]
+				mut out_layer,
+			} => {
+				let _in_size = (in_layer.width(), in_layer.height(), in_layer.buffer_stride());
+				let _out_size = (out_layer.width(), out_layer.height(), out_layer.buffer_stride());
 
 				if !themis::license::is_valid(false) {
 					return Ok(());
@@ -171,8 +167,9 @@ impl AdobePluginGlobal for Plugin {
 
 				let _out_pixel_format = out_layer.pr_pixel_format();
 
-				let frame_data = in_data.frame_data::<FrameData>().unwrap();
+				let _frame_data = in_data.frame_data::<FrameData>().unwrap();
 				// RUN THE SHADER ON CPU. LOAD CPU SHADER MODULE AT RUNTIME RESOLVE THE FUNCTION AND RUN IT.
+				// vignette_cpu(config, user_params);
 				// 	.run_compute(&frame_data.main_params.as_std140(), in_size, out_size, in_layer.buffer(), out_layer.buffer_mut());
 			}
 			_ => {}

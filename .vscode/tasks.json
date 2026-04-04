@@ -4,9 +4,12 @@
         {
             "label": "Build",
             "type": "shell",
-            "command": "./build_all.sh",
+            "command": "python",
             "args": [
+                "-m",
+                "scripts.build_all",
                 "${input:profile}",
+                "${input:displayEffectsSelector}",
                 "from",
                 "${file}"
             ],
@@ -20,14 +23,17 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "Build only the plugin containing the current file (debug or release depending on input)"
+            "detail": "Build only the plugin containing the current file"
         },
         {
             "label": "Build All",
             "type": "shell",
-            "command": "./build_all.sh",
+            "command": "python",
             "args": [
-                "${input:profile}"
+                "-m",
+                "scripts.build_all",
+                "${input:profile}",
+                "${input:displayEffectsSelector}"
             ],
             "options": {
                 "env": {
@@ -59,6 +65,16 @@
                 "false"
             ],
             "default": "true"
+        },
+        {
+            "id": "displayEffectsSelector",
+            "type": "pickString",
+            "description": "Display effects selector ?",
+            "options": [
+                "false",
+                "true"
+            ],
+            "default": "false"
         }
     ]
 }

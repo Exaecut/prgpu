@@ -5,16 +5,9 @@ use std::{
 
 #[macro_export]
 macro_rules! include_shader {
-    ($name:ident) => {{
-        include_str!(concat!(
-            env!("OUT_DIR"),
-            "/",
-            stringify!($name),
-            "_flat.shader"
-        ))
-    }};
+    ($name:ident) => {{ include_str!(concat!(env!("OUT_DIR"), "/", stringify!($name), ".ptx")) }};
 
-    ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, "_flat.shader")) }};
+    ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, ".ptx")) }};
 }
 
 pub fn expand_includes_runtime(

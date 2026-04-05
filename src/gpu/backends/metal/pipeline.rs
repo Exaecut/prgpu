@@ -79,7 +79,7 @@ pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::pa
 /// # Safety
 /// - `device` must be a valid Metal device pointer.
 /// - `shader_src` and `fname` must point to valid static strings.
-pub unsafe fn get_pso_pair(
+pub unsafe fn load_kernel(
 	device: *mut Object,
 	shader_src: &'static str,
 	fname: &'static str,

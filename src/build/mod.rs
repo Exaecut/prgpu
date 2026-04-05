@@ -259,47 +259,53 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
         let name = path.file_stem().unwrap().to_str().unwrap().to_string();
         let src = std::fs::read_to_string(&path).unwrap();
 
-        // GPU: NVRTC -> PTX
-        let opts = CompileOptions {
-            ftz: Some(true),
-            prec_sqrt: Some(false),
-            prec_div: Some(false),
-            fmad: Some(true),
-            use_fast_math: None,
-            include_paths: vec![
-                utils_str.clone(),
-                cuda_include.to_string_lossy().replace("\\\\?\\", ""),
-            ],
-            arch: Some("compute_86"),
-            options: vec![
+        // GPU: compile f32 and f16 PTX variants via NVRTC.
+        for (suffix, half_precision) in [("", false), ("_f16", true)] {
+            let mut extra_opts = vec![
                 "--std=c++14".into(),
                 "--extra-device-vectorization".into(),
                 "--device-as-default-execution-space".into(),
-            ],
-            ..Default::default()
-        };
+            ];
+            if half_precision {
+                extra_opts.push("-DUSE_HALF_PRECISION=1".into());
+            }
 
-        let ptx = cudarc::nvrtc::compile_ptx_with_opts(&src, opts).map_err(|e| {
-            let pretty = parse_nvrtc_error(&e);
-            eprintln!("Compile failed [{name}]:\n{pretty}");
-            println!("cargo:warning=Compile failed [{name}]:\n{pretty}");
-            Box::new(e) as DynError
-        })?;
+            let opts = CompileOptions {
+                ftz: Some(true),
+                prec_sqrt: Some(false),
+                prec_div: Some(false),
+                fmad: Some(true),
+                use_fast_math: None,
+                include_paths: vec![
+                    utils_str.clone(),
+                    cuda_include.to_string_lossy().replace("\\\\?\\", ""),
+                ],
+                arch: Some("compute_86"),
+                options: extra_opts,
+                ..Default::default()
+            };
 
-        let ptx_path = PathBuf::from(&out_dir).join(format!("{}.ptx", name));
-        // NVRTC returns PTX with a null terminator; strip it before writing
-        let ptx_bytes = ptx.as_bytes().unwrap();
-        let ptx_bytes = if ptx_bytes.last() == Some(&0) {
-            &ptx_bytes[..ptx_bytes.len() - 1]
-        } else {
-            ptx_bytes
-        };
-        
-        std::fs::write(&ptx_path, ptx_bytes)?;
-        println!(
-            "cargo:warning=Shader compiled successfully to -> {}",
-            ptx_path.to_str().unwrap()
-        );
+            let tag = format!("{name}{suffix}");
+            let ptx = cudarc::nvrtc::compile_ptx_with_opts(&src, opts).map_err(|e| {
+                let pretty = parse_nvrtc_error(&e);
+                eprintln!("Compile failed [{tag}]:\n{pretty}");
+                println!("cargo:warning=Compile failed [{tag}]:\n{pretty}");
+                Box::new(e) as DynError
+            })?;
+
+            let ptx_path = PathBuf::from(&out_dir).join(format!("{tag}.ptx"));
+            let ptx_bytes = ptx.as_bytes().unwrap();
+            let ptx_bytes = if ptx_bytes.last() == Some(&0) {
+                &ptx_bytes[..ptx_bytes.len() - 1]
+            } else {
+                ptx_bytes
+            };
+            std::fs::write(&ptx_path, ptx_bytes)?;
+            println!(
+                "cargo:warning=Shader compiled successfully to -> {}",
+                ptx_path.to_str().unwrap()
+            );
+        }
 
         // CPU: Generate dispatch wrapper .cpp
         let sig = parse_kernel_signature(&src)

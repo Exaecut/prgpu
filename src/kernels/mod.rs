@@ -20,6 +20,11 @@ macro_rules! declare_kernel {
 
         $crate::paste::paste! {
             #[allow(non_upper_case_globals)]
+            const [<$name:upper _SHADER_SRC_F16>]: &str = $crate::include_shader!($name, halfprecision);
+        }
+
+        $crate::paste::paste! {
+            #[allow(non_upper_case_globals)]
             const [<$name:upper _KERNEL_ENTRY_POINT>]: &str = stringify!($name);
         }
 
@@ -43,6 +48,7 @@ macro_rules! declare_kernel {
                     config,
                     user_params,
                     [<$name:upper _SHADER_SRC>],
+                    [<$name:upper _SHADER_SRC_F16>],
                     [<$name:upper _KERNEL_ENTRY_POINT>],
                 )
             }

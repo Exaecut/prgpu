@@ -63,7 +63,7 @@ unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static
 /// - `ctx`, `stream`, `func` must be valid CUDA handles.
 /// - `params` must point to valid device memory matching the kernel signature.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn dispatch(
+unsafe fn dispatch(
     ctx: *mut c_void,
     stream: *mut c_void,
     func: cuda::CUfunction,
@@ -124,6 +124,7 @@ pub fn run<UP>(
     config: &Configuration,
     user_params: UP,
     shader_src: &'static str,
+    shader_src_f16: &'static str,
     entry: &'static str,
 ) -> Result<(), &'static str> {
     use crate::gpu;
@@ -140,10 +141,11 @@ pub fn run<UP>(
     let ctx = config.context_handle.unwrap();
 
     let (func_f32, func_f16) =
-        unsafe { gpu::pipeline::get_or_load_kernel(ctx as _, shader_src, entry) }.map_err(|e| {
-            log::error!("[CUDA] {e}");
-            "kernel load failed"
-        })?;
+        unsafe { gpu::pipeline::load_kernel(ctx as _, shader_src, shader_src_f16, entry) }
+            .map_err(|e| {
+                log::error!("[CUDA] {e}");
+                "kernel load failed"
+            })?;
     let func = if config.is16f { func_f16 } else { func_f32 };
 
     let outgoing_data = config.outgoing_data.unwrap_or(null_mut());

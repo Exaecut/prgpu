@@ -4,114 +4,33 @@ use std::sync::OnceLock;
 use objc::{msg_send, runtime::Object, sel, sel_impl};
 use parking_lot::Mutex;
 
+use crate::types::{BufferKey, BufferObj, ImageBuffer, compute_row_bytes, compute_length_bytes};
 use crate::DeviceHandleInit;
 
-/// Metal storage mode options for buffer allocation.
-/// Maps to `MTLResourceStorageMode*` constants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum StorageMode {
-    /// CPU and GPU accessible. Best for small constant buffers uploaded per-frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StorageMode {
+    #[allow(dead_code)]
     Shared = 0,
-    /// GPU-only. Metal can apply additional optimizations. Best for intermediate render targets.
     Private = 2,
 }
 
 impl StorageMode {
     fn as_resource_options(self) -> u64 {
-        // MTLResourceStorageModeShared = 0 << 4, MTLResourceStorageModePrivate = 2 << 4
         (self as u64) << 4
     }
 }
 
-/// Key that uniquely identifies a cached GPU buffer allocation.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct BufferKey {
-    /// Device pointer (MTLDevice*) used for allocation - cast to usize for hashing
-    pub device: usize,
-    /// Width in pixels (for convenience when used as an image buffer)
-    pub width: u32,
-    /// Height in pixels
-    pub height: u32,
-    /// Bytes per pixel (e.g. 16 for float4, 8 for half4)
-    pub bytes_per_pixel: u32,
-    /// Optional tag to differentiate multiple buffers of the same size (0 by default)
-    pub tag: u32,
-}
-
-/// Thin wrapper around an MTLBuffer* that we explicitly mark Send + Sync.
-/// You are responsible for lifetime via `cleanup()`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct BufferObj {
-    pub raw: *mut Object,
-}
-
-// We commonly pass MTLBuffer* across threads in render pipelines.
-// Marking these wrappers as Send/Sync is a deliberate design choice here.
-unsafe impl Send for BufferObj {}
-unsafe impl Sync for BufferObj {}
-
-/// Public view returned to callers. Copying is cheap and does not affect ownership.
-/// The underlying buffer is owned by the cache and freed by `cleanup()`.
-#[derive(Clone, Copy)]
-pub struct ImageBuffer {
-    pub buf: BufferObj,
-    pub width: u32,
-    pub height: u32,
-    /// Bytes per pixel
-    pub bytes_per_pixel: u32,
-    /// Row bytes in bytes (for APIs that want bytes)
-    pub row_bytes: u32,
-    /// Pitch in pixels (what your shaders use)
-    pub pitch_px: u32,
-}
-
-// Internal cache: one buffer per (device, size, bpp, tag).
 static CACHE: OnceLock<Mutex<HashMap<BufferKey, BufferObj>>> = OnceLock::new();
 
-#[inline]
-fn compute_row_bytes(width: u32, bytes_per_pixel: u32) -> u32 {
-    width.saturating_mul(bytes_per_pixel)
-}
-
-#[inline]
-fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
-    (width as u64) * (height as u64) * (bytes_per_pixel as u64)
-}
-
-/// Low-level creator: returns a +1 retained MTLBuffer* with the given length.
-/// Uses Private storage (GPU-only) for intermediate render buffers.
-///
 /// # Safety
-/// - `device` must be a valid MTLDevice pointer.
-/// - Caller owns the returned buffer and must release it when done.
-pub unsafe fn create_raw_buffer(device: *mut Object, length_bytes: u64) -> *mut Object {
+/// `device` must be a valid MTLDevice pointer.
+pub(crate) unsafe fn allocate(device: *mut Object, length_bytes: u64) -> *mut Object {
     let opts = StorageMode::Private.as_resource_options();
-    let buf: *mut Object = msg_send![device, newBufferWithLength: length_bytes options: opts];
-    buf
+    msg_send![device, newBufferWithLength: length_bytes options: opts]
 }
 
-/// Creates an image-sized buffer (width * height * bpp) with Private storage.
-///
 /// # Safety
-/// - `device` must be a valid MTLDevice pointer.
-/// - Caller owns the returned buffer.
-pub unsafe fn create_texture_buffer(
-    device: *mut Object,
-    width: u32,
-    height: u32,
-    bytes_per_pixel: u32,
-) -> *mut Object {
-    let length = compute_length_bytes(width, height, bytes_per_pixel);
-    unsafe { create_raw_buffer(device, length) }
-}
-
-/// Get a cached buffer or create-and-cache one if absent.
-/// Returns an `ImageBuffer` view with useful stride info populated.
-///
-/// # Safety
-/// - `device` must be a valid pointer to an MTLDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
+/// `device` must be a valid MTLDevice pointer (FromPtr) or valid suite handle (FromSuite).
 pub unsafe fn get_or_create(
     device: DeviceHandleInit,
     width: u32,
@@ -135,81 +54,77 @@ pub unsafe fn get_or_create(
             let buf = if let Some(existing) = guard.get(&key) {
                 *existing
             } else {
-                let raw = unsafe {
-                    create_texture_buffer(device as *mut Object, width, height, bytes_per_pixel)
+                let length = compute_length_bytes(width, height, bytes_per_pixel);
+                let raw = unsafe { allocate(device as *mut Object, length) };
+                let obj = BufferObj {
+                    raw: raw as *mut std::ffi::c_void,
                 };
-                let obj = BufferObj { raw };
                 guard.insert(key, obj);
                 obj
             };
-
-            let row_bytes = compute_row_bytes(width, bytes_per_pixel);
-            let pitch_px = width;
 
             ImageBuffer {
                 buf,
                 width,
                 height,
                 bytes_per_pixel,
-                row_bytes,
-                pitch_px,
+                row_bytes: compute_row_bytes(width, bytes_per_pixel),
+                pitch_px: width,
             }
         }
         DeviceHandleInit::FromSuite((device_index, suite)) => {
-            if let Ok(allocated) = suite.allocate_device_memory(
-                device_index,
-                compute_length_bytes(width, height, bytes_per_pixel) as usize,
-            ) {
-                let key = BufferKey {
-                    device: suite.device_info(device_index).unwrap().outDeviceHandle as usize,
-                    width,
-                    height,
-                    bytes_per_pixel,
-                    tag,
-                };
+            let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
+            let allocated = suite
+                .allocate_device_memory(device_index, length)
+                .unwrap_or_else(|e| {
+                    after_effects::log::error!("[Metal] GPUDevice suite allocation failed: {e:?}");
+                    std::ptr::null_mut()
+                });
 
-                let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-                let mut guard = map.lock();
+            let device_handle = suite
+                .device_info(device_index)
+                .map(|info| info.outDeviceHandle as usize)
+                .unwrap_or(0);
 
-                let buf = if let Some(existing) = guard.get(&key) {
-                    *existing
-                } else {
-                    let obj = BufferObj {
-                        raw: allocated as *mut Object,
-                    };
-                    guard.insert(key, obj);
-                    obj
-                };
+            let key = BufferKey {
+                device: device_handle,
+                width,
+                height,
+                bytes_per_pixel,
+                tag,
+            };
 
-                let row_bytes = compute_row_bytes(width, bytes_per_pixel);
-                let pitch_px = width;
+            let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut guard = map.lock();
 
-                ImageBuffer {
-                    buf,
-                    width,
-                    height,
-                    bytes_per_pixel,
-                    row_bytes,
-                    pitch_px,
-                }
+            let buf = if let Some(existing) = guard.get(&key) {
+                *existing
             } else {
-                panic!("Failed to allocate device memory via GPUDevice suite");
+                let obj = BufferObj { raw: allocated };
+                guard.insert(key, obj);
+                obj
+            };
+
+            ImageBuffer {
+                buf,
+                width,
+                height,
+                bytes_per_pixel,
+                row_bytes: compute_row_bytes(width, bytes_per_pixel),
+                pitch_px: width,
             }
         }
     }
 }
 
-/// Release all cached buffers. Call this from your plugin's global_destroy.
-///
 /// # Safety
-/// - This function must only be called when you are certain that no GPU work still references these buffers.
-/// - Ensure that no other threads are accessing the cached buffers while this function is being executed.
+/// No GPU work may reference these buffers.
 pub unsafe fn cleanup() {
     if let Some(map) = CACHE.get() {
         let mut guard = map.lock();
         for (_, b) in guard.drain() {
             if !b.raw.is_null() {
-                let _: () = msg_send![b.raw, release];
+                let _: () = msg_send![b.raw as *mut Object, release];
             }
         }
     }

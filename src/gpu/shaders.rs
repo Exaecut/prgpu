@@ -8,6 +8,14 @@ macro_rules! include_shader {
     ($name:ident) => {{ include_str!(concat!(env!("OUT_DIR"), "/", stringify!($name), ".ptx")) }};
 
     ($name:literal) => {{ include_str!(concat!(env!("OUT_DIR"), "/", $name, ".ptx")) }};
+
+    ($name:ident, halfprecision) => {{
+        include_str!(concat!(env!("OUT_DIR"), "/", stringify!($name), "_f16.ptx"))
+    }};
+    
+    ($name:literal halfprecision) => {{
+        include_str!(concat!(env!("OUT_DIR"), "/", $name, "_f16.ptx"))
+    }};
 }
 
 pub fn expand_includes_runtime(

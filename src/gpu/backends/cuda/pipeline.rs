@@ -44,6 +44,7 @@ fn compile_vekl_to_ptx(
     name: &str,
     shader_dir: &std::path::Path,
     include_dirs: &[std::path::PathBuf],
+    half_precision: bool,
 ) -> Result<String, String> {
     use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
     use std::time::Instant;
@@ -52,8 +53,13 @@ fn compile_vekl_to_ptx(
     let src = std::fs::read_to_string(&vekl_path)
         .map_err(|e| format!("Failed to read {}: {e}", vekl_path.display()))?;
 
+    let tag = if half_precision {
+        format!("{name} (f16)")
+    } else {
+        format!("{name} (f32)")
+    };
     log::info!(
-        "[CUDA/HotReload] Compiling: {name} ({} bytes) from {}",
+        "[CUDA/HotReload] Compiling: {tag} ({} bytes) from {}",
         src.len(),
         vekl_path.display()
     );
@@ -72,6 +78,15 @@ fn compile_vekl_to_ptx(
         all_includes.push(c.to_string_lossy().replace("\\\\?\\", ""));
     }
 
+    let mut options = vec![
+        "--std=c++14".into(),
+        "--extra-device-vectorization".into(),
+        "--device-as-default-execution-space".into(),
+    ];
+    if half_precision {
+        options.push("-DUSE_HALF_PRECISION=1".into());
+    }
+
     let opts = CompileOptions {
         ftz: Some(true),
         prec_sqrt: Some(false),
@@ -80,11 +95,7 @@ fn compile_vekl_to_ptx(
         use_fast_math: None,
         include_paths: all_includes,
         arch: Some("compute_86"),
-        options: vec![
-            "--std=c++14".into(),
-            "--extra-device-vectorization".into(),
-            "--device-as-default-execution-space".into(),
-        ],
+        options,
         ..Default::default()
     };
 
@@ -95,8 +106,8 @@ fn compile_vekl_to_ptx(
             other => format!("{other:#?}"),
         };
         let ms = start.elapsed().as_secs_f64() * 1000.0;
-        log::error!("[CUDA/HotReload] NVRTC error for '{name}' ({ms:.1}ms):\n{detail}");
-        format!("Compilation failed for '{name}'")
+        log::error!("[CUDA/HotReload] NVRTC error for '{tag}' ({ms:.1}ms):\n{detail}");
+        format!("Compilation failed for '{tag}'")
     })?;
 
     let elapsed = start.elapsed();
@@ -107,11 +118,11 @@ fn compile_vekl_to_ptx(
         ptx_bytes
     };
     let ptx_str = std::str::from_utf8(ptx_bytes)
-        .map_err(|e| format!("PTX decode error for '{name}': {e}"))?
+        .map_err(|e| format!("PTX decode error for '{tag}': {e}"))?
         .to_string();
 
     log::info!(
-        "[CUDA/HotReload] Compiled '{name}' in {:.1}ms ({} bytes PTX)",
+        "[CUDA/HotReload] Compiled '{tag}' in {:.1}ms ({} bytes PTX)",
         elapsed.as_secs_f64() * 1000.0,
         ptx_str.len()
     );
@@ -155,16 +166,21 @@ unsafe fn load_module_and_func(
     Ok((module, func))
 }
 
-/// Retrieves or loads a pair of CUDA kernels (f32 and f16 variants).
+/// Retrieves or loads the f32/f16 kernel pair for `fname`.
 ///
-/// Under `shader_hotreload`, reads .vekl from disk on cache miss and compiles with NVRTC.
-/// Falls back to the build-time embedded PTX on failure.
+/// - Non-hotreload: uses pre-compiled embedded PTX; `shader_src_f32` and
+///   `shader_src_f16` are the two distinct build-time artifacts produced by
+///   compiling the VEKL source with and without `-DUSE_HALF_PRECISION=1`.
+/// - Hotreload: compiles both variants from the .vekl source on disk via
+///   NVRTC, adding the define for the f16 pass; falls back to the embedded
+///   PTX on any error.
 ///
 /// # Safety
-/// `ctx` must be a valid CUDA context.
-pub unsafe fn get_or_load_kernel(
+/// `ctx` must be a valid, current-able CUDA context.
+pub unsafe fn load_kernel(
     ctx: cu::CUcontext,
-    shader_src: &'static str,
+    shader_src_f32: &'static str,
+    shader_src_f16: &'static str,
     fname: &'static str,
 ) -> Result<(cu::CUfunction, cu::CUfunction), String> {
     if ctx.is_null() {
@@ -179,43 +195,57 @@ pub unsafe fn get_or_load_kernel(
 
     super::check(unsafe { cu::cuCtxSetCurrent(ctx) }, "cuCtxSetCurrent")?;
 
-    let ptx_source: std::borrow::Cow<'static, str> = {
-        #[cfg(shader_hotreload)]
-        {
-            let guard = shader_dirs().lock();
-            if let Some((shader_dir, include_dirs)) = guard.as_ref() {
-                match compile_vekl_to_ptx(fname, shader_dir, include_dirs) {
-                    Ok(ptx) => {
-                        log::info!("[CUDA/HotReload] Using runtime-compiled PTX for '{fname}'");
-                        std::borrow::Cow::Owned(ptx)
-                    }
-                    Err(e) => {
-                        log::error!("[CUDA/HotReload] {e}");
-                        log::warn!(
-                            "[CUDA/HotReload] Falling back to embedded PTX for '{fname}'"
-                        );
-                        std::borrow::Cow::Borrowed(shader_src)
-                    }
+    // Resolve the PTX source for each precision variant independently.
+    let ptx_f32: std::borrow::Cow<'static, str>;
+    let ptx_f16: std::borrow::Cow<'static, str>;
+
+    #[cfg(shader_hotreload)]
+    {
+        let guard = shader_dirs().lock();
+        if let Some((shader_dir, include_dirs)) = guard.as_ref() {
+            ptx_f32 = match compile_vekl_to_ptx(fname, shader_dir, include_dirs, false) {
+                Ok(ptx) => {
+                    log::info!("[CUDA/HotReload] Runtime-compiled f32 PTX for '{fname}'");
+                    std::borrow::Cow::Owned(ptx)
                 }
-            } else {
-                log::warn!("[CUDA/HotReload] No shader dirs registered — using embedded PTX for '{fname}'");
-                std::borrow::Cow::Borrowed(shader_src)
-            }
+                Err(e) => {
+                    log::error!("[CUDA/HotReload] {e}");
+                    log::warn!("[CUDA/HotReload] Falling back to embedded f32 PTX for '{fname}'");
+                    std::borrow::Cow::Borrowed(shader_src_f32)
+                }
+            };
+            ptx_f16 = match compile_vekl_to_ptx(fname, shader_dir, include_dirs, true) {
+                Ok(ptx) => {
+                    log::info!("[CUDA/HotReload] Runtime-compiled f16 PTX for '{fname}'");
+                    std::borrow::Cow::Owned(ptx)
+                }
+                Err(e) => {
+                    log::error!("[CUDA/HotReload] {e}");
+                    log::warn!("[CUDA/HotReload] Falling back to embedded f16 PTX for '{fname}'");
+                    std::borrow::Cow::Borrowed(shader_src_f16)
+                }
+            };
+        } else {
+            log::warn!("[CUDA/HotReload] No shader dirs registered — using embedded PTX for '{fname}'");
+            ptx_f32 = std::borrow::Cow::Borrowed(shader_src_f32);
+            ptx_f16 = std::borrow::Cow::Borrowed(shader_src_f16);
         }
-        #[cfg(not(shader_hotreload))]
-        {
-            std::borrow::Cow::Borrowed(shader_src)
-        }
-    };
+    }
+
+    #[cfg(not(shader_hotreload))]
+    {
+        ptx_f32 = std::borrow::Cow::Borrowed(shader_src_f32);
+        ptx_f16 = std::borrow::Cow::Borrowed(shader_src_f16);
+    }
 
     let (module_f32, func_f32) =
-        unsafe { load_module_and_func(ptx_source.to_string(), fname) }.map_err(|e| {
-            log::error!("[CUDA] {e}");
+        unsafe { load_module_and_func(ptx_f32.into_owned(), fname) }.map_err(|e| {
+            log::error!("[CUDA] f32 module: {e}");
             "module load failed".to_string()
         })?;
     let (module_f16, func_f16) =
-        unsafe { load_module_and_func(ptx_source.into_owned(), fname) }.map_err(|e| {
-            log::error!("[CUDA] {e}");
+        unsafe { load_module_and_func(ptx_f16.into_owned(), fname) }.map_err(|e| {
+            log::error!("[CUDA] f16 module: {e}");
             "module load failed".to_string()
         })?;
 
@@ -229,7 +259,7 @@ pub unsafe fn get_or_load_kernel(
         },
     );
 
-    log::info!("[CUDA] Built kernels '{fname}' (f32 + f16)");
+    log::info!("[CUDA] Loaded kernel pair '{fname}' (f32 + f16)");
     Ok((func_f32, func_f16))
 }
 

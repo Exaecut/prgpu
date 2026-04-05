@@ -134,7 +134,7 @@ pub fn run<UP>(
         let queue = config.command_queue_handle as *mut Object;
 
         let (pso_f32, pso_f16) =
-            unsafe { crate::gpu::pipeline::get_pso_pair(device, shader_src, entry) }?;
+            unsafe { crate::gpu::pipeline::load_kernel(device, shader_src, entry) }?;
         let pipeline: *mut Object = if config.is16f { pso_f16 } else { pso_f32 };
         if pipeline.is_null() {
             log::error!("[Metal] pipeline state is null");

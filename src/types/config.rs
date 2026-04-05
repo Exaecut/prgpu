@@ -46,14 +46,30 @@ impl Configuration {
         let filter = render_properties.get_filter();
         let bytes_per_pixel = render_properties.bytes_per_pixel;
 
-        // Get destination frame data
+        let (incoming, outgoing) = render_properties.frames;
+
+        let (outgoing_data, outgoing_pitch_px) = if !outgoing.is_null() {
+            let data = filter.gpu_device_suite.gpu_ppix_data(outgoing)?;
+            let row_bytes = filter.ppix_suite.row_bytes(outgoing)?;
+            (Some(data), row_bytes / bytes_per_pixel)
+        } else {
+            (None, 0)
+        };
+
+        let (incoming_data, incoming_pitch_px) = if !incoming.is_null() {
+            let data = filter.gpu_device_suite.gpu_ppix_data(incoming)?;
+            let row_bytes = filter.ppix_suite.row_bytes(incoming)?;
+            (Some(data), row_bytes / bytes_per_pixel)
+        } else {
+            (None, 0)
+        };
+
         let (dest_data, dest_row_bytes) = (
             filter
                 .gpu_device_suite
                 .gpu_ppix_data(unsafe { *out_frame })?,
             filter.ppix_suite.row_bytes(unsafe { *out_frame })?,
         );
-
         let dest_pitch_px = dest_row_bytes / bytes_per_pixel;
 
         let width = render_properties.bounds.width();
@@ -63,11 +79,11 @@ impl Configuration {
             device_handle: filter.gpu_info.outDeviceHandle,
             context_handle: Some(filter.gpu_info.outContextHandle),
             command_queue_handle: filter.gpu_info.outCommandQueueHandle,
-            outgoing_data: None,
-            incoming_data: None,
+            outgoing_data,
+            incoming_data,
             dest_data,
-            outgoing_pitch_px: 0,
-            incoming_pitch_px: 0,
+            outgoing_pitch_px,
+            incoming_pitch_px,
             dest_pitch_px,
             width: width as u32,
             height: height as u32,
@@ -136,7 +152,7 @@ impl Configuration {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TransitionParams {
+pub struct FrameParams {
     pub out_pitch: u32,
     pub in_pitch: u32,
     pub dest_pitch: u32,

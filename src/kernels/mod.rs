@@ -7,6 +7,9 @@
 /// - `const VIGNETTE_KERNEL_ENTRY_POINT`
 /// - `pub unsafe fn vignette(config, user_params)` (GPU dispatch)
 /// - `pub unsafe fn vignette_cpu(config, user_params)` (CPU fallback dispatch)
+///
+/// Under `shader_hotreload`, the generated dispatch function auto-registers
+/// the effect's shader directory on first call. No manual setup required.
 #[macro_export]
 macro_rules! declare_kernel {
     ($name:ident, $user_params_ty:ty) => {
@@ -25,6 +28,17 @@ macro_rules! declare_kernel {
                 config: &$crate::types::Configuration,
                 user_params: $user_params_ty,
             ) -> Result<(), &'static str> {
+                #[cfg(shader_hotreload)]
+                {
+                    static SHADER_DIR_INIT: std::sync::Once = std::sync::Once::new();
+                    SHADER_DIR_INIT.call_once(|| {
+                        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                        let shader_dir = manifest.join("shaders");
+                        let vekl_dir = manifest.join("..").join("vekl");
+                        $crate::gpu::pipeline::set_shader_dirs(shader_dir, vec![vekl_dir]);
+                    });
+                }
+
                 $crate::backends::dispatch_kernel::<$user_params_ty>(
                     config,
                     user_params,
@@ -52,7 +66,7 @@ macro_rules! declare_kernel {
                     config.incoming_data.unwrap_or(std::ptr::null_mut()) as *const std::ffi::c_void,
                     config.dest_data as *const std::ffi::c_void,
                 ];
-                let tp = $crate::types::TransitionParams {
+                let tp = $crate::types::FrameParams {
                     out_pitch: config.outgoing_pitch_px as u32,
                     in_pitch: config.incoming_pitch_px as u32,
                     dest_pitch: config.dest_pitch_px as u32,

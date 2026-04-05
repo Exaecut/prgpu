@@ -1,54 +1,43 @@
-use cudarc::driver::sys::{CUcontext, CUdeviceptr, CUresult, cuCtxSetCurrent, cuMemAlloc_v2};
+use cudarc::driver::sys::{
+    CUcontext, CUdeviceptr, CUresult, cuCtxSetCurrent, cuMemAlloc_v2, cuMemFree_v2,
+};
 use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::{collections::HashMap, ffi::c_void};
 
+use after_effects::log;
 use crate::DeviceHandleInit;
 
-/// Key that uniquely identifies a cached GPU buffer allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BufferKey {
-    /// Device pointer (CUDevice*) used for allocation - cast to usize for hashing
     pub device: usize,
-    /// Width in pixels (for convenience when used as an image buffer)
     pub width: u32,
-    /// Height in pixels
     pub height: u32,
-    /// Bytes per pixel (e.g. 16 for float4, 8 for half4)
     pub bytes_per_pixel: u32,
-    /// Optional tag to differentiate multiple buffers of the same size (0 by default)
     pub tag: u32,
 }
 
-/// Thin wrapper around an CUDA Buffer that we explicitly mark Send + Sync.
-/// You are responsible for lifetime via `cleanup()`.
+/// Wraps a CUdeviceptr (device memory address stored as u64).
+/// The value is the device pointer itself, NOT a host pointer to a device pointer.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct BufferObj {
     pub raw: *mut c_void,
 }
 
-// We commonly pass CUDA Buffers across threads in render pipelines.
-// Marking these wrappers as Send/Sync is a deliberate design choice here.
 unsafe impl Send for BufferObj {}
 unsafe impl Sync for BufferObj {}
 
-/// Public view returned to callers. Copying is cheap and does not affect ownership.
-/// The underlying buffer is owned by the cache and freed by `cleanup()`.
 #[derive(Clone, Copy)]
 pub struct ImageBuffer {
     pub buf: BufferObj,
     pub width: u32,
     pub height: u32,
-    /// Bytes per pixel
     pub bytes_per_pixel: u32,
-    /// Row bytes in bytes (for APIs that want bytes)
     pub row_bytes: u32,
-    /// Pitch in pixels (what your shaders use)
     pub pitch_px: u32,
 }
 
-// Internal cache: one buffer per (device, size, bpp, tag).
 static CACHE: OnceLock<Mutex<HashMap<BufferKey, BufferObj>>> = OnceLock::new();
 
 #[inline]
@@ -61,46 +50,49 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
     (width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
-/// Create a raw CUDA buffer of the given length in bytes.
+/// Allocates device memory via cuMemAlloc_v2. Returns a device pointer as `*mut c_void`.
+///
 /// # Safety
-/// - `device` must be a valid pointer to an CUDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
-pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut CUdeviceptr {
+/// - `device` must be a valid CUcontext pointer.
+/// - Caller owns the returned allocation and must free with `cuMemFree_v2`.
+pub unsafe fn create_raw_buffer(device: *mut c_void, length_bytes: u64) -> *mut c_void {
     let ctx = device as CUcontext;
     unsafe { cuCtxSetCurrent(ctx) };
 
-    let buf: *mut CUdeviceptr = std::ptr::null_mut();
-    let result = unsafe { cuMemAlloc_v2(buf, length_bytes as usize) };
+    let mut devptr: CUdeviceptr = 0;
+    let result = unsafe { cuMemAlloc_v2(&mut devptr, length_bytes as usize) };
 
     match result {
-        CUresult::CUDA_SUCCESS => buf,
+        CUresult::CUDA_SUCCESS => devptr as *mut c_void,
         err => {
-            panic!("cuMemAlloc_v2 failed: {:?}", err);
+            log::error!(
+                "[CUDA] cuMemAlloc_v2 failed: {:?} (requested {} bytes)",
+                err,
+                length_bytes
+            );
+            std::ptr::null_mut()
         }
     }
 }
 
-/// Create an "image-like" buffer sized width*height with the given bytes_per_pixel.
+/// Allocates an image-sized device buffer (width * height * bpp).
 ///
 /// # Safety
-/// - `device` must be a valid pointer to an CUDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
+/// - `device` must be a valid CUcontext pointer.
 pub unsafe fn create_texture_buffer(
     device: *mut c_void,
     width: u32,
     height: u32,
     bytes_per_pixel: u32,
-) -> *mut CUdeviceptr {
+) -> *mut c_void {
     let length = compute_length_bytes(width, height, bytes_per_pixel);
     unsafe { create_raw_buffer(device, length) }
 }
 
-/// Get a cached buffer or create-and-cache one if absent.
-/// Returns an `ImageBuffer` view with useful stride info populated.
+/// Gets a cached buffer or creates one. Returns an `ImageBuffer` view.
 ///
 /// # Safety
-/// - `device` must be a valid pointer to an CUDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
+/// - `device` must be a valid CUcontext pointer (FromPtr) or valid suite handle (FromSuite).
 pub unsafe fn get_or_create(
     device: DeviceHandleInit,
     width: u32,
@@ -124,79 +116,85 @@ pub unsafe fn get_or_create(
             let buf = if let Some(existing) = guard.get(&key) {
                 *existing
             } else {
-                let raw = unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
-                let obj = BufferObj {
-                    raw: raw as *mut c_void,
-                };
+                let raw =
+                    unsafe { create_texture_buffer(device, width, height, bytes_per_pixel) };
+                if raw.is_null() {
+                    log::error!("[CUDA] buffer allocation failed for {}x{} bpp={}", width, height, bytes_per_pixel);
+                }
+                let obj = BufferObj { raw };
                 guard.insert(key, obj);
                 obj
             };
-
-            let row_bytes = compute_row_bytes(width, bytes_per_pixel);
-            let pitch_px = width;
 
             ImageBuffer {
                 buf,
                 width,
                 height,
                 bytes_per_pixel,
-                row_bytes,
-                pitch_px,
+                row_bytes: compute_row_bytes(width, bytes_per_pixel),
+                pitch_px: width,
             }
         }
         DeviceHandleInit::FromSuite((device_index, suite)) => {
-            if let Ok(allocated) = suite.allocate_device_memory(
-                device_index,
-                compute_length_bytes(width, height, bytes_per_pixel) as usize,
-            ) {
-                let key = BufferKey {
-                    device: suite.device_info(device_index).unwrap().outDeviceHandle as usize,
-                    width,
-                    height,
-                    bytes_per_pixel,
-                    tag,
-                };
+            let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
+            let allocated = suite
+                .allocate_device_memory(device_index, length)
+                .unwrap_or_else(|e| {
+                    log::error!("[CUDA] GPUDevice suite allocation failed: {e:?}");
+                    std::ptr::null_mut()
+                });
 
-                let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-                let mut guard = map.lock();
+            let device_handle = suite
+                .device_info(device_index)
+                .map(|info| info.outDeviceHandle as usize)
+                .unwrap_or(0);
 
-                let buf = if let Some(existing) = guard.get(&key) {
-                    *existing
-                } else {
-                    let obj = BufferObj {
-                        raw: allocated,
-                    };
-                    guard.insert(key, obj);
-                    obj
-                };
+            let key = BufferKey {
+                device: device_handle,
+                width,
+                height,
+                bytes_per_pixel,
+                tag,
+            };
 
-                let row_bytes = compute_row_bytes(width, bytes_per_pixel);
-                let pitch_px = width;
+            let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut guard = map.lock();
 
-                ImageBuffer {
-                    buf,
-                    width,
-                    height,
-                    bytes_per_pixel,
-                    row_bytes,
-                    pitch_px,
-                }
+            let buf = if let Some(existing) = guard.get(&key) {
+                *existing
             } else {
-                panic!("Failed to allocate device memory via GPUDevice suite");
+                let obj = BufferObj { raw: allocated };
+                guard.insert(key, obj);
+                obj
+            };
+
+            ImageBuffer {
+                buf,
+                width,
+                height,
+                bytes_per_pixel,
+                row_bytes: compute_row_bytes(width, bytes_per_pixel),
+                pitch_px: width,
             }
         }
     }
 }
 
-/// Cleanup all cached buffers. Call this when you are done with all GPU operations.
+/// Frees all cached device buffers.
+///
 /// # Safety
-/// This will free all cached buffers. Ensure no other code is using these buffers when calling this
+/// No GPU work may reference these buffers. No concurrent access to the cache.
 pub unsafe fn cleanup() {
     if let Some(map) = CACHE.get() {
         let mut guard = map.lock();
         for (_key, buf) in guard.drain() {
-            let ptr = buf.raw as *mut CUdeviceptr;
-            let _ = unsafe { cudarc::driver::sys::cuMemFree_v2(*ptr) };
+            if !buf.raw.is_null() {
+                let devptr = buf.raw as CUdeviceptr;
+                let res = unsafe { cuMemFree_v2(devptr) };
+                if res != CUresult::CUDA_SUCCESS {
+                    log::error!("[CUDA] cuMemFree_v2 failed: {:?}", res);
+                }
+            }
         }
     }
 }

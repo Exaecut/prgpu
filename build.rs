@@ -35,6 +35,11 @@ fn main() {
     // 2. Set the actual value for this compilation
     println!("cargo:rustc-cfg=gpu_backend=\"{}\"", backend);
 
+    // Shader hot-reload: propagate feature → custom cfg
+    if env::var_os("CARGO_FEATURE_SHADER_HOTRELOAD").is_some() {
+        println!("cargo:rustc-cfg=shader_hotreload");
+    }
+
     // Rebuild triggers
     println!("cargo:rerun-if-env-changed=GPU_BACKEND");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENCL");

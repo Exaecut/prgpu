@@ -128,11 +128,11 @@ fn parse_kernel_signature(src: &str) -> Option<KernelSignature> {
 /// Generic CPU dispatch ABI:
 ///   void <name>_cpu_dispatch(
 ///       const void* const* buffers,          // [outgoing, incoming, dest, ...]
-///       const void* transition_params,       // TransitionParams* (contains width/height for loop)
+///       const void* transition_params,       // FrameParams* (contains width/height for loop)
 ///       const void* user_params              // effect-specific UserParams*
 ///   );
 ///
-/// Width/height are extracted from TransitionParams.width/.height for dispatch loop bounds.
+/// Width/height are extracted from FrameParams.width/.height for dispatch loop bounds.
 fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -> String {
     let mut out = String::new();
 
@@ -174,7 +174,7 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
                 buf_idx += 1;
                 forward_args.push(p.name.clone());
             }
-            ParamKind::Cbuf if p.type_name == "TransitionParams" => {
+            ParamKind::Cbuf if p.type_name == "FrameParams" => {
                 out.push_str(&format!(
                     "    const {} {} = *(const {} *)__transition_params;\n",
                     p.type_name, p.name, p.type_name
@@ -194,7 +194,7 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
 
     if tp_name.is_empty() {
         panic!(
-            "Kernel '{}' has no param_dev_cbuf(TransitionParams, ...) — required for CPU dispatch",
+            "Kernel '{}' has no param_dev_cbuf(FrameParams, ...) — required for CPU dispatch",
             sig.name
         );
     }

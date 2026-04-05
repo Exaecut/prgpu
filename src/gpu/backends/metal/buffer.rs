@@ -6,6 +6,23 @@ use parking_lot::Mutex;
 
 use crate::DeviceHandleInit;
 
+/// Metal storage mode options for buffer allocation.
+/// Maps to `MTLResourceStorageMode*` constants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StorageMode {
+    /// CPU and GPU accessible. Best for small constant buffers uploaded per-frame.
+    Shared = 0,
+    /// GPU-only. Metal can apply additional optimizations. Best for intermediate render targets.
+    Private = 2,
+}
+
+impl StorageMode {
+    fn as_resource_options(self) -> u64 {
+        // MTLResourceStorageModeShared = 0 << 4, MTLResourceStorageModePrivate = 2 << 4
+        (self as u64) << 4
+    }
+}
+
 /// Key that uniquely identifies a cached GPU buffer allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BufferKey {
@@ -62,22 +79,23 @@ fn compute_length_bytes(width: u32, height: u32, bytes_per_pixel: u32) -> u64 {
     (width as u64) * (height as u64) * (bytes_per_pixel as u64)
 }
 
-/// Low-level creator: returns a new MTLBuffer* with given length.
-/// Storage mode: Shared (options = 0). Adjust if you later need Private.
+/// Low-level creator: returns a +1 retained MTLBuffer* with the given length.
+/// Uses Private storage (GPU-only) for intermediate render buffers.
 ///
 /// # Safety
-/// - `device` must be a valid pointer to an MTLDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
+/// - `device` must be a valid MTLDevice pointer.
+/// - Caller owns the returned buffer and must release it when done.
 pub unsafe fn create_raw_buffer(device: *mut Object, length_bytes: u64) -> *mut Object {
-    let buf: *mut Object = msg_send![device, newBufferWithLength: length_bytes options: 0u64];
+    let opts = StorageMode::Private.as_resource_options();
+    let buf: *mut Object = msg_send![device, newBufferWithLength: length_bytes options: opts];
     buf
 }
 
-/// Create an "image-like" buffer sized width*height with the given bytes_per_pixel.
+/// Creates an image-sized buffer (width * height * bpp) with Private storage.
 ///
 /// # Safety
-/// - `device` must be a valid pointer to an MTLDevice*.
-/// - The caller must ensure that the returned buffer is properly managed and released when no longer needed.
+/// - `device` must be a valid MTLDevice pointer.
+/// - Caller owns the returned buffer.
 pub unsafe fn create_texture_buffer(
     device: *mut Object,
     width: u32,

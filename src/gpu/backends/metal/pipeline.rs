@@ -1,4 +1,3 @@
-// src/gpu/backends/metal/pipeline.rs  (or wherever your `gpu::pipeline` lives)
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -11,13 +10,12 @@ use parking_lot::Mutex;
 use super::{ns_error, nsstring_utf8};
 
 pub struct Pipelines {
-	pub library: *mut Object,  // keep one lib alive for symbols
-	pub pso_full: *mut Object, // float4 pipeline
-	pub pso_half: *mut Object, // half4 pipeline with USE_HALF_PRECISION=1
+	pub library_f32: *mut Object,
+	pub library_f16: *mut Object,
+	pub pso_full: *mut Object,
+	pub pso_half: *mut Object,
 }
 
-// Raw ObjC pointers are not Send/Sync by default - we fence access with a Mutex.
-// Declare these as safe because we only move pointers across threads, not the objects.
 unsafe impl Send for Pipelines {}
 unsafe impl Sync for Pipelines {}
 
@@ -33,6 +31,7 @@ impl PartialEq for Key {
 		self.device == other.device && self.src_hash == other.src_hash && self.name_hash == other.name_hash
 	}
 }
+
 impl Hash for Key {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.device.hash(state);
@@ -50,22 +49,41 @@ fn hash_str(s: &str) -> u64 {
 
 static CACHE: OnceLock<Mutex<HashMap<Key, Pipelines>>> = OnceLock::new();
 
+#[cfg(shader_hotreload)]
+static SHADER_DIRS: OnceLock<Mutex<Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>>> =
+	OnceLock::new();
+
+#[cfg(shader_hotreload)]
+fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>> {
+	SHADER_DIRS.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(shader_hotreload)]
+pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::path::PathBuf>) {
+	log::info!(
+		"[Metal/HotReload] Shader source dir: {}",
+		shader_dir.display()
+	);
+	for d in &include_dirs {
+		log::info!("[Metal/HotReload] Include dir: {}", d.display());
+	}
+	*shader_dirs().lock() = Some((shader_dir, include_dirs));
+}
+
 /// Retrieves a pair of pipeline state objects (PSOs) for the given device and shader source.
 ///
-/// # Arguments
-/// - `device`: A pointer to the Metal device.
-/// - `shader_src`: The source code of the shader.
-/// - `fname`: The name of the function to retrieve.
-///
-/// # Returns
-/// A `Result` containing a tuple of two raw pointers to the PSOs (`pso_full` and `pso_half`) on success,
-/// or an error message on failure.
+/// Under `shader_hotreload`, reads .vekl from disk on cache miss, flattens includes,
+/// and passes the expanded source to Metal's runtime compiler.
+/// Falls back to the build-time embedded source on failure.
 ///
 /// # Safety
-/// - The `device` pointer must be a valid Metal device pointer.
-/// - The `shader_src` and `fname` must point to valid static strings.
-/// - The caller must ensure that the returned pointers are used correctly and released appropriately.
-pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname: &'static str) -> Result<(*mut Object, *mut Object), &'static str> {
+/// - `device` must be a valid Metal device pointer.
+/// - `shader_src` and `fname` must point to valid static strings.
+pub unsafe fn get_pso_pair(
+	device: *mut Object,
+	shader_src: &'static str,
+	fname: &'static str,
+) -> Result<(*mut Object, *mut Object), &'static str> {
 	let key = Key {
 		device: device as usize,
 		src_hash: hash_str(shader_src),
@@ -80,38 +98,54 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 		}
 	}
 
-	// Optional hot-reload: when enabled you may rebuild `shader_src` from file + includes.
 	let raw_src: Cow<'static, str> = {
-		#[cfg(all(debug_assertions, shader_hotreload))]
+		#[cfg(shader_hotreload)]
 		{
 			use crate::gpu::shaders::expand_includes_runtime;
-			let manifest_dir = env!("CARGO_MANIFEST_DIR");
-			let mut path = std::path::PathBuf::from(&manifest_dir);
-			path.push("shaders");
-			path.push(format!("{fname}.metal"));
+			use std::time::Instant;
 
-			match std::fs::read_to_string(&path) {
-				Ok(s) => {
-					let plugin_root = std::path::PathBuf::from(&manifest_dir).join("shaders");
-					let ws_utils = std::path::PathBuf::from(&manifest_dir).join("../vekl");
-					match expand_includes_runtime(&s, &plugin_root, &[ws_utils]) {
-						Ok(expanded) => {
-							log::info!("[Metal] Hot-reloading shader (flattened) from {}", path.display());
-							Cow::Owned(expanded)
-						}
-						Err(e) => {
-							log::warn!("[Metal] Hot reload include expansion failed: {e}. Using embedded source.");
-							Cow::Borrowed(shader_src)
+			let guard = shader_dirs().lock();
+			if let Some((shader_dir, include_dirs)) = guard.as_ref() {
+				let vekl_path = shader_dir.join(format!("{fname}.vekl"));
+				match std::fs::read_to_string(&vekl_path) {
+					Ok(src) => {
+						log::info!(
+							"[Metal/HotReload] Compiling: {fname} ({} bytes) from {}",
+							src.len(),
+							vekl_path.display()
+						);
+						let start = Instant::now();
+						match expand_includes_runtime(&src, shader_dir, include_dirs) {
+							Ok(expanded) => {
+								let elapsed = start.elapsed();
+								log::info!(
+									"[Metal/HotReload] Flattened '{fname}' in {:.1}ms ({} bytes expanded)",
+									elapsed.as_secs_f64() * 1000.0,
+									expanded.len()
+								);
+								Cow::Owned(expanded)
+							}
+							Err(e) => {
+								log::error!("[Metal/HotReload] Include expansion failed for '{fname}': {e}");
+								log::warn!("[Metal/HotReload] Falling back to embedded source for '{fname}'");
+								Cow::Borrowed(shader_src)
+							}
 						}
 					}
+					Err(e) => {
+						log::warn!(
+							"[Metal/HotReload] Failed to read {}: {e} — using embedded source",
+							vekl_path.display()
+						);
+						Cow::Borrowed(shader_src)
+					}
 				}
-				Err(e) => {
-					log::warn!("[Metal] Hot file not found/failed to read ({}). Using embedded source.", e);
-					Cow::Borrowed(shader_src)
-				}
+			} else {
+				log::warn!("[Metal/HotReload] No shader dirs registered — using embedded source for '{fname}'");
+				Cow::Borrowed(shader_src)
 			}
 		}
-		#[cfg(not(all(debug_assertions, shader_hotreload)))]
+		#[cfg(not(shader_hotreload))]
 		{
 			Cow::Borrowed(shader_src)
 		}
@@ -120,11 +154,13 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 	let src = unsafe { nsstring_utf8(&raw_src) };
 	let mut error: *mut Object = std::ptr::null_mut();
 
-	// Compile full precision
+	// Compile f32 library (+1 retained: alloc+init on opts, new* on lib)
 	let opts_f32: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f32: *mut Object = msg_send![opts_f32, init];
 
-	let lib_f32: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f32 error: &mut error];
+	let lib_f32: *mut Object =
+		msg_send![device, newLibraryWithSource: src options: opts_f32 error: &mut error];
+	let _: () = msg_send![opts_f32, release];
 	if lib_f32.is_null() {
 		if let Some(msg) = unsafe { ns_error(error) } {
 			log::error!("[Metal] newLibraryWithSource (f32) failed: {msg}");
@@ -132,55 +168,69 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 		return Err("library f32 compile failed");
 	}
 
-	// Compile half precision with macro
+	// Compile f16 library with USE_HALF_PRECISION=1 preprocessor macro
 	let opts_f16: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f16: *mut Object = msg_send![opts_f16, init];
 
+	// dictionary is autoreleased; numberWithInt is autoreleased
 	let macros: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
 	let key_macro: *mut Object = unsafe { nsstring_utf8("USE_HALF_PRECISION") };
 	let val_macro: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
 	let _: () = msg_send![macros, setObject: val_macro forKey: key_macro];
 	let _: () = msg_send![opts_f16, setPreprocessorMacros: macros];
 
-	let lib_f16: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f16 error: &mut error];
+	let lib_f16: *mut Object =
+		msg_send![device, newLibraryWithSource: src options: opts_f16 error: &mut error];
+	let _: () = msg_send![opts_f16, release];
 	if lib_f16.is_null() {
+		let _: () = msg_send![lib_f32, release];
 		if let Some(msg) = unsafe { ns_error(error) } {
 			log::error!("[Metal] newLibraryWithSource (f16) failed: {msg}");
 		}
 		return Err("library f16 compile failed");
 	}
 
-	// Create function objects for requested entry point
+	// Extract kernel functions (+1 retained from newFunctionWithName)
 	let fname_ns = unsafe { nsstring_utf8(fname) };
 	let func_f32: *mut Object = msg_send![lib_f32, newFunctionWithName: fname_ns];
 	let func_f16: *mut Object = msg_send![lib_f16, newFunctionWithName: fname_ns];
 	if func_f32.is_null() || func_f16.is_null() {
+		if !func_f32.is_null() { let _: () = msg_send![func_f32, release]; }
+		if !func_f16.is_null() { let _: () = msg_send![func_f16, release]; }
+		let _: () = msg_send![lib_f32, release];
+		let _: () = msg_send![lib_f16, release];
 		log::error!("[Metal] function '{fname}' not found in libraries");
 		return Err("function not found");
 	}
 
-	// Build pipelines
+	// Build pipeline state objects (+1 retained from new*)
 	let mut err1: *mut Object = std::ptr::null_mut();
 	let mut err2: *mut Object = std::ptr::null_mut();
-	let pso_f32: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f32 error: &mut err1];
-	let pso_f16: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f16 error: &mut err2];
+	let pso_f32: *mut Object =
+		msg_send![device, newComputePipelineStateWithFunction: func_f32 error: &mut err1];
+	let pso_f16: *mut Object =
+		msg_send![device, newComputePipelineStateWithFunction: func_f16 error: &mut err2];
+
+	// Functions retained by PSOs — release our ref
+	let _: () = msg_send![func_f32, release];
+	let _: () = msg_send![func_f16, release];
 
 	if pso_f32.is_null() || pso_f16.is_null() {
+		if !pso_f32.is_null() { let _: () = msg_send![pso_f32, release]; }
+		if !pso_f16.is_null() { let _: () = msg_send![pso_f16, release]; }
+		let _: () = msg_send![lib_f32, release];
+		let _: () = msg_send![lib_f16, release];
 		log::error!("[Metal] pipeline creation failed: {err1:?} / {err2:?}");
 		return Err("pipeline failed");
 	}
 
-	// Functions are retained by PSOs - release them
-	let _: () = msg_send![func_f32, release];
-	let _: () = msg_send![func_f16, release];
-
-	// Insert into cache
 	{
 		let mut guard = map.lock();
 		guard.insert(
 			key,
 			Pipelines {
-				library: lib_f32, // keep one lib alive
+				library_f32: lib_f32,
+				library_f16: lib_f16,
 				pso_full: pso_f32,
 				pso_half: pso_f16,
 			},
@@ -191,11 +241,8 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 	Ok((pso_f32, pso_f16))
 }
 
-/// Cleans up the pipeline cache by releasing all retained Metal objects.
-///
 /// # Safety
-/// - This function must only be called when no other threads are accessing the pipeline cache.
-/// - The caller must ensure that the Metal objects being released are no longer in use elsewhere.
+/// Must be called when no other threads are accessing the pipeline cache.
 pub unsafe fn cleanup() {
 	if let Some(map) = CACHE.get() {
 		let mut guard = map.lock();
@@ -206,8 +253,11 @@ pub unsafe fn cleanup() {
 			if !p.pso_half.is_null() {
 				let _: () = msg_send![p.pso_half, release];
 			}
-			if !p.library.is_null() {
-				let _: () = msg_send![p.library, release];
+			if !p.library_f32.is_null() {
+				let _: () = msg_send![p.library_f32, release];
+			}
+			if !p.library_f16.is_null() {
+				let _: () = msg_send![p.library_f16, release];
 			}
 		}
 		log::info!("[Metal] Pipeline cache cleared");
@@ -216,5 +266,8 @@ pub unsafe fn cleanup() {
 
 pub fn hot_reload() {
 	unsafe { cleanup() };
-	log::info!("[Metal] Hot reload requested - cache cleared; next request will recompile.");
+	#[cfg(shader_hotreload)]
+	log::info!("[Metal/HotReload] Cache cleared - next dispatch will recompile from disk.");
+	#[cfg(not(shader_hotreload))]
+	log::info!("[Metal] Cache cleared.");
 }

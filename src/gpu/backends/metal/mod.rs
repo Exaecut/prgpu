@@ -7,49 +7,41 @@ use std::time::Instant;
 
 /// Converts a Rust string slice into an Objective-C NSString object.
 ///
+/// Returns an autoreleased NSString. Only valid within a surrounding `autoreleasepool`.
+///
 /// # Safety
-/// - The caller must ensure that the input string `s` is valid and does not contain null bytes.
-/// - The returned pointer must be used in accordance with Objective-C memory management rules.
+/// The input string must not contain interior null bytes.
 pub unsafe fn nsstring_utf8(s: &str) -> *mut Object {
     let c = CString::new(s).unwrap();
     let ns: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()];
     ns
 }
 
-/// Logs information about a Metal buffer.
-///
 /// # Safety
-/// - The caller must ensure that `raw` is a valid pointer to a Metal buffer object.
-/// - Passing an invalid or null pointer may result in undefined behavior.
+/// `raw` must be a valid MTLBuffer pointer or null.
 pub unsafe fn log_buffer_info(tag: &str, raw: *mut core::ffi::c_void) {
-    use objc::{msg_send, runtime::Object, sel, sel_impl};
     if raw.is_null() {
-        after_effects::log::error!("[metal] {tag}: null");
+        log::error!("[metal] {tag}: null");
         return;
     }
     let obj = raw as *mut Object;
     let length: u64 = msg_send![obj, length];
-
-    // storage mode: 0 Shared, 1 Managed, 2 Private, 3 Memoryless
     let storage_mode: u64 = msg_send![obj, storageMode];
-    // null if storageMode == Private
     let contents: *mut core::ffi::c_void = msg_send![obj, contents];
-    after_effects::log::info!(
+    log::info!(
         "[metal] {tag}: MTLBuffer={raw:?}, length={length}, storageMode={storage_mode}, contents={contents:?}"
     );
 }
 
-/// Converts an Objective-C NSError object into a Rust `Option<String>` representation.
+/// Extracts a readable error string from an NSError pointer.
 ///
 /// # Safety
-/// - The caller must ensure that `err` is a valid pointer to an Objective-C NSError object or null.
-/// - Passing an invalid or dangling pointer may result in undefined behavior.
+/// `err` must be a valid NSError pointer or null.
 pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
     if err.is_null() {
         return None;
     }
 
-    // Domain (NSString*)
     let domain: *mut Object = msg_send![err, domain];
     let domain_c: *const std::os::raw::c_char = msg_send![domain, UTF8String];
     let domain_str = if !domain_c.is_null() {
@@ -58,10 +50,8 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
         "<unknown-domain>".into()
     };
 
-    // Code (NSInteger)
     let code: i64 = msg_send![err, code];
 
-    // Localized Description
     let desc: *mut Object = msg_send![err, localizedDescription];
     let desc_c: *const std::os::raw::c_char = msg_send![desc, UTF8String];
     let desc_str = if !desc_c.is_null() {
@@ -70,7 +60,6 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
         "<no-description>".into()
     };
 
-    // Localized Failure Reason (often contains compiler error details)
     let fail: *mut Object = msg_send![err, localizedFailureReason];
     let fail_c: *const std::os::raw::c_char = if fail.is_null() {
         std::ptr::null()
@@ -83,7 +72,6 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
         String::new()
     };
 
-    // Localized Recovery Suggestion (sometimes used too)
     let sugg: *mut Object = msg_send![err, localizedRecoverySuggestion];
     let sugg_c: *const std::os::raw::c_char = if sugg.is_null() {
         std::ptr::null()
@@ -109,7 +97,7 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
 
 pub mod pipeline;
 
-use crate::{Configuration, TransitionParams};
+use crate::{Configuration, FrameParams};
 
 pub mod buffer;
 
@@ -121,18 +109,25 @@ pub fn run<UP>(
 ) -> Result<(), &'static str> {
     use objc::rc::autoreleasepool;
     autoreleasepool(|| {
-        use objc::{msg_send, runtime::Object, sel, sel_impl};
-
         if config.device_handle.is_null() || config.command_queue_handle.is_null() {
-            log::error!("Device or command queue handle is null");
+            log::error!("[Metal] device or command queue handle is null");
             return Err("Invalid device or command queue handle");
         }
-        if config.outgoing_data.is_null()
-            || config.incoming_data.is_null()
-            || config.dest_data.is_null()
-        {
-            log::error!("[Metal] one of buffers is null");
-            return Err("null buffers");
+        if config.dest_data.is_null() {
+            log::error!("[Metal] dest_data is null");
+            return Err("null dest buffer");
+        }
+
+        let has_outgoing = config
+            .outgoing_data
+            .map_or(false, |p| !p.is_null());
+        let has_incoming = config
+            .incoming_data
+            .map_or(false, |p| !p.is_null());
+
+        if !has_outgoing && !has_incoming {
+            log::error!("[Metal] both outgoing and incoming are null/missing");
+            return Err("no input buffers");
         }
 
         let device = config.device_handle as *mut Object;
@@ -142,11 +137,11 @@ pub fn run<UP>(
             unsafe { crate::gpu::pipeline::get_pso_pair(device, shader_src, entry) }?;
         let pipeline: *mut Object = if config.is16f { pso_f16 } else { pso_f32 };
         if pipeline.is_null() {
-            log::error!("[Metal] Failed to create compute pipeline state");
-            return Err("Failed to create Metal compute pipeline state");
+            log::error!("[Metal] pipeline state is null");
+            return Err("null pipeline state");
         }
 
-        let transition_params = TransitionParams {
+        let frame_params = FrameParams {
             out_pitch: config.outgoing_pitch_px as u32,
             in_pitch: config.incoming_pitch_px as u32,
             dest_pitch: config.dest_pitch_px as u32,
@@ -155,58 +150,65 @@ pub fn run<UP>(
             progress: config.progress,
         };
 
-        let params_len = std::mem::size_of::<TransitionParams>();
-        let transition_params_buffer: *mut Object = unsafe {
+        let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut());
+        let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut());
+
+        // Constant buffers: Shared storage is correct for single-frame CPU→GPU upload.
+        // +1 retained — must release after use.
+        let frame_params_buffer: *mut Object = unsafe {
             msg_send![
                 device,
-                newBufferWithBytes: &transition_params as *const _ as *const c_void
-                length: params_len
+                newBufferWithBytes: &frame_params as *const _ as *const c_void
+                length: std::mem::size_of::<FrameParams>()
                 options: 0u64
             ]
         };
-
-        if transition_params_buffer.is_null() {
-            log::error!("[Metal] Failed to create params buffer");
-            return Err("Failed to create Metal params buffer");
+        if frame_params_buffer.is_null() {
+            log::error!("[Metal] failed to create params buffer");
+            return Err("params buffer allocation failed");
         }
-
-        let user_params_len = std::mem::size_of::<UP>();
-
-        #[cfg(debug_assertions)]
-        log::info!("User params buffer size: {user_params_len}");
 
         let user_params_buffer: *mut Object = unsafe {
             msg_send![
                 device,
                 newBufferWithBytes: &user_params as *const _ as *const c_void
-                length: user_params_len
+                length: std::mem::size_of::<UP>()
                 options: 0u64
             ]
         };
-
         if user_params_buffer.is_null() {
-            log::error!("[Metal] Failed to create user params buffer");
-            return Err("Failed to create Metal user params buffer");
+            unsafe { let _: () = msg_send![frame_params_buffer, release]; }
+            log::error!("[Metal] failed to create user params buffer");
+            return Err("user params buffer allocation failed");
         }
 
         let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
         if cmd.is_null() {
-            log::error!("[Metal] Failed to create command buffer");
-            return Err("Failed to create Metal command buffer");
+            unsafe {
+                let _: () = msg_send![frame_params_buffer, release];
+                let _: () = msg_send![user_params_buffer, release];
+            }
+            log::error!("[Metal] failed to create command buffer");
+            return Err("command buffer creation failed");
         }
+
         let enc: *mut Object = unsafe { msg_send![cmd, computeCommandEncoder] };
         if enc.is_null() {
-            log::error!("[Metal] Failed to create command encoder");
-            return Err("Failed to create Metal command encoder");
+            unsafe {
+                let _: () = msg_send![frame_params_buffer, release];
+                let _: () = msg_send![user_params_buffer, release];
+            }
+            log::error!("[Metal] failed to create compute encoder");
+            return Err("compute encoder creation failed");
         }
 
         unsafe {
             let _: () = msg_send![enc, setComputePipelineState: pipeline];
-            let _: () = msg_send![enc, setBuffer: config.outgoing_data as *mut Object  offset: 0  atIndex: 0];
-            let _: () = msg_send![enc, setBuffer: config.incoming_data as *mut Object  offset: 0  atIndex: 1];
-            let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object      offset: 0  atIndex: 2];
-            let _: () = msg_send![enc, setBuffer: transition_params_buffer             offset: 0  atIndex: 3];
-            let _: () = msg_send![enc, setBuffer: user_params_buffer                   offset: 0  atIndex: 4];
+            let _: () = msg_send![enc, setBuffer: outgoing_ptr as *mut Object   offset: 0usize  atIndex: 0usize];
+            let _: () = msg_send![enc, setBuffer: incoming_ptr as *mut Object   offset: 0usize  atIndex: 1usize];
+            let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
+            let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
+            let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
         }
 
         let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
@@ -239,7 +241,21 @@ pub fn run<UP>(
             let _: () = msg_send![cmd, waitUntilCompleted];
         }
 
-        // GPU timing available after execution
+        // Check command buffer error status
+        let status: u64 = unsafe { msg_send![cmd, status] };
+        if status == 5 {
+            // MTLCommandBufferStatusError = 5
+            let error: *mut Object = unsafe { msg_send![cmd, error] };
+            if let Some(msg) = unsafe { ns_error(error) } {
+                log::error!("[Metal] command buffer error: {msg}");
+            }
+            unsafe {
+                let _: () = msg_send![frame_params_buffer, release];
+                let _: () = msg_send![user_params_buffer, release];
+            }
+            return Err("GPU execution error");
+        }
+
         let gpu_start: f64 = unsafe { msg_send![cmd, GPUStartTime] };
         let gpu_end: f64 = unsafe { msg_send![cmd, GPUEndTime] };
         let gpu_ms = (gpu_end - gpu_start) * 1000.0;
@@ -249,6 +265,12 @@ pub fn run<UP>(
         log::info!(
             "[Metal] kernel `{entry}` took {gpu_ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
         );
+
+        // Release per-frame constant buffers (+1 retained from newBufferWithBytes)
+        unsafe {
+            let _: () = msg_send![frame_params_buffer, release];
+            let _: () = msg_send![user_params_buffer, release];
+        }
 
         Ok(())
     })

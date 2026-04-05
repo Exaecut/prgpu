@@ -7,7 +7,7 @@ edition = "2024"
 default = ["cargo-clippy"] # build with no Metal backend by default
 opencl = ["opencl3"]       # enable OpenCL backend
 cargo-clippy = []
-shader_hotreload = []      # enable shader hot-reloading (for development only)
+shader_hotreload = ["cudarc/nvrtc"]  # enable shader hot-reloading (for development only; adds NVRTC at runtime)
 build = ["cc", "regex-lite"]
 
 [dependencies]

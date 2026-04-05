@@ -7,7 +7,7 @@ use cudarc::driver::sys as cuda;
 pub mod buffer;
 pub mod pipeline;
 
-use crate::{Configuration, TransitionParams};
+use crate::{Configuration, FrameParams};
 
 #[inline]
 fn check(res: cuda::CUresult, what: &str) -> Result<(), &'static str> {
@@ -30,6 +30,7 @@ fn check(res: cuda::CUresult, what: &str) -> Result<(), &'static str> {
 }
 
 #[inline]
+#[allow(dead_code)]
 unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static str> {
     let mut major = 0;
     let mut minor = 0;
@@ -56,15 +57,12 @@ unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static
     Ok((major, minor))
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Launches a CUDA kernel with the specified parameters.
+/// Launches a CUDA kernel on the given stream. Does NOT synchronize.
 ///
 /// # Safety
-/// - `ctx` must be a valid CUDA context.
-/// - `stream` must be a valid CUDA stream.
-/// - `func` must be a valid CUDA kernel function.
-/// - `params` must point to valid device memory and match the kernel's expected arguments.
-/// - The caller must ensure that the kernel launch parameters (`grid_x`, `grid_y`, `block_x`, `block_y`) are valid.
+/// - `ctx`, `stream`, `func` must be valid CUDA handles.
+/// - `params` must point to valid device memory matching the kernel signature.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn dispatch(
     ctx: *mut c_void,
     stream: *mut c_void,
@@ -101,22 +99,11 @@ pub unsafe fn dispatch(
         },
         "cuLaunchKernel",
     )?;
-
-    #[cfg(debug_assertions)]
-    {
-        check(
-            unsafe { cuda::cuStreamSynchronize(stream as cuda::CUstream) },
-            "cuStreamSynchronize",
-        )?;
-    }
     Ok(())
 }
 
-/// Logs information about a CUDA device pointer.
-///
 /// # Safety
-/// - `ptr` must be a valid CUDA device pointer or null.
-/// - The caller must ensure that the pointer is valid for the duration of this function call.
+/// `ptr` must be a valid CUDA device pointer or null.
 pub unsafe fn log_device_ptr_info(tag: &str, ptr: *mut c_void) {
     if ptr.is_null() {
         log::error!("[cuda] {tag}: null");
@@ -140,7 +127,6 @@ pub fn run<UP>(
     entry: &'static str,
 ) -> Result<(), &'static str> {
     use crate::gpu;
-    use std::time::Instant;
 
     if config.context_handle.is_none() || config.command_queue_handle.is_null() {
         log::error!("[CUDA] invalid handles");
@@ -151,13 +137,13 @@ pub fn run<UP>(
         return Err("null buffers");
     }
 
-    let (func_f32, func_f16) = unsafe {
-        gpu::pipeline::get_or_load_kernel(config.context_handle.unwrap() as _, shader_src, entry)
-    }
-    .map_err(|e| {
-        log::error!("[CUDA] {e}");
-        "kernel load failed"
-    })?;
+    let ctx = config.context_handle.unwrap();
+
+    let (func_f32, func_f16) =
+        unsafe { gpu::pipeline::get_or_load_kernel(ctx as _, shader_src, entry) }.map_err(|e| {
+            log::error!("[CUDA] {e}");
+            "kernel load failed"
+        })?;
     let func = if config.is16f { func_f16 } else { func_f32 };
 
     let outgoing_data = config.outgoing_data.unwrap_or(null_mut());
@@ -167,7 +153,7 @@ pub fn run<UP>(
     let mut d_incoming = incoming_data as u64;
     let mut d_dest = config.dest_data as u64;
 
-    let mut p = TransitionParams {
+    let mut p = FrameParams {
         out_pitch: config.outgoing_pitch_px as u32,
         in_pitch: config.incoming_pitch_px as u32,
         dest_pitch: config.dest_pitch_px as u32,
@@ -190,20 +176,27 @@ pub fn run<UP>(
     let grid_x: u32 = config.width.div_ceil(block_x);
     let grid_y: u32 = config.height.div_ceil(block_y);
 
-    // --- GPU timing with CUDA events ---
-    let mut start_event: cuda::CUevent = std::ptr::null_mut();
-    let mut end_event: cuda::CUevent = std::ptr::null_mut();
-    unsafe {
-        cuda::cuEventCreate(&mut start_event, 0);
-        cuda::cuEventCreate(&mut end_event, 0);
-    }
+    // Debug-only: GPU timing via CUDA events + synchronization.
+    // In release, the kernel is fire-and-forget on the host stream.
+    // Adobe manages stream synchronization at the render pipeline level.
+    #[cfg(debug_assertions)]
+    let cpu_start = std::time::Instant::now();
 
-    let cpu_start = Instant::now();
+    #[cfg(debug_assertions)]
+    let (start_event, end_event) = {
+        let mut s: cuda::CUevent = std::ptr::null_mut();
+        let mut e: cuda::CUevent = std::ptr::null_mut();
+        unsafe {
+            cuda::cuEventCreate(&mut s, 0);
+            cuda::cuEventCreate(&mut e, 0);
+            cuda::cuEventRecord(s, config.command_queue_handle as cuda::CUstream);
+        }
+        (s, e)
+    };
 
     unsafe {
-        cuda::cuEventRecord(start_event, config.command_queue_handle as cuda::CUstream);
         dispatch(
-            config.context_handle.unwrap(),
+            ctx,
             config.command_queue_handle,
             func,
             grid_x,
@@ -212,21 +205,26 @@ pub fn run<UP>(
             block_y,
             &mut params,
         )?;
-        cuda::cuEventRecord(end_event, config.command_queue_handle as cuda::CUstream);
-        cuda::cuEventSynchronize(end_event);
-    };
-
-    let cpu_elapsed = cpu_start.elapsed();
-
-    let mut ms: f32 = 0.0;
-    unsafe {
-        cuda::cuEventElapsedTime_v2(&mut ms as *mut f32, start_event, end_event);
-        cuda::cuEventDestroy_v2(start_event);
-        cuda::cuEventDestroy_v2(end_event);
     }
 
     #[cfg(debug_assertions)]
-    log::info!("[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)");
+    {
+        unsafe {
+            cuda::cuEventRecord(end_event, config.command_queue_handle as cuda::CUstream);
+            cuda::cuEventSynchronize(end_event);
+        }
+
+        let cpu_elapsed = cpu_start.elapsed();
+        let mut ms: f32 = 0.0;
+        unsafe {
+            cuda::cuEventElapsedTime_v2(&mut ms as *mut f32, start_event, end_event);
+            cuda::cuEventDestroy_v2(start_event);
+            cuda::cuEventDestroy_v2(end_event);
+        }
+        log::info!(
+            "[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
+        );
+    }
 
     Ok(())
 }

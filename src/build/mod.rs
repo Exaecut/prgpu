@@ -234,7 +234,7 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
     let utils = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("shaders/utils")
+        .join("vekl")
         .canonicalize()
         .unwrap();
     let utils_str = utils.to_string_lossy().replace("\\\\?\\", "");
@@ -252,7 +252,7 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
     for entry in std::fs::read_dir(shader_dir).unwrap() {
         let path = entry.unwrap().path();
 
-        if path.extension().and_then(|s| s.to_str()) != Some("shader") {
+        if path.extension().and_then(|s| s.to_str()) != Some("vekl") {
             continue;
         }
 

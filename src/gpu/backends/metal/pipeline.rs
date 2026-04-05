@@ -93,7 +93,7 @@ pub unsafe fn get_pso_pair(device: *mut Object, shader_src: &'static str, fname:
 			match std::fs::read_to_string(&path) {
 				Ok(s) => {
 					let plugin_root = std::path::PathBuf::from(&manifest_dir).join("shaders");
-					let ws_utils = std::path::PathBuf::from(&manifest_dir).join("../shaders/utils");
+					let ws_utils = std::path::PathBuf::from(&manifest_dir).join("../vekl");
 					match expand_includes_runtime(&s, &plugin_root, &[ws_utils]) {
 						Ok(expanded) => {
 							log::info!("[Metal] Hot-reloading shader (flattened) from {}", path.display());

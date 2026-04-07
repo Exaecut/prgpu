@@ -1,5 +1,8 @@
+use std::{collections::HashMap, sync::OnceLock};
+
 use super::*;
 use cudarc::driver::sys as cu;
+use parking_lot::Mutex;
 
 pub struct KernelPair {
     pub module_f32: cu::CUmodule,

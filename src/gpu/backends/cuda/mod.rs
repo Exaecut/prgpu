@@ -1,11 +1,12 @@
 use after_effects::log;
-use parking_lot::Mutex;
-use std::{collections::HashMap, ffi::c_void, ptr::null_mut, sync::OnceLock};
+use std::ffi::c_void;
+use std::ptr::null_mut;
 
 use cudarc::driver::sys as cuda;
 
 pub mod buffer;
 pub mod pipeline;
+pub mod fence;
 
 use crate::{Configuration, FrameParams};
 
@@ -178,24 +179,6 @@ pub fn run<UP>(
     let grid_x: u32 = config.width.div_ceil(block_x);
     let grid_y: u32 = config.height.div_ceil(block_y);
 
-    // Debug-only: GPU timing via CUDA events + synchronization.
-    // In release, the kernel is fire-and-forget on the host stream.
-    // Adobe manages stream synchronization at the render pipeline level.
-    #[cfg(debug_assertions)]
-    let cpu_start = std::time::Instant::now();
-
-    #[cfg(debug_assertions)]
-    let (start_event, end_event) = {
-        let mut s: cuda::CUevent = std::ptr::null_mut();
-        let mut e: cuda::CUevent = std::ptr::null_mut();
-        unsafe {
-            cuda::cuEventCreate(&mut s, 0);
-            cuda::cuEventCreate(&mut e, 0);
-            cuda::cuEventRecord(s, config.command_queue_handle as cuda::CUstream);
-        }
-        (s, e)
-    };
-
     unsafe {
         dispatch(
             ctx,
@@ -207,25 +190,6 @@ pub fn run<UP>(
             block_y,
             &mut params,
         )?;
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        unsafe {
-            cuda::cuEventRecord(end_event, config.command_queue_handle as cuda::CUstream);
-            cuda::cuEventSynchronize(end_event);
-        }
-
-        let cpu_elapsed = cpu_start.elapsed();
-        let mut ms: f32 = 0.0;
-        unsafe {
-            cuda::cuEventElapsedTime_v2(&mut ms as *mut f32, start_event, end_event);
-            cuda::cuEventDestroy_v2(start_event);
-            cuda::cuEventDestroy_v2(end_event);
-        }
-        log::info!(
-            "[CUDA] kernel `{entry}` took {ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
-        );
     }
 
     Ok(())

@@ -81,14 +81,6 @@ pub unsafe fn get_or_create(
             }
         }
         DeviceHandleInit::FromSuite((device_index, suite)) => {
-            let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
-            let allocated = suite
-                .allocate_device_memory(device_index, length)
-                .unwrap_or_else(|e| {
-                    log::error!("[CUDA] GPUDevice suite allocation failed: {e:?}");
-                    std::ptr::null_mut()
-                });
-
             let device_handle = suite
                 .device_info(device_index)
                 .map(|info| info.outDeviceHandle as usize)
@@ -108,7 +100,20 @@ pub unsafe fn get_or_create(
             let buf = if let Some(existing) = guard.get(&key) {
                 *existing
             } else {
-                let obj = BufferObj { raw: allocated };
+                let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
+                let raw = suite
+                    .allocate_device_memory(device_index, length)
+                    .unwrap_or_else(|e| {
+                        log::error!("[CUDA] GPUDevice suite allocation failed: {e:?}");
+                        std::ptr::null_mut()
+                    });
+                if raw.is_null() {
+                    log::error!(
+                        "[CUDA] buffer allocation failed for {}x{} bpp={} tag={}",
+                        width, height, bytes_per_pixel, tag
+                    );
+                }
+                let obj = BufferObj { raw };
                 guard.insert(key, obj);
                 obj
             };

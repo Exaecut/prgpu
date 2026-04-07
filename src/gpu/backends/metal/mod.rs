@@ -95,11 +95,11 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
     Some(msg)
 }
 
+pub mod buffer;
+pub mod fence;
 pub mod pipeline;
 
 use crate::{Configuration, FrameParams};
-
-pub mod buffer;
 
 pub fn run<UP>(
     config: &Configuration,
@@ -262,9 +262,12 @@ pub fn run<UP>(
         let cpu_elapsed = cpu_start.elapsed();
 
         #[cfg(debug_assertions)]
-        log::info!(
-            "[Metal] kernel `{entry}` took {gpu_ms:.3} ms (GPU), {cpu_elapsed:?} (CPU wall-time)"
-        );
+        {
+            let generation = config.render_generation;
+            log::info!(
+                "[Metal] `{entry}` gen={generation}: gpu={gpu_ms:.3}ms, cpu={cpu_elapsed:?}"
+            );
+        }
 
         // Release per-frame constant buffers (+1 retained from newBufferWithBytes)
         unsafe {

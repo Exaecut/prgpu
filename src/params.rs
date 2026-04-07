@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash, ptr};
 
-use after_effects::{InData, OutData, Parameters, log, sys::PF_Pixel};
+use after_effects::{InData, OutData, Parameters, sys::PF_Pixel};
 use premiere::{self as pr};
 
 use crate::types::Pixel;
@@ -8,176 +8,143 @@ use crate::types::Pixel;
 pub const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0;
 
 pub trait SetupParams: Sized + Eq + Hash + Copy + Debug + Into<usize> {
-    fn to_index(self) -> usize {
-        self.into()
-    }
+	fn to_index(self) -> usize {
+		self.into()
+	}
 
-    fn setup(
-        params: &mut Parameters<Self>,
-        in_data: InData,
-        out_data: OutData,
-    ) -> Result<(), after_effects::Error>;
+	fn setup(params: &mut Parameters<Self>, in_data: InData, out_data: OutData) -> Result<(), after_effects::Error>;
 }
 
 pub trait FromParam: Sized {
-    fn extract(p: pr::Param) -> Option<Self>;
+	fn extract(p: pr::Param) -> Option<Self>;
 }
 
 // Implementations for each variant
 impl FromParam for i32 {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Int32(v) = p {
-            Some(v)
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Int32(v) = p { Some(v) } else { None }
+	}
 }
 
 impl FromParam for i64 {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Int64(v) = p {
-            Some(v)
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Int64(v) = p { Some(v) } else { None }
+	}
 }
 
 impl FromParam for f32 {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Float32(v) = p {
-            Some(v)
-        } else if let pr::Param::Float64(v) = p {
-            log::warn!("Parameter {p:?} was f64, converting to f32 (may lose precision)");
-            Some(v as f32)
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Float32(v) = p {
+			Some(v)
+		} else if let pr::Param::Float64(v) = p {
+			Some(v as f32)
+		} else {
+			None
+		}
+	}
 }
 
 impl FromParam for f64 {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Float64(v) = p {
-            Some(v)
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Float64(v) = p { Some(v) } else { None }
+	}
 }
 
 impl FromParam for bool {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Bool(v) = p {
-            Some(v)
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Bool(v) = p { Some(v) } else { None }
+	}
 }
 
 impl FromParam for u32 {
-    fn extract(p: pr::Param) -> Option<Self> {
-        if let pr::Param::Int32(v) = p {
-            if v >= 0 { Some(v as u32) } else { None }
-        } else {
-            None
-        }
-    }
+	fn extract(p: pr::Param) -> Option<Self> {
+		if let pr::Param::Int32(v) = p {
+			if v >= 0 { Some(v as u32) } else { None }
+		} else {
+			None
+		}
+	}
 }
 
 impl FromParam for (f32, f32) {
-    fn extract(p: premiere::Param) -> Option<Self> {
-        if let pr::Param::Point(v) = p {
-            Some((v.x as f32, v.y as f32))
-        } else {
-            None
-        }
-    }
+	fn extract(p: premiere::Param) -> Option<Self> {
+		if let pr::Param::Point(v) = p { Some((v.x as f32, v.y as f32)) } else { None }
+	}
 }
 
 impl FromParam for (f64, f64) {
-    fn extract(p: premiere::Param) -> Option<Self> {
-        if let pr::Param::Point(v) = p {
-            Some((v.x, v.y))
-        } else {
-            None
-        }
-    }
+	fn extract(p: premiere::Param) -> Option<Self> {
+		if let pr::Param::Point(v) = p { Some((v.x, v.y)) } else { None }
+	}
 }
 
 impl FromParam for Pixel {
-    fn extract(p: premiere::Param) -> Option<Self> {
-        match p {
-            pr::Param::MemoryPtr(v) => {
-                if v.is_null() {
-                    None
-                } else {
-                    let pf_pixel = unsafe { ptr::read(v as *const PF_Pixel) };
-                    Some(Pixel::from_pf_pixel(pf_pixel))
-                }
-            }
-            pr::Param::Int32(v) => Some(Pixel::from_bytes32(v as u32)),
-            pr::Param::Int64(v) => {
-                #[cfg(debug_assertions)]
-                {
-                    Pixel::debug_print_color(v);
-                }
+	fn extract(p: premiere::Param) -> Option<Self> {
+		match p {
+			pr::Param::MemoryPtr(v) => {
+				if v.is_null() {
+					None
+				} else {
+					let pf_pixel = unsafe { ptr::read(v as *const PF_Pixel) };
+					Some(Pixel::from_pf_pixel(pf_pixel))
+				}
+			}
+			pr::Param::Int32(v) => Some(Pixel::from_bytes32(v as u32)),
+			pr::Param::Int64(v) => {
+				#[cfg(debug_assertions)]
+				{
+					Pixel::debug_print_color(v);
+				}
 
-                Some(Pixel::from_u64_color(v as u64))
-            }
-            _ => None,
-        }
-    }
+				Some(Pixel::from_u64_color(v as u64))
+			}
+			_ => None,
+		}
+	}
 }
 
-pub fn get_param<T: FromParam + Default, Params: SetupParams>(
-    filter: &pr::GpuFilterData,
-    param: Params,
-    render_params: &pr::RenderParams,
-) -> T {
-    filter
-        .param(param.to_index(), render_params.clip_time())
-        .ok()
-        .and_then(T::extract)
-        .unwrap_or_default()
+pub fn get_param<T: FromParam + Default, Params: SetupParams>(filter: &pr::GpuFilterData, param: Params, render_params: &pr::RenderParams) -> T {
+	filter
+		.param(param.to_index(), render_params.clip_time())
+		.ok()
+		.and_then(T::extract)
+		.unwrap_or_default()
 }
 
 pub trait CpuParams<P: SetupParams> {
-    fn float(&self, p: P) -> Result<f32, after_effects::Error>;
-    fn angle(&self, p: P) -> Result<f32, after_effects::Error>;
-    fn color(&self, p: P) -> Result<PF_Pixel, after_effects::Error>;
-    fn point(&self, p: P) -> Result<(f32, f32), after_effects::Error>;
-    fn checkbox(&self, p: P) -> Result<bool, after_effects::Error>;
-    fn popup(&self, p: P) -> Result<i32, after_effects::Error>;
+	fn float(&self, p: P) -> Result<f32, after_effects::Error>;
+	fn angle(&self, p: P) -> Result<f32, after_effects::Error>;
+	fn color(&self, p: P) -> Result<PF_Pixel, after_effects::Error>;
+	fn point(&self, p: P) -> Result<(f32, f32), after_effects::Error>;
+	fn checkbox(&self, p: P) -> Result<bool, after_effects::Error>;
+	fn popup(&self, p: P) -> Result<i32, after_effects::Error>;
 }
 
 impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
-    fn float(&self, p: P) -> Result<f32, after_effects::Error> {
-        Ok(self.get(p)?.as_float_slider()?.value() as f32)
-    }
+	fn float(&self, p: P) -> Result<f32, after_effects::Error> {
+		Ok(self.get(p)?.as_float_slider()?.value() as f32)
+	}
 
-    fn angle(&self, p: P) -> Result<f32, after_effects::Error> {
-        Ok(self.get(p)?.as_angle()?.value())
-    }
+	fn angle(&self, p: P) -> Result<f32, after_effects::Error> {
+		Ok(self.get(p)?.as_angle()?.value())
+	}
 
-    fn color(&self, p: P) -> Result<PF_Pixel, after_effects::Error> {
-        Ok(self.get(p)?.as_color()?.value())
-    }
+	fn color(&self, p: P) -> Result<PF_Pixel, after_effects::Error> {
+		Ok(self.get(p)?.as_color()?.value())
+	}
 
-    fn point(&self, p: P) -> Result<(f32, f32), after_effects::Error> {
-        let v = self.get(p)?.as_point()?.value();
-        Ok((v.0, v.1))
-    }
+	fn point(&self, p: P) -> Result<(f32, f32), after_effects::Error> {
+		let v = self.get(p)?.as_point()?.value();
+		Ok((v.0, v.1))
+	}
 
-    fn checkbox(&self, p: P) -> Result<bool, after_effects::Error> {
-        Ok(self.get(p)?.as_checkbox()?.value())
-    }
+	fn checkbox(&self, p: P) -> Result<bool, after_effects::Error> {
+		Ok(self.get(p)?.as_checkbox()?.value())
+	}
 
-    fn popup(&self, p: P) -> Result<i32, after_effects::Error> {
-        Ok(self.get(p)?.as_popup()?.value())
-    }
+	fn popup(&self, p: P) -> Result<i32, after_effects::Error> {
+		Ok(self.get(p)?.as_popup()?.value())
+	}
 }
 
 /// Declares a `#[repr(C)]` kernel params struct with auto-generated `from_gpu` and `from_cpu`.
@@ -192,8 +159,8 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 /// | `color_g(V)`      | `.green`                         | `.green`                     |
 /// | `color_b(V)`      | `.blue`                          | `.blue`                      |
 /// | `color_a(V)`      | `.alpha`                         | `.alpha`                     |
-/// | `point_pct_x(V)`  | `point.0 / width`                | `point.0 / 100.0`           |
-/// | `point_pct_y(V)`  | `point.1 / height`               | `point.1 / 100.0`           |
+/// | `point_pct_x(V)`  | `point.0 / 100.0`                | `point.0 / 100.0`           |
+/// | `point_pct_y(V)`  | `point.1 / 100.0`                | `point.1 / 100.0`           |
 /// | `checkbox(V)`     | `get_param::<bool> as u32`       | `params.checkbox(V)? as u32` |
 ///
 /// Append `/ expr` or `* expr` after the extractor for a post-transform.
@@ -296,11 +263,11 @@ macro_rules! kernel_params {
     }};
     (@gpu_base point_pct_x, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {{
         let __p: (f32, f32) = $crate::params::get_param($f, <$P>::$v, $rp);
-        __p.0 / $w
+        __p.0
     }};
     (@gpu_base point_pct_y, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {{
         let __p: (f32, f32) = $crate::params::get_param($f, <$P>::$v, $rp);
-        __p.1 / $h
+        __p.1
     }};
 
     // CPU: transform wrappers

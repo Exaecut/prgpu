@@ -97,42 +97,11 @@ impl<'a> GPURenderProperties<'a> {
 		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
 		let bounds: after_effects::Rect = after_effects::Rect::from(PrRect::from(filter.ppix_suite.bounds(properties).unwrap()));
 
-		let width = bounds.width();
-		let height = bounds.height();
-
-		let (par_numerator, par_denominator) = match filter.ppix_suite.pixel_aspect_ratio(properties) {
-			Ok((num, den)) => (num as i32, den as i32),
-			Err(_) => {
-				log::error!("Failed to get pixel aspect ratio for properties");
-				return Err(pr::Error::InvalidParms);
-			}
-		};
-
-		let field_type = match filter.ppix2_suite.field_order(properties) {
-			Ok(field_type) => field_type,
-			Err(_) => {
-				log::error!("Failed to get field type for properties");
-				return Err(pr::Error::InvalidParms);
-			}
-		};
-
-		let output_frame = match filter
-			.gpu_device_suite
-			.create_gpu_ppix(gpu_index, pixel_format, width, height, par_numerator, par_denominator, field_type)
-		{
-			Ok(frame) => frame,
-			Err(_) => {
-				log::error!("Failed to create GPU PPix");
-				return Err(pr::Error::InvalidParms);
-			}
-		};
-
+		let output_frame = unsafe { *out_frame };
 		if output_frame.is_null() {
 			log::error!("Output frame is null");
 			return Err(pr::Error::Fail);
 		}
-
-		unsafe { *out_frame = output_frame; }
 
 		let bytes_per_pixel = gpu_bytes_per_pixels(pixel_format);
 

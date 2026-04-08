@@ -90,6 +90,37 @@ impl Configuration {
 		})
 	}
 
+	/// Builds a `Configuration` for CPU (After Effects software render).
+	///
+	/// `in_data` and `out_data` must point to valid pixel buffers for the
+	/// duration of the kernel dispatch. Pitches are in pixels, not bytes.
+	pub fn cpu(
+		in_data: *mut c_void,
+		out_data: *mut c_void,
+		in_pitch_px: i32,
+		out_pitch_px: i32,
+		width: u32,
+		height: u32,
+		is16f: bool,
+	) -> Self {
+		Self {
+			device_handle: std::ptr::null_mut(),
+			context_handle: None,
+			command_queue_handle: std::ptr::null_mut(),
+			outgoing_data: Some(in_data),
+			incoming_data: Some(in_data),
+			dest_data: out_data,
+			outgoing_pitch_px: in_pitch_px,
+			incoming_pitch_px: in_pitch_px,
+			dest_pitch_px: out_pitch_px,
+			width,
+			height,
+			is16f,
+			progress: 0.0,
+			render_generation: 0,
+		}
+	}
+
 	/// # Safety
 	/// `out_frame` must be a valid, non-null GPU frame pointer whose memory remains alive and writable.
 	/// `bytes_per_pixel` and `row_bytes` must match the actual pixel format and layout.

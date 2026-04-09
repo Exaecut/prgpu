@@ -50,8 +50,7 @@ fn hash_str(s: &str) -> u64 {
 static CACHE: OnceLock<Mutex<HashMap<Key, Pipelines>>> = OnceLock::new();
 
 #[cfg(shader_hotreload)]
-static SHADER_DIRS: OnceLock<Mutex<Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>>> =
-	OnceLock::new();
+static SHADER_DIRS: OnceLock<Mutex<Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>>> = OnceLock::new();
 
 #[cfg(shader_hotreload)]
 fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>> {
@@ -60,10 +59,7 @@ fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::Pa
 
 #[cfg(shader_hotreload)]
 pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::path::PathBuf>) {
-	log::info!(
-		"[Metal/HotReload] Shader source dir: {}",
-		shader_dir.display()
-	);
+	log::info!("[Metal/HotReload] Shader source dir: {}", shader_dir.display());
 	for d in &include_dirs {
 		log::info!("[Metal/HotReload] Include dir: {}", d.display());
 	}
@@ -79,11 +75,31 @@ pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::pa
 /// # Safety
 /// - `device` must be a valid Metal device pointer.
 /// - `shader_src` and `fname` must point to valid static strings.
-pub unsafe fn load_kernel(
-	device: *mut Object,
-	shader_src: &'static str,
-	fname: &'static str,
-) -> Result<(*mut Object, *mut Object), &'static str> {
+fn inject_metal_dispatch_params(src: &str) -> String {
+	let needle = "kernel void ";
+	let mut out = String::with_capacity(src.len() + 256);
+	let mut pos = 0;
+	while let Some(off) = src[pos..].find(needle) {
+		let abs = pos + off;
+		out.push_str(&src[pos..abs]);
+		out.push_str(needle);
+		let after = abs + needle.len();
+		if let Some(paren) = src[after..].find('(') {
+			let paren_abs = after + paren;
+			out.push_str(&src[after..=paren_abs]);
+			out.push_str("\n    uint2 __vekl_dispatch_id [[thread_position_in_grid]],\n    uint2 __vekl_dispatch_size [[grid_size]],");
+			pos = paren_abs + 1;
+		} else {
+			out.push_str(&src[after..]);
+			pos = src.len();
+			break;
+		}
+	}
+	out.push_str(&src[pos..]);
+	out
+}
+
+pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: &'static str) -> Result<(*mut Object, *mut Object), &'static str> {
 	let key = Key {
 		device: device as usize,
 		src_hash: hash_str(shader_src),
@@ -109,11 +125,7 @@ pub unsafe fn load_kernel(
 				let vekl_path = shader_dir.join(format!("{fname}.vekl"));
 				match std::fs::read_to_string(&vekl_path) {
 					Ok(src) => {
-						log::info!(
-							"[Metal/HotReload] Compiling: {fname} ({} bytes) from {}",
-							src.len(),
-							vekl_path.display()
-						);
+						log::info!("[Metal/HotReload] Compiling: {fname} ({} bytes) from {}", src.len(), vekl_path.display());
 						let start = Instant::now();
 						match expand_includes_runtime(&src, shader_dir, include_dirs) {
 							Ok(expanded) => {
@@ -133,10 +145,7 @@ pub unsafe fn load_kernel(
 						}
 					}
 					Err(e) => {
-						log::warn!(
-							"[Metal/HotReload] Failed to read {}: {e} — using embedded source",
-							vekl_path.display()
-						);
+						log::warn!("[Metal/HotReload] Failed to read {}: {e} — using embedded source", vekl_path.display());
 						Cow::Borrowed(shader_src)
 					}
 				}
@@ -151,15 +160,15 @@ pub unsafe fn load_kernel(
 		}
 	};
 
-	let src = unsafe { nsstring_utf8(&raw_src) };
+	let injected = inject_metal_dispatch_params(&raw_src);
+	let src = unsafe { nsstring_utf8(&injected) };
 	let mut error: *mut Object = std::ptr::null_mut();
 
 	// Compile f32 library (+1 retained: alloc+init on opts, new* on lib)
 	let opts_f32: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f32: *mut Object = msg_send![opts_f32, init];
 
-	let lib_f32: *mut Object =
-		msg_send![device, newLibraryWithSource: src options: opts_f32 error: &mut error];
+	let lib_f32: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f32 error: &mut error];
 	let _: () = msg_send![opts_f32, release];
 	if lib_f32.is_null() {
 		if let Some(msg) = unsafe { ns_error(error) } {
@@ -174,13 +183,15 @@ pub unsafe fn load_kernel(
 
 	// dictionary is autoreleased; numberWithInt is autoreleased
 	let macros: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
+	let key_vekl: *mut Object = unsafe { nsstring_utf8("VEKL_METAL") };
+	let val_one: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
+	let _: () = msg_send![macros, setObject: val_one forKey: key_vekl];
 	let key_macro: *mut Object = unsafe { nsstring_utf8("USE_HALF_PRECISION") };
 	let val_macro: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
 	let _: () = msg_send![macros, setObject: val_macro forKey: key_macro];
 	let _: () = msg_send![opts_f16, setPreprocessorMacros: macros];
 
-	let lib_f16: *mut Object =
-		msg_send![device, newLibraryWithSource: src options: opts_f16 error: &mut error];
+	let lib_f16: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f16 error: &mut error];
 	let _: () = msg_send![opts_f16, release];
 	if lib_f16.is_null() {
 		let _: () = msg_send![lib_f32, release];
@@ -195,8 +206,12 @@ pub unsafe fn load_kernel(
 	let func_f32: *mut Object = msg_send![lib_f32, newFunctionWithName: fname_ns];
 	let func_f16: *mut Object = msg_send![lib_f16, newFunctionWithName: fname_ns];
 	if func_f32.is_null() || func_f16.is_null() {
-		if !func_f32.is_null() { let _: () = msg_send![func_f32, release]; }
-		if !func_f16.is_null() { let _: () = msg_send![func_f16, release]; }
+		if !func_f32.is_null() {
+			let _: () = msg_send![func_f32, release];
+		}
+		if !func_f16.is_null() {
+			let _: () = msg_send![func_f16, release];
+		}
 		let _: () = msg_send![lib_f32, release];
 		let _: () = msg_send![lib_f16, release];
 		log::error!("[Metal] function '{fname}' not found in libraries");
@@ -206,18 +221,20 @@ pub unsafe fn load_kernel(
 	// Build pipeline state objects (+1 retained from new*)
 	let mut err1: *mut Object = std::ptr::null_mut();
 	let mut err2: *mut Object = std::ptr::null_mut();
-	let pso_f32: *mut Object =
-		msg_send![device, newComputePipelineStateWithFunction: func_f32 error: &mut err1];
-	let pso_f16: *mut Object =
-		msg_send![device, newComputePipelineStateWithFunction: func_f16 error: &mut err2];
+	let pso_f32: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f32 error: &mut err1];
+	let pso_f16: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f16 error: &mut err2];
 
 	// Functions retained by PSOs — release our ref
 	let _: () = msg_send![func_f32, release];
 	let _: () = msg_send![func_f16, release];
 
 	if pso_f32.is_null() || pso_f16.is_null() {
-		if !pso_f32.is_null() { let _: () = msg_send![pso_f32, release]; }
-		if !pso_f16.is_null() { let _: () = msg_send![pso_f16, release]; }
+		if !pso_f32.is_null() {
+			let _: () = msg_send![pso_f32, release];
+		}
+		if !pso_f16.is_null() {
+			let _: () = msg_send![pso_f16, release];
+		}
 		let _: () = msg_send![lib_f32, release];
 		let _: () = msg_send![lib_f16, release];
 		log::error!("[Metal] pipeline creation failed: {err1:?} / {err2:?}");

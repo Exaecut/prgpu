@@ -7,11 +7,8 @@ use after_effects::log;
 ///
 /// # Safety
 /// `_queue` must be a valid Metal command queue handle.
-pub unsafe fn sync_after_dispatch(
-    _queue: *mut c_void,
-    _generation: u64,
-) -> Result<f32, &'static str> {
-    Ok(0.0)
+pub unsafe fn sync_after_dispatch(_queue: *mut c_void, _generation: u64) -> Result<f32, &'static str> {
+	Ok(0.0)
 }
 
 /// No-op on Metal.
@@ -19,5 +16,5 @@ pub unsafe fn sync_after_dispatch(
 /// # Safety
 /// No preconditions.
 pub unsafe fn cleanup() {
-    log::info!("[Metal] Stream fences cleared");
+	log::info!("[Metal] Stream fences cleared");
 }

@@ -133,6 +133,12 @@ fn parse_kernel_signature(src: &str) -> Option<KernelSignature> {
 ///   );
 ///
 /// Width/height are extracted from FrameParams.width/.height for dispatch loop bounds.
+const PIXEL_TYPE_NAMES: &[&str] = &["pixel", "pixel_format"];
+
+fn is_pixel_type(type_name: &str) -> bool {
+    PIXEL_TYPE_NAMES.contains(&type_name)
+}
+
 fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -> String {
     let mut out = String::new();
 
@@ -159,18 +165,47 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
     for p in &sig.params {
         match p.kind {
             ParamKind::Ro => {
-                out.push_str(&format!(
-                    "    const {} * __restrict {} = (const {} *)__buffers[{}];\n",
-                    p.type_name, p.name, p.type_name, buf_idx
-                ));
+                if is_pixel_type(&p.type_name) {
+                    out.push_str(&format!(
+                        "    const void * __restrict {} = (const void *)__buffers[{}];\n",
+                        p.name, buf_idx
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    const {} * __restrict {} = (const {} *)__buffers[{}];\n",
+                        p.type_name, p.name, p.type_name, buf_idx
+                    ));
+                }
                 buf_idx += 1;
                 forward_args.push(p.name.clone());
             }
-            ParamKind::Rw | ParamKind::Wo => {
-                out.push_str(&format!(
-                    "    {} * __restrict {} = ({} *)__buffers[{}];\n",
-                    p.type_name, p.name, p.type_name, buf_idx
-                ));
+            ParamKind::Rw => {
+                if is_pixel_type(&p.type_name) {
+                    out.push_str(&format!(
+                        "    void * __restrict {} = (void *)__buffers[{}];\n",
+                        p.name, buf_idx
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    {} * __restrict {} = ({} *)__buffers[{}];\n",
+                        p.type_name, p.name, p.type_name, buf_idx
+                    ));
+                }
+                buf_idx += 1;
+                forward_args.push(p.name.clone());
+            }
+            ParamKind::Wo => {
+                if is_pixel_type(&p.type_name) {
+                    out.push_str(&format!(
+                        "    void * __restrict {} = (void *)__buffers[{}];\n",
+                        p.name, buf_idx
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    {} * __restrict {} = ({} *)__buffers[{}];\n",
+                        p.type_name, p.name, p.type_name, buf_idx
+                    ));
+                }
                 buf_idx += 1;
                 forward_args.push(p.name.clone());
             }
@@ -202,6 +237,7 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
     out.push_str("\n");
     out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
     out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
+    out.push_str(&format!("    __cpu_format = {}.bpp;\n", tp_name));
     out.push_str(&format!(
         "    for (unsigned int __y = 0; __y < {}.height; ++__y) {{\n",
         tp_name
@@ -265,6 +301,7 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
                 "--std=c++14".into(),
                 "--extra-device-vectorization".into(),
                 "--device-as-default-execution-space".into(),
+                "-DVEKL_CUDA=1".into(),
             ];
             if half_precision {
                 extra_opts.push("-DUSE_HALF_PRECISION=1".into());
@@ -340,6 +377,7 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
             .opt_level(3)
             .include(&utils_str)
             .include(shader_dir_abs.to_str().unwrap())
+            .define("VEKL_CPU", Some("1"))
             .flag_if_supported("/std:c++14") // MSVC
             .flag_if_supported("-std=c++14") // Clang/GCC
             .flag_if_supported("/fp:fast") // MSVC fast math

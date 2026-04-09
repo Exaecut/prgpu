@@ -10,16 +10,13 @@ use cudarc::driver::sys as cuda;
 ///
 /// # Safety
 /// `stream` must be a valid CUDA stream with all passes already enqueued.
-pub unsafe fn sync_after_dispatch(
-    stream: *mut c_void,
-    _generation: u64,
-) -> Result<f32, &'static str> {
-    let res = unsafe { cuda::cuStreamSynchronize(stream as cuda::CUstream) };
-    if res != cuda::CUresult::CUDA_SUCCESS {
-        log::error!("[CUDA] cuStreamSynchronize failed: {:?}", res);
-        return Err("cuStreamSynchronize failed");
-    }
-    Ok(0.0)
+pub unsafe fn sync_after_dispatch(stream: *mut c_void, _generation: u64) -> Result<f32, &'static str> {
+	let res = unsafe { cuda::cuStreamSynchronize(stream as cuda::CUstream) };
+	if res != cuda::CUresult::CUDA_SUCCESS {
+		log::error!("[CUDA] cuStreamSynchronize failed: {:?}", res);
+		return Err("cuStreamSynchronize failed");
+	}
+	Ok(0.0)
 }
 
 /// No-op — stream sync is stateless (no cached events to destroy).

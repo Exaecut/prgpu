@@ -234,7 +234,7 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
         );
     }
 
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
     out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
     out.push_str(&format!("    __cpu_format = {}.bpp;\n", tp_name));

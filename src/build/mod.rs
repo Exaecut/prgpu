@@ -125,14 +125,18 @@ fn parse_kernel_signature(src: &str) -> Option<KernelSignature> {
     Some(KernelSignature { name, params })
 }
 
-/// Generic CPU dispatch ABI:
+/// Per-pixel CPU dispatch ABI:
 ///   void <name>_cpu_dispatch(
+///       unsigned int gid_x,                  // pixel x coordinate
+///       unsigned int gid_y,                  // pixel y coordinate
 ///       const void* const* buffers,          // [outgoing, incoming, dest, ...]
-///       const void* transition_params,       // FrameParams* (contains width/height for loop)
+///       const void* transition_params,       // FrameParams* (contains width/height/bpp)
 ///       const void* user_params              // effect-specific UserParams*
 ///   );
 ///
-/// Width/height are extracted from FrameParams.width/.height for dispatch loop bounds.
+/// The caller drives pixel iteration (iterate_with for AE, rayon for Premiere).
+/// Thread-local globals __cpu_gid_x/y, __cpu_dispatch_w/h, __cpu_format
+/// are set from (gid_x, gid_y) and FrameParams before calling the VEKL kernel.
 const PIXEL_TYPE_NAMES: &[&str] = &["pixel", "pixel_format"];
 
 fn is_pixel_type(type_name: &str) -> bool {
@@ -153,6 +157,8 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
     out.push_str("#endif\n\n");
 
     out.push_str(&format!("void {}_cpu_dispatch(\n", sig.name));
+    out.push_str("    unsigned int __gid_x,\n");
+    out.push_str("    unsigned int __gid_y,\n");
     out.push_str("    const void* const* __buffers,\n");
     out.push_str("    const void* __transition_params,\n");
     out.push_str("    const void* __user_params\n");
@@ -238,23 +244,13 @@ fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -
     out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
     out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
     out.push_str(&format!("    __cpu_format = {}.bpp;\n", tp_name));
+    out.push_str("    __cpu_gid_x = __gid_x;\n");
+    out.push_str("    __cpu_gid_y = __gid_y;\n");
     out.push_str(&format!(
-        "    for (unsigned int __y = 0; __y < {}.height; ++__y) {{\n",
-        tp_name
-    ));
-    out.push_str(&format!(
-        "        for (unsigned int __x = 0; __x < {}.width; ++__x) {{\n",
-        tp_name
-    ));
-    out.push_str("            __cpu_gid_x = __x;\n");
-    out.push_str("            __cpu_gid_y = __y;\n");
-    out.push_str(&format!(
-        "            {}({});\n",
+        "    {}({});\n",
         sig.name,
         forward_args.join(", ")
     ));
-    out.push_str("        }\n");
-    out.push_str("    }\n");
     out.push_str("}\n\n");
 
     out.push_str("#ifdef __cplusplus\n");

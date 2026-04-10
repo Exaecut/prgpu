@@ -4,9 +4,10 @@
 ///
 /// Generates:
 /// - `const VIGNETTE_SHADER_SRC` (embedded PTX)
+/// - `const VIGNETTE_SHADER_SRC_F16` (embedded PTX, half-precision)
 /// - `const VIGNETTE_KERNEL_ENTRY_POINT`
 /// - `pub unsafe fn vignette(config, user_params)` (GPU dispatch)
-/// - `pub unsafe fn vignette_cpu(config, user_params)` (CPU fallback dispatch)
+/// - `pub fn vignette_cpu(in_data, in_layer, out_layer, config, user_params)` (CPU via iterate_with/rayon)
 ///
 /// Under `shader_hotreload`, the generated dispatch function auto-registers
 /// the effect's shader directory on first call. No manual setup required.
@@ -57,38 +58,35 @@ macro_rules! declare_kernel {
 		$crate::paste::paste! {
 			unsafe extern "C" {
 				fn [<$name _cpu_dispatch>](
+					gid_x: u32,
+					gid_y: u32,
 					buffers: *const *const std::ffi::c_void,
 					transition_params: *const std::ffi::c_void,
 					user_params: *const std::ffi::c_void,
 				);
 			}
 
-			pub unsafe fn [<$name _cpu>](
+			/// CPU dispatch via `iterate_with` (AE) or rayon (Premiere).
+			///
+			/// BPP is auto-detected from the output Layer. Configuration provides
+			/// buffer pointers and pitches; when its dimensions match the output Layer,
+			/// AE's multi-threaded iterate suites are used, otherwise rayon is used
+			/// (e.g. for blur intermediate buffers with downsampled dimensions).
+			pub fn [<$name _cpu>](
+				in_data: &after_effects::InData,
+				in_layer: &after_effects::Layer,
+				out_layer: &mut after_effects::Layer,
 				config: &$crate::types::Configuration,
 				user_params: $user_params_ty,
-			) -> Result<(), &'static str> {
-				let buffers: [*const std::ffi::c_void; 3] = [
-					config.outgoing_data.unwrap_or(std::ptr::null_mut()) as *const std::ffi::c_void,
-					config.incoming_data.unwrap_or(std::ptr::null_mut()) as *const std::ffi::c_void,
-					config.dest_data as *const std::ffi::c_void,
-				];
-				let tp = $crate::types::FrameParams {
-					out_pitch: config.outgoing_pitch_px as u32,
-					in_pitch: config.incoming_pitch_px as u32,
-					dest_pitch: config.dest_pitch_px as u32,
-					width: config.width,
-					height: config.height,
-					progress: config.progress,
-					bpp: config.bytes_per_pixel,
-				};
-				unsafe {
-					[<$name _cpu_dispatch>](
-						buffers.as_ptr(),
-						&tp as *const _ as *const std::ffi::c_void,
-						&user_params as *const _ as *const std::ffi::c_void,
-					);
-				}
-				Ok(())
+			) -> Result<(), after_effects::Error> {
+				$crate::cpu::render::render_cpu(
+					in_data,
+					in_layer,
+					out_layer,
+					config,
+					[<$name _cpu_dispatch>],
+					&user_params,
+				)
 			}
 		}
 	};

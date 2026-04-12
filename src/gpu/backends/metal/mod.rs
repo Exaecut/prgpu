@@ -129,6 +129,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			height: config.height,
 			progress: config.progress,
 			bpp: config.bytes_per_pixel,
+			pixel_layout: config.pixel_layout,
 		};
 
 		let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut());

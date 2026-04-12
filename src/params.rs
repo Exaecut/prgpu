@@ -151,17 +151,17 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 ///
 /// # Extractors
 ///
-/// | Extractor         | GPU                              | CPU                          |
-/// |-------------------|----------------------------------|------------------------------|
-/// | `float(V)`        | `get_param::<f32>`               | `params.float(V)?`           |
-/// | `angle(V)`        | `get_param::<f32>`               | `params.angle(V)?`           |
-/// | `color_r(V)`      | `get_param::<Pixel>.red as f32`  | `params.color(V)?.red as f32`|
-/// | `color_g(V)`      | `.green`                         | `.green`                     |
-/// | `color_b(V)`      | `.blue`                          | `.blue`                      |
-/// | `color_a(V)`      | `.alpha`                         | `.alpha`                     |
-/// | `point_pct_x(V)`  | `point.0 / 100.0`                | `point.0 / 100.0`           |
-/// | `point_pct_y(V)`  | `point.1 / 100.0`                | `point.1 / 100.0`           |
-/// | `checkbox(V)`     | `get_param::<bool> as u32`       | `params.checkbox(V)? as u32` |
+/// | Extractor         | GPU                              | CPU                            |
+/// |-------------------|----------------------------------|--------------------------------|
+/// | `float(V)`        | `get_param::<f32>`               | `params.float(V)?`             |
+/// | `angle(V)`        | `get_param::<f32>`               | `params.angle(V)?`             |
+/// | `color_r(V)`      | `get_param::<Pixel>.red as f32`  | `params.color(V)?.red as f32`  |
+/// | `color_g(V)`      | `.green`                         | `.green`                       |
+/// | `color_b(V)`      | `.blue`                          | `.blue`                        |
+/// | `color_a(V)`      | `.alpha`                         | `.alpha`                       |
+/// | `point_pct_x(V)`  | `point.0` (pre-normalized)       | `point.0 / width`             |
+/// | `point_pct_y(V)`  | `point.1` (pre-normalized)       | `point.1 / height`            |
+/// | `checkbox(V)`     | `get_param::<bool> as u32`       | `params.checkbox(V)? as u32`   |
 ///
 /// Append `/ expr` or `* expr` after the extractor for a post-transform.
 /// Fields without `= ...` are zero-initialized padding.
@@ -206,10 +206,13 @@ macro_rules! kernel_params {
 
             pub fn from_cpu(
                 __params: &::after_effects::Parameters<'_, $P>,
+                __width: f32,
+                __height: f32,
+                __is_premiere: bool,
             ) -> ::core::result::Result<Self, ::after_effects::Error> {
                 use $crate::params::CpuParams as _;
                 Ok(Self {
-                    $( $field: $crate::kernel_params!(@cpu $P, __params $(, $($spec)+)?), )*
+                    $( $field: $crate::kernel_params!(@cpu $P, __params, __width, __height, __is_premiere $(, $($spec)+)?), )*
                 })
             }
         }
@@ -273,55 +276,61 @@ macro_rules! kernel_params {
     // CPU: transform wrappers
 
     // With / transform
-    (@cpu $P:path, $p:ident, $ext:ident($v:ident) / $($t:tt)+) => {
-        $crate::kernel_params!(@cpu_base $ext, $P, $p, $v) / $($t)+
+    (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident) / $($t:tt)+) => {
+        $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v) / $($t)+
     };
     // With * transform
-    (@cpu $P:path, $p:ident, $ext:ident($v:ident) * $($t:tt)+) => {
-        $crate::kernel_params!(@cpu_base $ext, $P, $p, $v) * $($t)+
+    (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident) * $($t:tt)+) => {
+        $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v) * $($t)+
     };
     // No transform
-    (@cpu $P:path, $p:ident, $ext:ident($v:ident)) => {
-        $crate::kernel_params!(@cpu_base $ext, $P, $p, $v)
+    (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident)) => {
+        $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v)
     };
     // Padding (no spec)
-    (@cpu $P:path, $p:ident) => {
+    (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident) => {
         Default::default()
     };
 
     // CPU: base extractors
+    // ($w/$h for point normalisation, $is_pr for Premiere R↔B color swap)
 
-    (@cpu_base float, $P:path, $p:ident, $v:ident) => {
+    (@cpu_base float, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.float(<$P>::$v)?
     };
-    (@cpu_base angle, $P:path, $p:ident, $v:ident) => {
+    (@cpu_base angle, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.angle(<$P>::$v)?
     };
-    (@cpu_base checkbox, $P:path, $p:ident, $v:ident) => {
+    (@cpu_base checkbox, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.checkbox(<$P>::$v)? as u32
     };
-    (@cpu_base color_r, $P:path, $p:ident, $v:ident) => {{
+    // Color params: Premiere fills PF_Pixel with BGRA byte order, so .red
+    // actually contains Blue and .blue contains Red.  AE uses ARGB (correct).
+    (@cpu_base color_r, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
-        __c.red as f32
+        if $is_pr { __c.blue as f32 } else { __c.red as f32 }
     }};
-    (@cpu_base color_g, $P:path, $p:ident, $v:ident) => {{
+    (@cpu_base color_g, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
         __c.green as f32
     }};
-    (@cpu_base color_b, $P:path, $p:ident, $v:ident) => {{
+    (@cpu_base color_b, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
-        __c.blue as f32
+        if $is_pr { __c.red as f32 } else { __c.blue as f32 }
     }};
-    (@cpu_base color_a, $P:path, $p:ident, $v:ident) => {{
+    (@cpu_base color_a, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
         __c.alpha as f32
     }};
-    (@cpu_base point_pct_x, $P:path, $p:ident, $v:ident) => {{
+    // Point params: AE/Premiere return pixel coordinates from as_point().value().
+    // Normalise to [0,1] UV space by dividing by actual layer dimensions.
+    // (GPU path receives pre-normalised values from Premiere's GPU param buffer.)
+    (@cpu_base point_pct_x, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __pt = $p.point(<$P>::$v)?;
-        __pt.0 / 100.0
+        __pt.0 / $w
     }};
-    (@cpu_base point_pct_y, $P:path, $p:ident, $v:ident) => {{
+    (@cpu_base point_pct_y, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __pt = $p.point(<$P>::$v)?;
-        __pt.1 / 100.0
+        __pt.1 / $h
     }};
 }

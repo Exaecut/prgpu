@@ -3,9 +3,6 @@ use std::{error::Error, path::PathBuf};
 #[cfg(target_os = "windows")]
 use cudarc::nvrtc::{CompileError, CompileOptions};
 
-// Shared codegen utilities live in cpu/codegen.rs so they can be used both at
-// build time (here, via `feature = "build"`) and at runtime by cpu/pipeline.rs
-// (when `feature = "shader_hotreload"` is active).
 use crate::cpu::codegen::{generate_cpu_dispatch_wrapper, parse_kernel_signature};
 use crate::gpu::shaders::expand_includes_runtime;
 
@@ -104,7 +101,6 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 		std::fs::write(&metal_path, expanded_metal)?;
 		println!("cargo:warning=Metal shader source generated -> {}", metal_path.to_str().unwrap());
 
-		// GPU: compile f32 and f16 PTX variants via NVRTC.
 		for (suffix, half_precision) in [("", false), ("_f16", true)] {
 			let tag = format!("{name}{suffix}");
 			let ptx_path = PathBuf::from(&out_dir).join(format!("{tag}.ptx"));
@@ -164,7 +160,6 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 			}
 		}
 
-		// CPU: Generate dispatch wrapper .cpp
 		let sig = parse_kernel_signature(&src).ok_or_else(|| format!("Failed to parse kernel signature in {}", path.display()))?;
 
 		let shader_abs = path.canonicalize().unwrap();
@@ -179,7 +174,6 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 		cpu_sources.push((name, wrapper_path));
 	}
 
-	// CPU: Compile all wrappers into a static library via cc.
 	if !cpu_sources.is_empty() {
 		let mut build = cc::Build::new();
 		build
@@ -188,14 +182,14 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 			.include(&utils_str)
 			.include(shader_dir_abs.to_str().unwrap())
 			.define("VEKL_CPU", Some("1"))
-			.flag_if_supported("/std:c++14") // MSVC
-			.flag_if_supported("-std=c++14") // Clang/GCC
-			.flag_if_supported("/fp:fast") // MSVC fast math
-			.flag_if_supported("-ffast-math") // Clang/GCC fast math
-			.flag_if_supported("/Oi") // MSVC intrinsics
-			.flag_if_supported("/arch:AVX2") // MSVC SIMD
-			.flag_if_supported("-mavx2") // Clang/GCC SIMD
-			.flag_if_supported("-mfma"); // Clang/GCC FMA
+			.flag_if_supported("/std:c++14")
+			.flag_if_supported("-std=c++14")
+			.flag_if_supported("/fp:fast")
+			.flag_if_supported("-ffast-math")
+			.flag_if_supported("/Oi")
+			.flag_if_supported("/arch:AVX2")
+			.flag_if_supported("-mavx2")
+			.flag_if_supported("-mfma");
 
 		if cfg!(debug_assertions) {
 			build.define("DEBUG", Some("1"));

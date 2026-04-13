@@ -4,23 +4,12 @@ use after_effects::{self as ae, log};
 
 use crate::types::{Configuration, FrameParams};
 
-/// Per-pixel VEKL dispatch function type.
-///
-/// Signature matches the generated C++ per-pixel entry point:
-/// ```cpp
-/// void name_cpu_dispatch(
-///     unsigned int gid_x, unsigned int gid_y,
-///     const void* const* buffers,
-///     const void* transition_params,
-///     const void* user_params
-/// );
-/// ```
 pub type CpuDispatchFn = unsafe extern "C" fn(
-	u32,                  // gid_x
-	u32,                  // gid_y
-	*const *const c_void, // buffers
-	*const c_void,        // transition_params (FrameParams*)
-	*const c_void,        // user_params
+	u32,
+	u32,
+	*const *const c_void,
+	*const c_void,
+	*const c_void,
 );
 
 /// Wrapper to make buffer pointer array `Send + Sync`.
@@ -39,7 +28,7 @@ unsafe impl Sync for SafeBuffers {}
 /// - 2 = VUYA BT.601 (YCbCr→RGB)
 /// - 3 = VUYA BT.709 (YCbCr→RGB)
 ///
-/// For After Effects, always returns 1 (BGRA).
+/// For After Effects, always returns 1 (BGRA
 pub fn pixel_layout_from_format(in_data: &ae::InData, layer: &ae::Layer) -> u32 {
 	if in_data.is_premiere() {
 		if let Ok(fmt) = layer.pr_pixel_format() {
@@ -135,15 +124,6 @@ pub fn compute_bpp(in_data: &ae::InData, layer: &ae::Layer) -> Result<u32, ae::E
 	}
 }
 
-/// Unified CPU render dispatch.
-///
-/// Iterates over every pixel, calling `dispatch_fn` for each one.
-/// - **After Effects** with matching Layer dimensions: uses `iterate_with`
-///   (AE multi-threaded iterate suites, supports 8/16/32-bit via
-///   Iterate8/Iterate16/IterateFloat)
-/// - **Premiere** or mismatched dimensions (blur intermediate buffers):
-///   uses rayon parallel row iteration proven pattern:
-///   `out_buf.par_chunks_mut(stride).enumerate().for_each(|(y, row)| { row.chunks_mut(bpp)... })`
 pub fn render_cpu<P: Copy + Sync>(
 	in_data: &ae::InData,
 	in_layer: &ae::Layer,
@@ -188,9 +168,6 @@ pub fn render_cpu<P: Copy + Sync>(
 		dest_ptr
 	);
 
-	// Use iterate_with when: AE host AND config dimensions match the output Layer.
-	// This ensures the AE iterate suites iterate over the correct pixel range.
-	// For blur intermediate buffers (dimensions differ), fall through to rayon.
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
 
 	if can_iterate_with {
@@ -212,22 +189,14 @@ pub fn render_cpu<P: Copy + Sync>(
 			out_layer.height()
 		);
 
-		// sdk_noise pattern: get buffer slices from Layers and keep them alive
-		// for the entire dispatch. This ensures the host buffer remains
-		// mapped/locked in Premiere for the duration of the parallel iteration.
-		// Get strides BEFORE mutable borrow to satisfy borrow checker.
 		let _in_stride_bytes = in_layer.buffer_stride();
 		let out_stride_bytes = out_layer.buffer_stride();
 		let in_buf = in_layer.buffer();
 		let mut out_buf = out_layer.buffer_mut();
 
-		// Use fresh pointers from kept-alive slices for layer-backed buffers.
-		// In Premiere, buffer_mut() may map/lock the host buffer, so the pointer
-		// from a fresh call may differ from the stale config pointer captured earlier.
 		let fresh_outgoing = in_buf.as_ptr() as *const c_void;
 		let fresh_dest = out_buf.as_ptr() as *const c_void;
-		// For incoming: if config uses the same pointer as outgoing (no-blur case),
-		// use the fresh outgoing pointer; otherwise keep config's intermediate buffer pointer.
+
 		let fresh_incoming = if incoming_ptr == outgoing_ptr {
 			fresh_outgoing
 		} else {
@@ -235,8 +204,6 @@ pub fn render_cpu<P: Copy + Sync>(
 		};
 		let fresh_buffers = SafeBuffers([fresh_outgoing, fresh_incoming, fresh_dest]);
 
-		// Pointer verification: config buffer pointers should match actual Layer buffer pointers.
-		// A mismatch indicates stale pointers from dropped temporary slices.
 		log::info!(
 			"rayon ptr check: in_buf={:?} vs config.outgoing={:?} match={} | out_buf={:?} vs config.dest={:?} match={}",
 			fresh_outgoing, outgoing_ptr, fresh_outgoing == outgoing_ptr,
@@ -247,10 +214,6 @@ pub fn render_cpu<P: Copy + Sync>(
 	}
 }
 
-/// AE path: `iterate_with` for multi-threaded dispatch.
-///
-/// Supports 8-bit (Iterate8Suite), 16-bit (Iterate16Suite), and
-/// 32-bit float (IterateFloatSuite) automatically via `GenericPixel` dispatch.
 fn ae_dispatch<P: Copy + Sync>(
 	in_layer: &ae::Layer,
 	out_layer: &mut ae::Layer,
@@ -284,16 +247,6 @@ fn ae_dispatch<P: Copy + Sync>(
 	)
 }
 
-/// Rayon path: parallel row iteration following sdk_noise's proven pattern.
-///
-/// Uses `par_chunks_mut(out_stride)` on the output buffer to keep it alive/mapped
-/// for the entire dispatch, matching how sdk_noise iterates pixels in Premiere.
-/// The VEKL dispatch function writes through `buffers[2]` (dest), which points
-/// to the same memory as `out_buf`.
-///
-/// Used for Premiere (no IterateFloat support) and for intermediate buffer
-/// dispatch where config dimensions don't match Layer dimensions
-/// (e.g., blur downsampled buffers).
 fn rayon_dispatch<P: Copy + Sync>(
 	width: u32,
 	height: u32,
@@ -309,16 +262,13 @@ fn rayon_dispatch<P: Copy + Sync>(
 	use std::sync::atomic::{AtomicBool, Ordering};
 
 	let first_call = AtomicBool::new(true);
-	// Convert pointers to usize so the closure captures plain usize values
-	// (raw pointers are not Send/Sync, but usize is).
+
 	let buf_ptr = buffers.0.as_ptr() as usize;
 	let tp_ptr = &tp as *const _ as usize;
 	let up_ptr = user_params as *const _ as usize;
 
 	log::info!("rayon_dispatch: {}x{} out_stride={}b bpp={}", width, height, out_stride_bytes, tp.bpp);
 
-	// sdk_noise pattern: par_chunks_mut on output buffer keeps it alive/mapped
-	// for the entire parallel iteration, ensuring Premiere's host buffer stays valid.
 	out_buf.par_chunks_mut(out_stride_bytes).enumerate().for_each(move |(y, _row_bytes)| {
 		if first_call.swap(false, Ordering::Relaxed) {
 			log::info!("rayon_dispatch: first callback fired at row y={}", y);

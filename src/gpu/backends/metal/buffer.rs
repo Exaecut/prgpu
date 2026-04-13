@@ -22,15 +22,11 @@ impl StorageMode {
 
 static CACHE: OnceLock<Mutex<HashMap<BufferKey, BufferObj>>> = OnceLock::new();
 
-/// # Safety
-/// `device` must be a valid MTLDevice pointer.
 pub(crate) unsafe fn allocate(device: *mut Object, length_bytes: u64) -> *mut Object {
 	let opts = StorageMode::Private.as_resource_options();
 	msg_send![device, newBufferWithLength: length_bytes options: opts]
 }
 
-/// # Safety
-/// `device` must be a valid MTLDevice pointer (FromPtr) or valid suite handle (FromSuite).
 pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
 	match device {
 		DeviceHandleInit::FromPtr(device) => {
@@ -106,8 +102,6 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	}
 }
 
-/// # Safety
-/// No GPU work may reference these buffers.
 pub unsafe fn cleanup() {
 	if let Some(map) = CACHE.get() {
 		let mut guard = map.lock();

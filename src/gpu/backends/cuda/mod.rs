@@ -120,8 +120,6 @@ unsafe fn dispatch(
 	Ok(())
 }
 
-/// # Safety
-/// `ptr` must be a valid CUDA device pointer or null.
 pub unsafe fn log_device_ptr_info(tag: &str, ptr: *mut c_void) {
 	if ptr.is_null() {
 		log::error!("[cuda] {tag}: null");

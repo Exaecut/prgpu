@@ -61,7 +61,7 @@ fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::Pa
 ///
 /// No-op when `shader_hotreload` is not active — the function always exists so that
 /// `gpu::pipeline::set_shader_dirs` resolves even when vignette's build.rs emits
-/// `cfg(shader_hotreload)` while prgpu was compiled without the feature.
+
 pub fn set_shader_dirs(_shader_dir: std::path::PathBuf, _include_dirs: Vec<std::path::PathBuf>) {
 	#[cfg(shader_hotreload)]
 	{
@@ -145,7 +145,6 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 	let src = unsafe { nsstring_utf8(&injected) };
 	let mut error: *mut Object = std::ptr::null_mut();
 
-	// Compile f32 library (+1 retained: alloc+init on opts, new* on lib)
 	let opts_f32: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f32: *mut Object = msg_send![opts_f32, init];
 	let macros: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
@@ -167,11 +166,9 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 		return Err("library f32 compile failed");
 	}
 
-	// Compile f16 library with USE_HALF_PRECISION=1 preprocessor macro
 	let opts_f16: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f16: *mut Object = msg_send![opts_f16, init];
 
-	// dictionary is autoreleased; numberWithInt is autoreleased
 	let key_macro: *mut Object = unsafe { nsstring_utf8("USE_HALF_PRECISION") };
 	let val_macro: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
 	let _: () = msg_send![macros, setObject: val_macro forKey: key_macro];
@@ -192,7 +189,6 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 		return Err("library f16 compile failed");
 	}
 
-	// Extract kernel functions (+1 retained from newFunctionWithName)
 	let fname_ns = unsafe { nsstring_utf8(fname) };
 	let func_f32: *mut Object = msg_send![lib_f32, newFunctionWithName: fname_ns];
 	let func_f16: *mut Object = msg_send![lib_f16, newFunctionWithName: fname_ns];
@@ -209,13 +205,11 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 		return Err("function not found");
 	}
 
-	// Build pipeline state objects (+1 retained from new*)
 	let mut err1: *mut Object = std::ptr::null_mut();
 	let mut err2: *mut Object = std::ptr::null_mut();
 	let pso_f32: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f32 error: &mut err1];
 	let pso_f16: *mut Object = msg_send![device, newComputePipelineStateWithFunction: func_f16 error: &mut err2];
 
-	// Functions retained by PSOs — release our ref
 	let _: () = msg_send![func_f32, release];
 	let _: () = msg_send![func_f16, release];
 
@@ -249,8 +243,6 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 	Ok((pso_f32, pso_f16))
 }
 
-/// # Safety
-/// Must be called when no other threads are accessing the pipeline cache.
 pub unsafe fn cleanup() {
 	if let Some(map) = CACHE.get() {
 		let mut guard = map.lock();

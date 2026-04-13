@@ -37,8 +37,8 @@ fn frames_as_slice<'a>(frames: *const pr::sys::PPixHand, frame_count: usize) -> 
 
 fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
 	match pixel_format {
-		pr::PixelFormat::GpuBgra4444_32f => 16, // float4
-		pr::PixelFormat::GpuBgra4444_16f => 8,  // half4
+		pr::PixelFormat::GpuBgra4444_32f => 16,
+		pr::PixelFormat::GpuBgra4444_16f => 8,
 		_ => panic!("Unsupported pixel format"),
 	}
 }

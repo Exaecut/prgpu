@@ -1,8 +1,3 @@
-// Shared kernel codegen: shared between the build-time `build/mod.rs` and the
-// runtime `cpu/pipeline.rs` (when `shader_hotreload` is active).
-//
-// Gated in `cpu/mod.rs` by:
-//   #[cfg(any(feature = "build", all(debug_assertions, feature = "shader_hotreload")))]
 
 #[derive(Debug, Clone)]
 pub(crate) enum ParamKind {
@@ -63,24 +58,6 @@ fn is_pixel_type(type_name: &str) -> bool {
 	PIXEL_TYPE_NAMES.contains(&type_name)
 }
 
-/// Generates the C++ dispatch wrapper for the given kernel signature.
-///
-/// The emitted wrapper:
-/// - is `extern "C"` for stable C ABI
-/// - exports the symbol on Windows via `__declspec(dllexport)` (harmless for
-///   static-lib builds; required for shared-lib hot-reload builds)
-/// - on non-Windows the symbol is exported by default with `-shared`
-///
-/// Per-pixel CPU dispatch ABI:
-/// ```cpp
-/// void <name>_cpu_dispatch(
-///     unsigned int gid_x,
-///     unsigned int gid_y,
-///     const void* const* buffers,
-///     const void* transition_params,   // FrameParams*
-///     const void* user_params          // effect-specific UserParams*
-/// );
-/// ```
 pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelSignature) -> String {
 	let mut out = String::new();
 
@@ -91,10 +68,6 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 	}
 	out.push_str(&format!("#include \"{}\"\n\n", shader_abs_path.replace('\\', "/")));
 
-	// Portable export decorator.
-	// Required when building as a shared library on Windows (hot-reload path).
-	// __declspec(dllexport) on a static-lib symbol is harmless on MSVC.
-	// On non-Windows, -shared exports all extern "C" symbols by default.
 	out.push_str("#ifdef _WIN32\n");
 	out.push_str("#  define VEKL_EXPORT __declspec(dllexport)\n");
 	out.push_str("#else\n");

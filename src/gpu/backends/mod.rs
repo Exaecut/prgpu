@@ -6,15 +6,6 @@ pub mod cuda;
 
 use crate::types::Configuration;
 
-/// Routes a kernel dispatch to the active GPU backend.
-///
-/// `shader_src` carries the backend-native primary artifact:
-/// - Metal:  pre-expanded `.metal` source (managed by `metal::run` / `metal::pipeline`)
-/// - CUDA:   build-time PTX string
-/// - OpenCL: build-time `.cl` source
-///
-/// `shader_src_f16` carries the CUDA half-precision PTX variant.
-/// It is an empty string on non-CUDA builds and is ignored by Metal/OpenCL.
 pub fn dispatch_kernel<UP>(
     config: &Configuration,
     user_params: UP,
@@ -25,7 +16,7 @@ pub fn dispatch_kernel<UP>(
 {
     #[cfg(gpu_backend = "metal")]
     {
-        let _ = shader_src_f16; // Metal compiles f32 and f16 from the same source internally
+        let _ = shader_src_f16;
         return metal::run::<UP>(config, user_params, shader_src, entry);
     }
 

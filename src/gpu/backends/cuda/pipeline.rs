@@ -29,11 +29,6 @@ fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::Pa
 	SHADER_DIRS.get_or_init(|| Mutex::new(None))
 }
 
-/// Registers the shader source directory and include paths for runtime recompilation.
-///
-/// No-op when `shader_hotreload` is not active — the function always exists so that
-/// `gpu::pipeline::set_shader_dirs` resolves even when vignette's build.rs emits
-/// `cfg(shader_hotreload)` while prgpu was compiled without the feature.
 pub fn set_shader_dirs(_shader_dir: std::path::PathBuf, _include_dirs: Vec<std::path::PathBuf>) {
 	#[cfg(shader_hotreload)]
 	{
@@ -124,9 +119,6 @@ fn compile_vekl_to_ptx(name: &str, shader_dir: &std::path::Path, include_dirs: &
 	Ok(ptx_str)
 }
 
-/// # Safety
-/// - `ptx_src` must be valid PTX from NVRTC.
-/// - Caller owns returned `module`; unload with `cuModuleUnload`.
 unsafe fn load_module_and_func(ptx_src: String, fname: &str) -> Result<(cu::CUmodule, cu::CUfunction), String> {
 	let mut module: cu::CUmodule = core::ptr::null_mut();
 	let ptx_len = ptx_src.len();
@@ -147,17 +139,6 @@ unsafe fn load_module_and_func(ptx_src: String, fname: &str) -> Result<(cu::CUmo
 	Ok((module, func))
 }
 
-/// Retrieves or loads the f32/f16 kernel pair for `fname`.
-///
-/// - Non-hotreload: uses pre-compiled embedded PTX; `shader_src_f32` and
-///   `shader_src_f16` are the two distinct build-time artifacts produced by
-///   compiling the VEKL source with and without `-DUSE_HALF_PRECISION=1`.
-/// - Hotreload: compiles both variants from the .vekl source on disk via
-///   NVRTC, adding the define for the f16 pass; falls back to the embedded
-///   PTX on any error.
-///
-/// # Safety
-/// `ctx` must be a valid, current-able CUDA context.
 pub unsafe fn load_kernel(
 	ctx: cu::CUcontext,
 	shader_src_f32: &'static str,

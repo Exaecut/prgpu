@@ -157,7 +157,6 @@ pub fn expand_includes_runtime(
         Ok(out)
     }
 
-    // Write src to a temp file to reuse the same walker
     let tmp = base_dir.join("__temp_runtime_root__.metal");
     fs::create_dir_all(base_dir).ok();
     fs::write(&tmp, src).map_err(|e| format!("write tmp: {e}"))?;

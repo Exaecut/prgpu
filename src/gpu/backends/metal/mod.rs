@@ -5,20 +5,12 @@ use objc::{class, msg_send, runtime::Object, sel, sel_impl};
 use std::os::raw::c_void;
 use std::time::{Duration, Instant};
 
-/// Converts a Rust string slice into an Objective-C NSString object.
-///
-/// Returns an autoreleased NSString. Only valid within a surrounding `autoreleasepool`.
-///
-/// # Safety
-/// The input string must not contain interior null bytes.
 pub unsafe fn nsstring_utf8(s: &str) -> *mut Object {
 	let c = CString::new(s).unwrap();
 	let ns: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()];
 	ns
 }
 
-/// # Safety
-/// `raw` must be a valid MTLBuffer pointer or null.
 pub unsafe fn log_buffer_info(tag: &str, raw: *mut core::ffi::c_void) {
 	if raw.is_null() {
 		log::error!("[metal] {tag}: null");
@@ -31,10 +23,6 @@ pub unsafe fn log_buffer_info(tag: &str, raw: *mut core::ffi::c_void) {
 	log::info!("[metal] {tag}: MTLBuffer={raw:?}, length={length}, storageMode={storage_mode}, contents={contents:?}");
 }
 
-/// Extracts a readable error string from an NSError pointer.
-///
-/// # Safety
-/// `err` must be a valid NSError pointer or null.
 pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
 	if err.is_null() {
 		return None;

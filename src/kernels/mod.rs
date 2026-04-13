@@ -29,8 +29,7 @@
 macro_rules! declare_kernel {
 	($name:ident, $user_params_ty:ty) => {
 		$crate::paste::paste! {
-			/// Primary shader source for the active GPU backend.
-			/// Selects `.metal`, `.ptx`, or `.cl` at compile time via gpu_backend cfg.
+
 			#[allow(non_upper_case_globals)]
 			const [<$name:upper _SHADER_SRC>]: &str = {
 				#[cfg(gpu_backend = "metal")]
@@ -48,7 +47,7 @@ macro_rules! declare_kernel {
 		}
 
 		$crate::paste::paste! {
-			/// Half-precision CUDA PTX variant. Empty string on non-CUDA backends.
+
 			#[allow(non_upper_case_globals)]
 			const [<$name:upper _SHADER_SRC_F16>]: &str = {
 				#[cfg(gpu_backend = "cuda")]
@@ -101,17 +100,6 @@ macro_rules! declare_kernel {
 				);
 			}
 
-			/// CPU dispatch via `iterate_with` (AE) or rayon (Premiere).
-			///
-			/// BPP is auto-detected from the output Layer. Configuration provides
-			/// buffer pointers and pitches; when its dimensions match the output Layer,
-			/// AE's multi-threaded iterate suites are used, otherwise rayon is used
-			/// (e.g. for blur intermediate buffers with downsampled dimensions).
-			///
-			/// Under `shader_hotreload`, the dispatch function pointer is resolved
-			/// through `cpu::pipeline::get_dispatch_fn()` which compiles the `.vekl`
-			/// source at runtime and returns the hot-reloaded symbol, falling back to
-			/// the statically-linked `{name}_cpu_dispatch` on any error.
 			pub fn [<$name _cpu>](
 				in_data: &after_effects::InData,
 				in_layer: &after_effects::Layer,
@@ -119,9 +107,7 @@ macro_rules! declare_kernel {
 				config: &$crate::types::Configuration,
 				user_params: $user_params_ty,
 			) -> Result<(), after_effects::Error> {
-				// Register shader directories once on the first CPU render frame.
-				// The `Once` guard is local to this function so each kernel registers
-				// independently; all kernels in the same effect share the same dirs.
+
 				#[cfg(shader_hotreload)]
 				{
 					static SHADER_DIR_INIT: std::sync::Once = std::sync::Once::new();
@@ -133,12 +119,6 @@ macro_rules! declare_kernel {
 					});
 				}
 
-				// Resolve the dispatch function pointer.
-				// Under shader_hotreload: get_dispatch_fn() looks up the runtime-compiled
-				// shared library, compiling it on first use, and falls back to the static
-				// symbol on any error.
-				// Without shader_hotreload: the stub returns static_fallback unchanged —
-				// zero overhead, compiles down to a direct call.
 				let dispatch_fn = $crate::cpu::pipeline::get_dispatch_fn(
 					stringify!($name),
 					[<$name _cpu_dispatch>],

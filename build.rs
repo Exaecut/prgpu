@@ -35,7 +35,11 @@ fn main() {
     // 2. Set the actual value for this compilation
     println!("cargo:rustc-cfg=gpu_backend=\"{}\"", backend);
 
-    // Shader hot-reload: propagate feature → custom cfg
+    // Shader hot-reload: propagate Cargo feature → custom cfg.
+    // Only the Cargo feature is checked here — NOT EX_SHADER_HOTRELOAD — because the feature
+    // is what activates the cudarc/nvrtc and libloading dependencies used in this mode.
+    // Emitting cfg(shader_hotreload) without those deps would cause compile errors in
+    // cuda/pipeline.rs (cudarc::nvrtc) and cpu/pipeline.rs (libloading).
     if env::var_os("CARGO_FEATURE_SHADER_HOTRELOAD").is_some() {
         println!("cargo:rustc-cfg=shader_hotreload");
     }

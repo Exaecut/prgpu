@@ -7,12 +7,27 @@ use crate::types::Pixel;
 
 pub const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0;
 
+pub struct HotreloadConfig {
+	pub label: &'static str,
+	pub supported: bool,
+}
+
 pub trait SetupParams: Sized + Eq + Hash + Copy + Debug + Into<usize> {
 	fn to_index(self) -> usize {
 		self.into()
 	}
 
 	fn setup(params: &mut Parameters<Self>, in_data: InData, out_data: OutData) -> Result<(), after_effects::Error>;
+
+    #[cfg(shader_hotreload)]
+	fn hotreload_config() -> HotreloadConfig {
+        HotreloadConfig { label: "Reload Shader", supported: true }
+    }
+
+    #[cfg(not(shader_hotreload))]
+	fn hotreload_config() -> HotreloadConfig {
+        HotreloadConfig { label: "Reload Shader", supported: false }
+    }
 }
 
 pub trait FromParam: Sized {

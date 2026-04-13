@@ -1,6 +1,7 @@
 use after_effects::log;
 use std::ffi::c_void;
 use std::ptr::null_mut;
+use std::time::Duration;
 
 use cudarc::driver::sys as cuda;
 
@@ -9,6 +10,41 @@ pub mod fence;
 pub mod pipeline;
 
 use crate::{Configuration, FrameParams};
+use crate::logging::{GpuLogCursor, VeklLogBuffer};
+
+struct CudaLogBufferGuard {
+	ctx: *mut c_void,
+	ptr: cuda::CUdeviceptr,
+	host: *mut VeklLogBuffer,
+}
+
+impl CudaLogBufferGuard {
+	unsafe fn allocate(ctx: *mut c_void) -> Result<Self, &'static str> {
+		check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
+
+		let mut ptr: cuda::CUdeviceptr = 0;
+		check(
+			unsafe { cuda::cuMemAllocManaged(&mut ptr, std::mem::size_of::<VeklLogBuffer>(), 1u32) },
+			"cuMemAllocManaged",
+		)?;
+
+		let host = ptr as *mut VeklLogBuffer;
+		unsafe { (*host).initialize() };
+
+		Ok(Self { ctx, ptr, host })
+	}
+}
+
+impl Drop for CudaLogBufferGuard {
+	fn drop(&mut self) {
+		if self.ptr == 0 {
+			return;
+		}
+
+		let _ = unsafe { cuda::cuCtxSetCurrent(self.ctx as cuda::CUcontext) };
+		let _ = unsafe { cuda::cuMemFree_v2(self.ptr) };
+	}
+}
 
 #[inline]
 fn check(res: cuda::CUresult, what: &str) -> Result<(), &'static str> {
@@ -128,6 +164,9 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 	let mut d_outgoing = outgoing_data as u64;
 	let mut d_incoming = incoming_data as u64;
 	let mut d_dest = config.dest_data as u64;
+	let log_buffer = unsafe { CudaLogBufferGuard::allocate(ctx)? };
+	let mut d_log = log_buffer.ptr as u64;
+	let mut log_cursor = GpuLogCursor::default();
 
 	let mut p = FrameParams {
 		out_pitch: config.outgoing_pitch_px as u32,
@@ -141,12 +180,13 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 	};
 	let mut u = user_params;
 
-	let mut params: [*mut c_void; 5] = [
+	let mut params: [*mut c_void; 6] = [
 		&mut d_outgoing as *mut _ as *mut c_void,
 		&mut d_incoming as *mut _ as *mut c_void,
 		&mut d_dest as *mut _ as *mut c_void,
 		&mut p as *mut _ as *mut c_void,
 		&mut u as *mut _ as *mut c_void,
+		&mut d_log as *mut _ as *mut c_void,
 	];
 
 	let block_x: u32 = 16;
@@ -157,6 +197,23 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 	unsafe {
 		dispatch(ctx, config.command_queue_handle, func, grid_x, grid_y, block_x, block_y, &mut params)?;
 	}
+
+	loop {
+		unsafe { (&*log_buffer.host).drain_into_host_log(&mut log_cursor, entry, "cuda") };
+
+		let query = unsafe { cuda::cuStreamQuery(config.command_queue_handle as cuda::CUstream) };
+		if query == cuda::CUresult::CUDA_SUCCESS {
+			break;
+		}
+		if query != cuda::CUresult::CUDA_ERROR_NOT_READY {
+			log::error!("[CUDA] cuStreamQuery failed: {query:?}");
+			return Err("cuStreamQuery failed");
+		}
+
+		std::thread::sleep(Duration::from_millis(1));
+	}
+
+	unsafe { (&*log_buffer.host).drain_into_host_log(&mut log_cursor, entry, "cuda") };
 
 	Ok(())
 }

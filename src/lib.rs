@@ -4,6 +4,8 @@ pub mod cpu;
 pub mod gpu;
 pub use gpu::*;
 
+pub mod logging;
+
 pub mod types;
 pub use types::*;
 

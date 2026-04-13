@@ -57,13 +57,21 @@ fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::Pa
 	SHADER_DIRS.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(shader_hotreload)]
-pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::path::PathBuf>) {
-	log::info!("[Metal/HotReload] Shader source dir: {}", shader_dir.display());
-	for d in &include_dirs {
-		log::info!("[Metal/HotReload] Include dir: {}", d.display());
+/// Registers the shader source directory and include paths for runtime recompilation.
+///
+/// No-op when `shader_hotreload` is not active — the function always exists so that
+/// `gpu::pipeline::set_shader_dirs` resolves even when vignette's build.rs emits
+/// `cfg(shader_hotreload)` while prgpu was compiled without the feature.
+pub fn set_shader_dirs(_shader_dir: std::path::PathBuf, _include_dirs: Vec<std::path::PathBuf>) {
+	#[cfg(shader_hotreload)]
+	{
+		let (shader_dir, include_dirs) = (_shader_dir, _include_dirs);
+		log::info!("[Metal/HotReload] Shader source dir: {}", shader_dir.display());
+		for d in &include_dirs {
+			log::info!("[Metal/HotReload] Include dir: {}", d.display());
+		}
+		*shader_dirs().lock() = Some((shader_dir, include_dirs));
 	}
-	*shader_dirs().lock() = Some((shader_dir, include_dirs));
 }
 
 /// Retrieves a pair of pipeline state objects (PSOs) for the given device and shader source.
@@ -72,33 +80,6 @@ pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::pa
 /// and passes the expanded source to Metal's runtime compiler.
 /// Falls back to the build-time embedded source on failure.
 ///
-/// # Safety
-/// - `device` must be a valid Metal device pointer.
-/// - `shader_src` and `fname` must point to valid static strings.
-fn inject_metal_dispatch_params(src: &str) -> String {
-	let needle = "kernel void ";
-	let mut out = String::with_capacity(src.len() + 256);
-	let mut pos = 0;
-	while let Some(off) = src[pos..].find(needle) {
-		let abs = pos + off;
-		out.push_str(&src[pos..abs]);
-		out.push_str(needle);
-		let after = abs + needle.len();
-		if let Some(paren) = src[after..].find('(') {
-			let paren_abs = after + paren;
-			out.push_str(&src[after..=paren_abs]);
-			out.push_str("\n    uint2 __vekl_dispatch_id [[thread_position_in_grid]],\n    uint2 __vekl_dispatch_size [[grid_size]],");
-			pos = paren_abs + 1;
-		} else {
-			out.push_str(&src[after..]);
-			pos = src.len();
-			break;
-		}
-	}
-	out.push_str(&src[pos..]);
-	out
-}
-
 pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: &'static str) -> Result<(*mut Object, *mut Object), &'static str> {
 	let key = Key {
 		device: device as usize,
@@ -160,14 +141,23 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 		}
 	};
 
-	let injected = inject_metal_dispatch_params(&raw_src);
+	let injected = crate::gpu::shaders::prepare_metal_source(&raw_src, fname);
 	let src = unsafe { nsstring_utf8(&injected) };
 	let mut error: *mut Object = std::ptr::null_mut();
 
 	// Compile f32 library (+1 retained: alloc+init on opts, new* on lib)
 	let opts_f32: *mut Object = msg_send![class!(MTLCompileOptions), alloc];
 	let opts_f32: *mut Object = msg_send![opts_f32, init];
-
+	let macros: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
+	let key_vekl: *mut Object = unsafe { nsstring_utf8("VEKL_METAL") };
+	let val_one: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
+	let _: () = msg_send![macros, setObject: val_one forKey: key_vekl];
+	if cfg!(debug_assertions) {
+		let key_debug: *mut Object = unsafe { nsstring_utf8("DEBUG") };
+		let val_debug: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
+		let _: () = msg_send![macros, setObject: val_debug forKey: key_debug];
+	}
+	let _: () = msg_send![opts_f32, setPreprocessorMacros: macros];
 	let lib_f32: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f32 error: &mut error];
 	let _: () = msg_send![opts_f32, release];
 	if lib_f32.is_null() {
@@ -182,13 +172,14 @@ pub unsafe fn load_kernel(device: *mut Object, shader_src: &'static str, fname: 
 	let opts_f16: *mut Object = msg_send![opts_f16, init];
 
 	// dictionary is autoreleased; numberWithInt is autoreleased
-	let macros: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
-	let key_vekl: *mut Object = unsafe { nsstring_utf8("VEKL_METAL") };
-	let val_one: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
-	let _: () = msg_send![macros, setObject: val_one forKey: key_vekl];
 	let key_macro: *mut Object = unsafe { nsstring_utf8("USE_HALF_PRECISION") };
 	let val_macro: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
 	let _: () = msg_send![macros, setObject: val_macro forKey: key_macro];
+	if cfg!(debug_assertions) {
+		let key_debug: *mut Object = unsafe { nsstring_utf8("DEBUG") };
+		let val_debug: *mut Object = msg_send![class!(NSNumber), numberWithInt: 1];
+		let _: () = msg_send![macros, setObject: val_debug forKey: key_debug];
+	}
 	let _: () = msg_send![opts_f16, setPreprocessorMacros: macros];
 
 	let lib_f16: *mut Object = msg_send![device, newLibraryWithSource: src options: opts_f16 error: &mut error];

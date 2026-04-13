@@ -3,7 +3,7 @@ use std::ffi::{CStr, CString};
 use after_effects::log;
 use objc::{class, msg_send, runtime::Object, sel, sel_impl};
 use std::os::raw::c_void;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Converts a Rust string slice into an Objective-C NSString object.
 ///
@@ -89,6 +89,7 @@ pub mod buffer;
 pub mod fence;
 pub mod pipeline;
 
+use crate::logging::{GpuLogCursor, VeklLogBuffer};
 use crate::{Configuration, FrameParams};
 
 pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str, entry: &'static str) -> Result<(), &'static str> {
@@ -166,11 +167,43 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			return Err("user params buffer allocation failed");
 		}
 
+		let log_buffer: *mut Object = unsafe {
+			msg_send![
+				device,
+				newBufferWithLength: std::mem::size_of::<VeklLogBuffer>()
+				options: 0u64
+			]
+		};
+		if log_buffer.is_null() {
+			unsafe {
+				let _: () = msg_send![frame_params_buffer, release];
+				let _: () = msg_send![user_params_buffer, release];
+			}
+			log::error!("[Metal] failed to create log buffer");
+			return Err("log buffer allocation failed");
+		}
+
+		let log_buffer_contents: *mut c_void = unsafe { msg_send![log_buffer, contents] };
+		if log_buffer_contents.is_null() {
+			unsafe {
+				let _: () = msg_send![frame_params_buffer, release];
+				let _: () = msg_send![user_params_buffer, release];
+				let _: () = msg_send![log_buffer, release];
+			}
+			log::error!("[Metal] failed to map log buffer contents");
+			return Err("log buffer contents unavailable");
+		}
+
+		let log_buffer_host = log_buffer_contents as *mut VeklLogBuffer;
+		unsafe { (*log_buffer_host).initialize() };
+		let mut log_cursor = GpuLogCursor::default();
+
 		let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
 		if cmd.is_null() {
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
+				let _: () = msg_send![log_buffer, release];
 			}
 			log::error!("[Metal] failed to create command buffer");
 			return Err("command buffer creation failed");
@@ -181,6 +214,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
+				let _: () = msg_send![log_buffer, release];
 			}
 			log::error!("[Metal] failed to create compute encoder");
 			return Err("compute encoder creation failed");
@@ -193,6 +227,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
 			let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
 			let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
+			let _: () = msg_send![enc, setBuffer: log_buffer                    offset: 0usize  atIndex: 5usize];
 		}
 
 		let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
@@ -222,7 +257,22 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 
 		unsafe {
 			let _: () = msg_send![cmd, commit];
+		}
+
+		loop {
+			unsafe { (&*log_buffer_host).drain_into_host_log(&mut log_cursor, entry, "metal") };
+
+			let status: u64 = unsafe { msg_send![cmd, status] };
+			if status >= 4 {
+				break;
+			}
+
+			std::thread::sleep(Duration::from_millis(1));
+		}
+
+		unsafe {
 			let _: () = msg_send![cmd, waitUntilCompleted];
+			(&*log_buffer_host).drain_into_host_log(&mut log_cursor, entry, "metal");
 		}
 
 		// Check command buffer error status
@@ -236,6 +286,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
+				let _: () = msg_send![log_buffer, release];
 			}
 			return Err("GPU execution error");
 		}
@@ -255,6 +306,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 		unsafe {
 			let _: () = msg_send![frame_params_buffer, release];
 			let _: () = msg_send![user_params_buffer, release];
+			let _: () = msg_send![log_buffer, release];
 		}
 
 		Ok(())

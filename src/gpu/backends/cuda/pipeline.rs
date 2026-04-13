@@ -29,25 +29,35 @@ fn shader_dirs() -> &'static Mutex<Option<(std::path::PathBuf, Vec<std::path::Pa
 	SHADER_DIRS.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(shader_hotreload)]
-pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::path::PathBuf>) {
-	log::info!("[CUDA/HotReload] Shader source dir: {}", shader_dir.display());
-	for d in &include_dirs {
-		log::info!("[CUDA/HotReload] Include dir: {}", d.display());
+/// Registers the shader source directory and include paths for runtime recompilation.
+///
+/// No-op when `shader_hotreload` is not active — the function always exists so that
+/// `gpu::pipeline::set_shader_dirs` resolves even when vignette's build.rs emits
+/// `cfg(shader_hotreload)` while prgpu was compiled without the feature.
+pub fn set_shader_dirs(_shader_dir: std::path::PathBuf, _include_dirs: Vec<std::path::PathBuf>) {
+	#[cfg(shader_hotreload)]
+	{
+		let (shader_dir, include_dirs) = (_shader_dir, _include_dirs);
+		log::info!("[CUDA/HotReload] Shader source dir: {}", shader_dir.display());
+		for d in &include_dirs {
+			log::info!("[CUDA/HotReload] Include dir: {}", d.display());
+		}
+		*shader_dirs().lock() = Some((shader_dir, include_dirs));
 	}
-	*shader_dirs().lock() = Some((shader_dir, include_dirs));
 }
 
 #[cfg(shader_hotreload)]
 fn compile_vekl_to_ptx(name: &str, shader_dir: &std::path::Path, include_dirs: &[std::path::PathBuf], half_precision: bool) -> Result<String, String> {
 	use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+	use crate::gpu::shaders::prepare_cuda_source;
 	use std::time::Instant;
 
 	let vekl_path = shader_dir.join(format!("{name}.vekl"));
 	let src = std::fs::read_to_string(&vekl_path).map_err(|e| format!("Failed to read {}: {e}", vekl_path.display()))?;
+	let prepared_src = prepare_cuda_source(&src, name);
 
 	let tag = if half_precision { format!("{name} (f16)") } else { format!("{name} (f32)") };
-	log::info!("[CUDA/HotReload] Compiling: {tag} ({} bytes) from {}", src.len(), vekl_path.display());
+	log::info!("[CUDA/HotReload] Compiling: {tag} ({} bytes) from {}", prepared_src.len(), vekl_path.display());
 
 	let cuda_path = std::env::var("CUDA_HOME").or_else(|_| std::env::var("CUDA_PATH")).unwrap_or("/usr/local/cuda".into());
 	let cuda_include = std::path::PathBuf::from(&cuda_path).join("include");
@@ -66,6 +76,9 @@ fn compile_vekl_to_ptx(name: &str, shader_dir: &std::path::Path, include_dirs: &
 		"--extra-device-vectorization".into(),
 		"--device-as-default-execution-space".into(),
 	];
+	if cfg!(debug_assertions) {
+		options.push("-DDEBUG=1".into());
+	}
 	if half_precision {
 		options.push("-DUSE_HALF_PRECISION=1".into());
 	}
@@ -83,7 +96,7 @@ fn compile_vekl_to_ptx(name: &str, shader_dir: &std::path::Path, include_dirs: &
 	};
 
 	let start = Instant::now();
-	let ptx = compile_ptx_with_opts(&src, opts).map_err(|e| {
+	let ptx = compile_ptx_with_opts(&prepared_src, opts).map_err(|e| {
 		let detail = match &e {
 			cudarc::nvrtc::CompileError::CompileError { log, .. } => log.to_string_lossy().into_owned(),
 			other => format!("{other:#?}"),

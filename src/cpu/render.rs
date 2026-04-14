@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use after_effects::{self as ae, log};
+use after_effects as ae;
 
 use crate::types::{Configuration, FrameParams};
 
@@ -154,18 +154,24 @@ pub fn render_cpu<P: Copy + Sync>(
 	if can_iterate_with {
 		ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn)
 	} else {
-		let _in_stride_bytes = in_layer.buffer_stride();
-		let out_stride_bytes = out_layer.buffer_stride();
+		// Use config-provided buffer pointers directly.
+		// Do NOT replace with AE layer pointers — intermediate buffers
+		// (e.g., blur temporaries) have their own pointers that must be respected.
+		let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
+		let out_buf_size = (h as usize) * out_stride_bytes;
+
+		// SAFETY: dest_ptr points to a buffer of at least out_buf_size bytes,
+		// as guaranteed by the caller via Configuration. The slice is only used
+		// to partition row iteration across rayon threads; actual pixel I/O
+		// goes through the dispatch function's buffer pointer array.
+		let out_buf = if out_buf_size > 0 && !dest_ptr.is_null() {
+			unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, out_buf_size) }
+		} else {
+			&mut []
+		};
 		let in_buf = in_layer.buffer();
-		let out_buf = out_layer.buffer_mut();
 
-		let fresh_outgoing = in_buf.as_ptr() as *const c_void;
-		let fresh_dest = out_buf.as_ptr() as *const c_void;
-
-		let fresh_incoming = if incoming_ptr == outgoing_ptr { fresh_outgoing } else { incoming_ptr };
-		let fresh_buffers = SafeBuffers([fresh_outgoing, fresh_incoming, fresh_dest]);
-
-		rayon_dispatch(w, h, fresh_buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
+		rayon_dispatch(w, h, buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
 	}
 }
 
@@ -204,7 +210,7 @@ fn ae_dispatch<P: Copy + Sync>(
 
 fn rayon_dispatch<P: Copy + Sync>(
 	width: u32,
-	height: u32,
+	_height: u32,
 	buffers: SafeBuffers,
 	tp: FrameParams,
 	user_params: &P,

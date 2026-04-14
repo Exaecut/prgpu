@@ -4,13 +4,7 @@ use after_effects::{self as ae, log};
 
 use crate::types::{Configuration, FrameParams};
 
-pub type CpuDispatchFn = unsafe extern "C" fn(
-	u32,
-	u32,
-	*const *const c_void,
-	*const c_void,
-	*const c_void,
-);
+pub type CpuDispatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *const c_void, *const c_void);
 
 /// Wrapper to make buffer pointer array `Send + Sync`.
 ///
@@ -155,62 +149,23 @@ pub fn render_cpu<P: Copy + Sync>(
 		pixel_layout: config.pixel_layout,
 	};
 
-	log::info!(
-		"render_cpu: {}x{} bpp={} out_pitch={}px in_pitch={}px dest_pitch={}px outgoing={:?} incoming={:?} dest={:?}",
-		w,
-		h,
-		tp.bpp,
-		tp.out_pitch,
-		tp.in_pitch,
-		tp.dest_pitch,
-		outgoing_ptr,
-		incoming_ptr,
-		dest_ptr
-	);
-
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
 
 	if can_iterate_with {
-		log::info!(
-			"dispatch path: ae (iterate_with), layer={}x{} config={}x{}",
-			out_layer.width(),
-			out_layer.height(),
-			w,
-			h
-		);
 		ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn)
 	} else {
-		log::info!(
-			"dispatch path: rayon, is_premiere={}, config={}x{} layer={}x{}",
-			in_data.is_premiere(),
-			w,
-			h,
-			out_layer.width(),
-			out_layer.height()
-		);
-
 		let _in_stride_bytes = in_layer.buffer_stride();
 		let out_stride_bytes = out_layer.buffer_stride();
 		let in_buf = in_layer.buffer();
-		let mut out_buf = out_layer.buffer_mut();
+		let out_buf = out_layer.buffer_mut();
 
 		let fresh_outgoing = in_buf.as_ptr() as *const c_void;
 		let fresh_dest = out_buf.as_ptr() as *const c_void;
 
-		let fresh_incoming = if incoming_ptr == outgoing_ptr {
-			fresh_outgoing
-		} else {
-			incoming_ptr
-		};
+		let fresh_incoming = if incoming_ptr == outgoing_ptr { fresh_outgoing } else { incoming_ptr };
 		let fresh_buffers = SafeBuffers([fresh_outgoing, fresh_incoming, fresh_dest]);
 
-		log::info!(
-			"rayon ptr check: in_buf={:?} vs config.outgoing={:?} match={} | out_buf={:?} vs config.dest={:?} match={}",
-			fresh_outgoing, outgoing_ptr, fresh_outgoing == outgoing_ptr,
-			fresh_dest, dest_ptr, fresh_dest == dest_ptr
-		);
-
-		rayon_dispatch(w, h, fresh_buffers, tp, user_params, dispatch_fn, &mut out_buf, &in_buf, out_stride_bytes)
+		rayon_dispatch(w, h, fresh_buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
 	}
 }
 
@@ -230,9 +185,9 @@ fn ae_dispatch<P: Copy + Sync>(
 		None,
 		move |x: i32, y: i32, _pixel: ae::GenericPixel, _out_pixel: ae::GenericPixelMut| {
 			if first_call.get() {
-				log::info!("ae_dispatch: first callback fired at ({}, {})", x, y);
 				first_call.set(false);
 			}
+
 			unsafe {
 				dispatch_fn(
 					x as u32,
@@ -267,15 +222,12 @@ fn rayon_dispatch<P: Copy + Sync>(
 	let tp_ptr = &tp as *const _ as usize;
 	let up_ptr = user_params as *const _ as usize;
 
-	log::info!("rayon_dispatch: {}x{} out_stride={}b bpp={}", width, height, out_stride_bytes, tp.bpp);
-
 	out_buf.par_chunks_mut(out_stride_bytes).enumerate().for_each(move |(y, _row_bytes)| {
-		if first_call.swap(false, Ordering::Relaxed) {
-			log::info!("rayon_dispatch: first callback fired at row y={}", y);
-		}
+		first_call.swap(false, Ordering::Relaxed);
+
 		for x in 0..width {
 			unsafe {
-				dispatch_fn(x as u32, y as u32, buf_ptr as *const *const c_void, tp_ptr as *const c_void, up_ptr as *const c_void);
+				dispatch_fn(x, y as u32, buf_ptr as *const *const c_void, tp_ptr as *const c_void, up_ptr as *const c_void);
 			}
 		}
 	});

@@ -323,7 +323,7 @@ macro_rules! kernel_params {
     // actually contains Blue and .blue contains Red.  AE uses ARGB (correct).
     (@cpu_base color_r, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
-        if $is_pr { __c.blue as f32 } else { __c.red as f32 }
+        __c.red as f32
     }};
     (@cpu_base color_g, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
@@ -331,7 +331,7 @@ macro_rules! kernel_params {
     }};
     (@cpu_base color_b, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
-        if $is_pr { __c.red as f32 } else { __c.blue as f32 }
+        __c.blue as f32
     }};
     (@cpu_base color_a, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;

@@ -20,7 +20,5 @@ pub mod pipeline {
 	}
 }
 
-// Shared codegen utilities: parse_kernel_signature + generate_cpu_dispatch_wrapper.
-// Needed at build time (feature = "build") and at runtime for hot-reload.
-#[cfg(any(feature = "build", feature = "shader_hotreload"))]
+#[cfg(any(feature = "build", shader_hotreload))]
 pub(crate) mod codegen;

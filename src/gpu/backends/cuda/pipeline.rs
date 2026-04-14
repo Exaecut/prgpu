@@ -130,7 +130,39 @@ unsafe fn load_module_and_func(ptx_src: String, fname: &str) -> Result<(cu::CUmo
 		}
 	};
 
-	super::check(unsafe { cu::cuModuleLoadData(&mut module, ptx_cstr.as_ptr() as *const c_void) }, "cuModuleLoadData")?;
+	// Use cuModuleLoadDataEx with JIT error log buffer for detailed failure diagnostics
+	const JIT_ERROR_LOG_SIZE: usize = 8192;
+	let mut jit_error_log: Vec<u8> = vec![0u8; JIT_ERROR_LOG_SIZE];
+	let mut jit_error_log_size: usize = JIT_ERROR_LOG_SIZE;
+
+	let mut jit_options: [cu::CUjit_option_enum; 2] = [
+		cu::CUjit_option_enum::CU_JIT_ERROR_LOG_BUFFER,
+		cu::CUjit_option_enum::CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
+	];
+	let mut jit_option_values: [*mut c_void; 2] = [
+		jit_error_log.as_mut_ptr() as *mut c_void,
+		&mut jit_error_log_size as *mut usize as *mut c_void,
+	];
+
+	let load_result = unsafe {
+		cu::cuModuleLoadDataEx(
+			&mut module,
+			ptx_cstr.as_ptr() as *const c_void,
+			2,
+			jit_options.as_mut_ptr() as *mut cu::CUjit_option_enum,
+			jit_option_values.as_mut_ptr() as *mut *mut c_void,
+		)
+	};
+
+	if load_result != cu::CUresult::CUDA_SUCCESS {
+		let error_log_str = jit_error_log[..jit_error_log_size.min(JIT_ERROR_LOG_SIZE)]
+			.iter()
+			.take_while(|&&b| b != 0)
+			.map(|&b| b as char)
+			.collect::<String>();
+		log::error!("[CUDA] cuModuleLoadDataEx JIT error for '{fname}':\n{error_log_str}");
+		super::check(load_result, "cuModuleLoadDataEx")?;
+	}
 
 	let mut func: cu::CUfunction = core::ptr::null_mut();
 	let cname = std::ffi::CString::new(fname).unwrap();

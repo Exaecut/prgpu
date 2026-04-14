@@ -22,27 +22,41 @@ impl CudaLogBufferGuard {
 	unsafe fn allocate(ctx: *mut c_void) -> Result<Self, &'static str> {
 		check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
 
-		let mut ptr: cuda::CUdeviceptr = 0;
+		// Use cuMemAllocHost for pinned host memory — guaranteed CPU-accessible on Windows WDDM.
+		// cuMemAllocManaged (unified memory) is NOT reliably CPU-accessible under WDDM.
+		let mut host_ptr: *mut c_void = std::ptr::null_mut();
 		check(
-			unsafe { cuda::cuMemAllocManaged(&mut ptr, std::mem::size_of::<VeklLogBuffer>(), 1u32) },
-			"cuMemAllocManaged",
+			unsafe { cuda::cuMemAllocHost_v2(&mut host_ptr, std::mem::size_of::<VeklLogBuffer>()) },
+			"cuMemAllocHost_v2",
 		)?;
 
-		let host = ptr as *mut VeklLogBuffer;
+		if host_ptr.is_null() {
+			log::error!("[CUDA] cuMemAllocHost returned null");
+			return Err("cuMemAllocHost returned null");
+		}
+
+		let host = host_ptr as *mut VeklLogBuffer;
 		unsafe { (*host).initialize() };
 
-		Ok(Self { ctx, ptr, host })
+		// Get the device-accessible pointer for the pinned host memory
+		let mut dev_ptr: cuda::CUdeviceptr = 0;
+		check(
+			unsafe { cuda::cuMemHostGetDevicePointer_v2(&mut dev_ptr, host_ptr, 0u32) },
+			"cuMemHostGetDevicePointer_v2",
+		)?;
+
+		Ok(Self { ctx, ptr: dev_ptr, host })
 	}
 }
 
 impl Drop for CudaLogBufferGuard {
 	fn drop(&mut self) {
-		if self.ptr == 0 {
+		if self.host.is_null() {
 			return;
 		}
 
 		let _ = unsafe { cuda::cuCtxSetCurrent(self.ctx as cuda::CUcontext) };
-		let _ = unsafe { cuda::cuMemFree_v2(self.ptr) };
+		let _ = unsafe { cuda::cuMemFreeHost(self.host as *mut c_void) };
 	}
 }
 

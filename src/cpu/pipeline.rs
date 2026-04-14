@@ -188,6 +188,8 @@ fn compile_to_shared_lib(
 		cmd.arg("/DDEBUG=1");
 	}
 
+	log::info!("[CPU/HotReload] Invoking compiler '{}'", tool.path().display());
+	
 	let output = cmd
 		.output()
 		.map_err(|e| format!("[CPU/HotReload] Invoke compiler '{}': {e}", tool.path().display()))?;

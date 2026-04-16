@@ -7,12 +7,12 @@ use libloading::Library;
 
 use parking_lot::Mutex;
 
-use crate::cpu::render::CpuDispatchFn;
+use crate::cpu::render::CpuDispatchFns;
 
 struct KernelEntry {
 
 	_library: Library,
-	dispatch_fn: CpuDispatchFn,
+	dispatch_fns: CpuDispatchFns,
 }
 
 static CACHE: OnceLock<Mutex<HashMap<&'static str, KernelEntry>>> = OnceLock::new();
@@ -39,25 +39,25 @@ pub fn set_shader_dirs(shader_dir: std::path::PathBuf, include_dirs: Vec<std::pa
 	*shader_dirs().lock() = Some((shader_dir, include_dirs));
 }
 
-pub fn get_dispatch_fn(kernel_name: &'static str, static_fallback: CpuDispatchFn) -> CpuDispatchFn {
+pub fn get_dispatch_fn(kernel_name: &'static str, static_fallback: CpuDispatchFns) -> CpuDispatchFns {
 	{
 		let guard = cache().lock();
 		if let Some(entry) = guard.get(kernel_name) {
-			return entry.dispatch_fn;
+			return entry.dispatch_fns;
 		}
 	}
 
 	match compile_kernel(kernel_name) {
 		Ok(entry) => {
-			let fn_ptr = entry.dispatch_fn;
+			let fns = entry.dispatch_fns;
 			let mut guard = cache().lock();
 
 			if let Some(existing) = guard.get(kernel_name) {
-				return existing.dispatch_fn;
+				return existing.dispatch_fns;
 			}
 			guard.insert(kernel_name, entry);
 			log::info!("[CPU/HotReload] Using runtime-compiled kernel '{kernel_name}'");
-			fn_ptr
+			fns
 		}
 		Err(e) => {
 			log::error!("[CPU/HotReload] {e}");
@@ -142,16 +142,31 @@ fn compile_kernel(kernel_name: &'static str) -> Result<KernelEntry, String> {
 
 	let lib = unsafe { Library::new(&lib_path) }.map_err(|e| format!("[CPU/HotReload] Load '{}': {e}", lib_path.display()))?;
 
-	let symbol_name = format!("{kernel_name}_cpu_dispatch\0");
-	let dispatch_fn: CpuDispatchFn = unsafe {
-		let sym: libloading::Symbol<CpuDispatchFn> = lib
-			.get(symbol_name.as_bytes())
-			.map_err(|e| format!("[CPU/HotReload] Symbol '{}' not found: {e}", kernel_name))?;
+	let per_pixel_name = format!("{kernel_name}_cpu_dispatch\0");
+	let per_pixel_fn: crate::cpu::render::CpuDispatchFn = unsafe {
+		let sym: libloading::Symbol<crate::cpu::render::CpuDispatchFn> = lib
+			.get(per_pixel_name.as_bytes())
+			.map_err(|e| format!("[CPU/HotReload] Per-pixel symbol '{}' not found: {e}", kernel_name))?;
 
 		std::mem::transmute(sym.into_raw())
 	};
 
-	Ok(KernelEntry { _library: lib, dispatch_fn })
+	let row_batch_name = format!("{kernel_name}_cpu_row_dispatch\0");
+	let row_batch_fn: crate::cpu::render::CpuRowBatchFn = unsafe {
+		let sym: libloading::Symbol<crate::cpu::render::CpuRowBatchFn> = lib
+			.get(row_batch_name.as_bytes())
+			.map_err(|e| format!("[CPU/HotReload] Row-batch symbol '{}' not found: {e}", kernel_name))?;
+
+		std::mem::transmute(sym.into_raw())
+	};
+
+	Ok(KernelEntry {
+		_library: lib,
+		dispatch_fns: crate::cpu::render::CpuDispatchFns {
+			per_pixel: per_pixel_fn,
+			row_batch: row_batch_fn,
+		},
+	})
 }
 
 #[cfg(target_os = "windows")]
@@ -177,7 +192,8 @@ fn compile_to_shared_lib(
 	cmd.arg(format!("/I{}", canon(shader_dir).display()));
 
 	cmd.arg("/nologo")
-		.arg("/O1")
+		.arg("/O2")
+		.arg("/fp:fast")
 		.arg("/std:c++14")
 		.arg("/DVEKL_CPU=1")
 		.arg("/LD")
@@ -234,7 +250,8 @@ fn compile_to_shared_lib(
 	cmd.arg("-shared")
 		.arg("-std=c++14")
 		.arg("-DVEKL_CPU=1")
-		.arg("-O1")
+		.arg("-O2")
+		.arg("-ffast-math")
 		.arg("-o")
 		.arg(lib_path)
 		.arg(wrapper_path);

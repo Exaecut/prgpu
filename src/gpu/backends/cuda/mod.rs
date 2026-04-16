@@ -1,16 +1,62 @@
 use after_effects::log;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null_mut;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use cudarc::driver::sys as cuda;
+use parking_lot::Mutex;
 
 pub mod buffer;
 pub mod fence;
 pub mod pipeline;
 
-use crate::{Configuration, FrameParams};
 use crate::logging::{GpuLogCursor, VeklLogBuffer};
+use crate::{Configuration, FrameParams};
+
+/// Wrapper to make CUevent Send+Sync-safe.
+/// CUDA events are safe to share across threads as long as they are used
+/// with proper synchronization (which cuEventRecord/cuEventElapsedTime provide).
+#[derive(Copy, Clone)]
+struct SafeEvent(cuda::CUevent);
+unsafe impl Send for SafeEvent {}
+unsafe impl Sync for SafeEvent {}
+
+/// Cached CUDA event pairs (start, stop) per context for GPU timing.
+/// Events are created once and reused across dispatches to avoid allocation overhead.
+static EVENT_CACHE: OnceLock<Mutex<HashMap<usize, (SafeEvent, SafeEvent)>>> = OnceLock::new();
+
+fn event_cache() -> &'static Mutex<HashMap<usize, (SafeEvent, SafeEvent)>> {
+	EVENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Get or create a start/stop event pair for the given context.
+fn get_or_create_events(ctx_key: usize) -> (SafeEvent, SafeEvent) {
+	let mut guard = event_cache().lock();
+	*guard.entry(ctx_key).or_insert_with(|| {
+		let mut start: cuda::CUevent = std::ptr::null_mut();
+		let mut stop: cuda::CUevent = std::ptr::null_mut();
+		unsafe {
+			cuda::cuEventCreate(&mut start, cuda::CUevent_flags::CU_EVENT_DEFAULT as u32);
+			cuda::cuEventCreate(&mut stop, cuda::CUevent_flags::CU_EVENT_DEFAULT as u32);
+		}
+		(SafeEvent(start), SafeEvent(stop))
+	})
+}
+
+/// Destroy all cached CUDA events. Called during pipeline cleanup.
+pub fn destroy_event_cache() {
+	if let Some(cache) = EVENT_CACHE.get() {
+		let mut guard = cache.lock();
+		for (_, (SafeEvent(start), SafeEvent(stop))) in guard.drain() {
+			unsafe {
+				cuda::cuEventDestroy_v2(start);
+				cuda::cuEventDestroy_v2(stop);
+			}
+		}
+	}
+}
 
 struct CudaLogBufferGuard {
 	ctx: *mut c_void,
@@ -206,14 +252,21 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 	let grid_x: u32 = config.width.div_ceil(block_x);
 	let grid_y: u32 = config.height.div_ceil(block_y);
 
+	let (SafeEvent(start_event), SafeEvent(stop_event)) = get_or_create_events(ctx as usize);
+	let stream = config.command_queue_handle as cuda::CUstream;
+
 	unsafe {
+		#[cfg(feature = "timing")]
+		cuda::cuEventRecord(start_event, stream);
 		dispatch(ctx, config.command_queue_handle, func, grid_x, grid_y, block_x, block_y, &mut params)?;
+		#[cfg(feature = "timing")]
+		cuda::cuEventRecord(stop_event, stream);
 	}
 
 	loop {
 		unsafe { (&*log_buffer.host).drain_into_host_log(&mut log_cursor, entry, "cuda") };
 
-		let query = unsafe { cuda::cuStreamQuery(config.command_queue_handle as cuda::CUstream) };
+		let query = unsafe { cuda::cuStreamQuery(stream) };
 		if query == cuda::CUresult::CUDA_SUCCESS {
 			break;
 		}
@@ -226,6 +279,16 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 	}
 
 	unsafe { (&*log_buffer.host).drain_into_host_log(&mut log_cursor, entry, "cuda") };
+
+	// Read GPU timing from CUDA events after stream completion.
+	#[cfg(feature = "timing")]
+	{
+		let mut gpu_ms: f32 = 0.0;
+		unsafe {
+			cuda::cuEventElapsedTime_v2(&mut gpu_ms, start_event, stop_event);
+		}
+		crate::timing::record(entry, crate::timing::Backend::Cuda, (gpu_ms * 1_000_000.0) as u64);
+	}
 
 	Ok(())
 }

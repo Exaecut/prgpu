@@ -6,6 +6,20 @@ use crate::types::{Configuration, FrameParams};
 
 pub type CpuDispatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *const c_void, *const c_void);
 
+/// Row-batch dispatch: processes an entire row in a single C call.
+/// Sets row-invariant TLS once and loops x internally, eliminating
+/// (width-1) × 4 redundant TLS writes + (width-1) FFI calls per row.
+pub type CpuRowBatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *const c_void, *const c_void);
+
+/// Holds both dispatch function pointers for a kernel.
+/// `per_pixel` is the original per-pixel dispatch (used by ae_dispatch).
+/// `row_batch` is the per-row batch dispatch (used by rayon_dispatch).
+#[derive(Copy, Clone, Debug)]
+pub struct CpuDispatchFns {
+	pub per_pixel: CpuDispatchFn,
+	pub row_batch: CpuRowBatchFn,
+}
+
 /// Wrapper to make buffer pointer array `Send + Sync`.
 ///
 /// SAFETY: The buffer pointers are valid for the duration of the dispatch call.
@@ -119,11 +133,12 @@ pub fn compute_bpp(in_data: &ae::InData, layer: &ae::Layer) -> Result<u32, ae::E
 }
 
 pub fn render_cpu<P: Copy + Sync>(
+	kernel_name: &'static str,
 	in_data: &ae::InData,
 	in_layer: &ae::Layer,
 	out_layer: &mut ae::Layer,
 	config: &Configuration,
-	dispatch_fn: CpuDispatchFn,
+	dispatch_fns: CpuDispatchFns,
 	user_params: &P,
 ) -> Result<(), ae::Error> {
 	let w = config.width;
@@ -151,8 +166,10 @@ pub fn render_cpu<P: Copy + Sync>(
 
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
 
-	if can_iterate_with {
-		ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn)
+	let start = std::time::Instant::now();
+
+	let result = if can_iterate_with {
+		ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fns.per_pixel)
 	} else {
 		// Use config-provided buffer pointers directly.
 		// Do NOT replace with AE layer pointers — intermediate buffers
@@ -171,8 +188,12 @@ pub fn render_cpu<P: Copy + Sync>(
 		};
 		let in_buf = in_layer.buffer();
 
-		rayon_dispatch(w, h, buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
-	}
+		rayon_dispatch(w, h, buffers, tp, user_params, dispatch_fns.row_batch, out_buf, in_buf, out_stride_bytes)
+	};
+
+	crate::timing::record(kernel_name, crate::timing::Backend::Cpu, start.elapsed().as_nanos() as u64);
+
+	result
 }
 
 fn ae_dispatch<P: Copy + Sync>(
@@ -208,33 +229,39 @@ fn ae_dispatch<P: Copy + Sync>(
 	)
 }
 
+/// Row-batch rayon dispatch: one FFI call per row instead of per pixel.
+///
+/// The C-side `_cpu_row_dispatch` function sets row-invariant TLS variables
+/// (`__cpu_dispatch_w`, `__cpu_dispatch_h`, `__cpu_format`, `__cpu_gid_y`)
+/// once and loops over x internally. This eliminates:
+/// - (width-1) × 4 redundant TLS writes per row
+/// - (width-1) Rust→C cross-language calls per row
 fn rayon_dispatch<P: Copy + Sync>(
 	width: u32,
 	_height: u32,
 	buffers: SafeBuffers,
 	tp: FrameParams,
 	user_params: &P,
-	dispatch_fn: CpuDispatchFn,
+	row_batch_fn: CpuRowBatchFn,
 	out_buf: &mut [u8],
 	_in_buf: &[u8],
 	out_stride_bytes: usize,
 ) -> Result<(), ae::Error> {
 	use rayon::prelude::*;
-	use std::sync::atomic::{AtomicBool, Ordering};
-
-	let first_call = AtomicBool::new(true);
 
 	let buf_ptr = buffers.0.as_ptr() as usize;
 	let tp_ptr = &tp as *const _ as usize;
 	let up_ptr = user_params as *const _ as usize;
 
 	out_buf.par_chunks_mut(out_stride_bytes).enumerate().for_each(move |(y, _row_bytes)| {
-		first_call.swap(false, Ordering::Relaxed);
-
-		for x in 0..width {
-			unsafe {
-				dispatch_fn(x, y as u32, buf_ptr as *const *const c_void, tp_ptr as *const c_void, up_ptr as *const c_void);
-			}
+		unsafe {
+			row_batch_fn(
+				y as u32,
+				width,
+				buf_ptr as *const *const c_void,
+				tp_ptr as *const c_void,
+				up_ptr as *const c_void,
+			);
 		}
 	});
 

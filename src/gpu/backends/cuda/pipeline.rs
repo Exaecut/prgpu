@@ -270,6 +270,7 @@ pub unsafe fn cleanup() {
 		}
 		log::info!("[CUDA] Module cache cleared");
 	}
+	super::destroy_event_cache();
 }
 
 pub fn hot_reload() {

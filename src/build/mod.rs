@@ -175,29 +175,40 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 	}
 
 	if !cpu_sources.is_empty() {
+		// Respect EX_CPU_DEBUG=1 to force DEBUG logging in release builds.
+		let cpu_debug = cfg!(debug_assertions)
+			|| std::env::var("EX_CPU_DEBUG").unwrap_or_default() == "1";
+		println!("cargo:rerun-if-env-changed=EX_CPU_DEBUG");
+
 		let mut build = cc::Build::new();
 		build
 			.cpp(true)
-			.opt_level(3)
 			.include(&utils_str)
 			.include(shader_dir_abs.to_str().unwrap())
 			.define("VEKL_CPU", Some("1"))
 			.flag_if_supported("/std:c++14")
 			.flag_if_supported("-std=c++14")
-			.flag_if_supported("/fp:fast")
-			.flag_if_supported("-ffast-math")
-			.flag_if_supported("/Oi")
-			.flag_if_supported("/arch:AVX2")
-			.flag_if_supported("-mavx2")
-			.flag_if_supported("-mfma");
+			.flag_if_supported("/Z7")
+			.flag_if_supported("-g");
 
-		if cfg!(debug_assertions) {
+		if cpu_debug {
+			build.opt_level(0);
 			build.define("DEBUG", Some("1"));
+			println!("cargo:warning=CPU kernels compiled in DEBUG mode (EX_CPU_DEBUG or debug_assertions)");
+		} else {
+			build
+				.opt_level(3)
+				.flag_if_supported("/fp:fast")
+				.flag_if_supported("-ffast-math")
+				.flag_if_supported("/Oi")
+				.flag_if_supported("/arch:AVX2")
+				.flag_if_supported("-mavx2")
+				.flag_if_supported("-mfma");
 		}
 
 		for (name, wrapper_path) in &cpu_sources {
 			build.file(wrapper_path);
-			println!("cargo:warning=Compiling CPU kernel: {}", name);
+			println!("cargo:warning=Compiling CPU kernel: {} (debug={})", name, cpu_debug);
 		}
 
 		let pkg_name = std::env::var("CARGO_PKG_NAME").unwrap_or("unknown".into());

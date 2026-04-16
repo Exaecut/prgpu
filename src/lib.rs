@@ -6,6 +6,8 @@ pub use gpu::*;
 
 pub mod logging;
 
+pub mod timing;
+
 pub mod types;
 pub use types::*;
 

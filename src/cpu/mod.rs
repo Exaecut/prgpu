@@ -6,7 +6,7 @@ pub mod pipeline;
 
 #[cfg(not(shader_hotreload))]
 pub mod pipeline {
-	use crate::cpu::render::CpuDispatchFns;
+	use crate::cpu::render::CpuDispatchFn;
 
 	pub fn hot_reload() {
 		after_effects::log::info!("[CPU] Hot reload not available (build does not include shader_hotreload feature).");
@@ -15,7 +15,7 @@ pub mod pipeline {
 	#[allow(unused_variables)]
 	pub fn set_shader_dirs(_shader_dir: std::path::PathBuf, _include_dirs: Vec<std::path::PathBuf>) {}
 
-	pub fn get_dispatch_fn(_kernel_name: &'static str, static_fallback: CpuDispatchFns) -> CpuDispatchFns {
+	pub fn get_dispatch_fn(_kernel_name: &'static str, static_fallback: CpuDispatchFn) -> CpuDispatchFn {
 		static_fallback
 	}
 }

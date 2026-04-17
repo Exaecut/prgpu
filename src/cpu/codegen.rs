@@ -138,7 +138,6 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 		panic!("Kernel '{}' has no param_dev_cbuf(FrameParams, ...) — required for CPU dispatch", sig.name);
 	}
 
-	// Per-pixel dispatch (original, used by after effects, after effects handle parallelization on cpu better than premiere)
 	out.push('\n');
 	out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
 	out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
@@ -146,70 +145,6 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 	out.push_str("    __cpu_gid_x = __gid_x;\n");
 	out.push_str("    __cpu_gid_y = __gid_y;\n");
 	out.push_str(&format!("    {}({});\n", sig.name, forward_args.join(", ")));
-	out.push_str("}\n\n");
-
-	// Per-row batch dispatch (used by premiere)
-	// Sets row-invariant TLS once, loops x internally.
-	// Eliminates (width-1) × 4 redundant TLS writes + (width-1) FFI calls per row.
-	out.push_str(&format!("VEKL_EXPORT void {}_cpu_row_dispatch(\n", sig.name));
-	out.push_str("    unsigned int __gid_y,\n");
-	out.push_str("    unsigned int __width,\n");
-	out.push_str("    const void* const* __buffers,\n");
-	out.push_str("    const void* __transition_params,\n");
-	out.push_str("    const void* __user_params\n");
-	out.push_str(") {\n");
-
-	// Unpack buffers and params (same logic as per-pixel, but done once per row)
-	let mut row_buf_idx = 0u32;
-	for p in &sig.params {
-		match p.kind {
-			ParamKind::Ro => {
-				if is_pixel_type(&p.type_name) {
-					out.push_str(&format!("    const void * __restrict {} = (const void *)__buffers[{}];\n", p.name, row_buf_idx));
-				} else {
-					out.push_str(&format!(
-						"    const {} * __restrict {} = (const {} *)__buffers[{}];\n",
-						p.type_name, p.name, p.type_name, row_buf_idx
-					));
-				}
-				row_buf_idx += 1;
-			}
-			ParamKind::Rw => {
-				if is_pixel_type(&p.type_name) {
-					out.push_str(&format!("    void * __restrict {} = (void *)__buffers[{}];\n", p.name, row_buf_idx));
-				} else {
-					out.push_str(&format!("    {} * __restrict {} = ({} *)__buffers[{}];\n", p.type_name, p.name, p.type_name, row_buf_idx));
-				}
-				row_buf_idx += 1;
-			}
-			ParamKind::Wo => {
-				if is_pixel_type(&p.type_name) {
-					out.push_str(&format!("    void * __restrict {} = (void *)__buffers[{}];\n", p.name, row_buf_idx));
-				} else {
-					out.push_str(&format!("    {} * __restrict {} = ({} *)__buffers[{}];\n", p.type_name, p.name, p.type_name, row_buf_idx));
-				}
-				row_buf_idx += 1;
-			}
-			ParamKind::Cbuf if p.type_name == "FrameParams" => {
-				out.push_str(&format!("    const {} {} = *(const {} *)__transition_params;\n", p.type_name, p.name, p.type_name));
-			}
-			ParamKind::Cbuf => {
-				out.push_str(&format!("    const {} {} = *(const {} *)__user_params;\n", p.type_name, p.name, p.type_name));
-			}
-		}
-	}
-
-	out.push('\n');
-
-	out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
-	out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
-	out.push_str(&format!("    __cpu_format = {}.bpp;\n", tp_name));
-	out.push_str("    __cpu_gid_y = __gid_y;\n");
-	out.push('\n');
-	out.push_str("    for (unsigned int __x = 0; __x < __width; ++__x) {\n");
-	out.push_str("        __cpu_gid_x = __x;\n");
-	out.push_str(&format!("        {}({});\n", sig.name, forward_args.join(", ")));
-	out.push_str("    }\n");
 	out.push_str("}\n\n");
 
 	out.push_str("#ifdef __cplusplus\n");

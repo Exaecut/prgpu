@@ -98,14 +98,6 @@ macro_rules! declare_kernel {
 					transition_params: *const std::ffi::c_void,
 					user_params: *const std::ffi::c_void,
 				);
-
-				fn [<$name _cpu_row_dispatch>](
-					gid_y: u32,
-					width: u32,
-					buffers: *const *const std::ffi::c_void,
-					transition_params: *const std::ffi::c_void,
-					user_params: *const std::ffi::c_void,
-				);
 			}
 
 			pub fn [<$name _cpu>](
@@ -127,14 +119,9 @@ macro_rules! declare_kernel {
 					});
 				}
 
-				let static_fns = $crate::cpu::render::CpuDispatchFns {
-					per_pixel: [<$name _cpu_dispatch>],
-					row_batch: [<$name _cpu_row_dispatch>],
-				};
-
-				let dispatch_fns = $crate::cpu::pipeline::get_dispatch_fn(
+				let dispatch_fn = $crate::cpu::pipeline::get_dispatch_fn(
 					stringify!($name),
-					static_fns,
+					[<$name _cpu_dispatch>],
 				);
 
 				$crate::cpu::render::render_cpu(
@@ -143,7 +130,7 @@ macro_rules! declare_kernel {
 						in_layer,
 						out_layer,
 						config,
-						dispatch_fns,
+						dispatch_fn,
 						&user_params,
 					)
 			}

@@ -287,7 +287,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 		unsafe {
 			cuda::cuEventElapsedTime_v2(&mut gpu_ms, start_event, stop_event);
 		}
-		crate::timing::record(entry, crate::timing::Backend::Cuda, (gpu_ms * 1_000_000.0) as u64);
+		crate::timing::record(entry, crate::types::Backend::Cuda, (gpu_ms * 1_000_000.0) as u64);
 	}
 
 	Ok(())

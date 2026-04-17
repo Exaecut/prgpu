@@ -284,7 +284,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 		let gpu_ms = (gpu_end - gpu_start) * 1000.0;
 		let cpu_elapsed = cpu_start.elapsed();
 
-		crate::timing::record(entry, crate::timing::Backend::Metal, (gpu_ms * 1_000_000.0) as u64);
+		crate::timing::record(entry, crate::types::Backend::Metal, (gpu_ms * 1_000_000.0) as u64);
 
 		#[cfg(debug_assertions)]
 		{

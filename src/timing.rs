@@ -3,13 +3,7 @@
 //! Enabled via `features = ["timing"]` in Cargo.toml.
 //! When disabled, all public functions are no-op stubs with zero runtime overhead.
 
-/// Which backend produced this timing measurement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-	Cpu,
-	Cuda,
-	Metal,
-}
+pub use crate::types::Backend;
 
 /// Statistics for a single kernel accumulated across dispatches.
 #[derive(Debug, Clone)]
@@ -80,6 +74,23 @@ mod imp {
 
 	fn timings() -> &'static Mutex<HashMap<&'static str, PerKernelStats>> {
 		TIMINGS.get_or_init(|| Mutex::new(HashMap::new()))
+	}
+
+	/// Log all accumulated timing data.
+	pub fn log_snapshot() {
+		let timings = snapshot();
+		for t in &timings {
+			after_effects::log::info!(
+				"[timing] {:20} {:5} avg={:7.2}ms min={:7.2}ms max={:7.2}ms last={:7.2}ms n={}",
+				t.name,
+				t.backend,
+				t.avg_ms(),
+				t.min_ms(),
+				t.max_ms(),
+				t.last_ms(),
+				t.dispatch_count,
+			);
+		}
 	}
 
 	/// Record a timing measurement for a kernel dispatch.
@@ -155,6 +166,9 @@ mod imp {
 	pub fn snapshot() -> Vec<KernelTiming> {
 		Vec::new()
 	}
+
+	#[inline]
+	pub fn log_snapshot() {}
 
 	#[inline]
 	pub fn reset() {}

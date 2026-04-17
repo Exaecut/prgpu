@@ -11,7 +11,7 @@ pub type CpuDispatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *c
 /// SAFETY: The buffer pointers are valid for the duration of the dispatch call.
 /// They point to Layer-backed or intermediate buffers that outlive the iteration.
 #[derive(Copy, Clone, Debug)]
-struct SafeBuffers([*const c_void; 3]);
+pub(crate) struct SafeBuffers(pub(crate) [*const c_void; 3]);
 unsafe impl Send for SafeBuffers {}
 unsafe impl Sync for SafeBuffers {}
 
@@ -177,7 +177,7 @@ pub fn render_cpu<P: Copy + Sync>(
 		rayon_dispatch(w, h, buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
 	};
 
-	crate::timing::record(kernel_name, crate::timing::Backend::Cpu, start.elapsed().as_nanos() as u64);
+	crate::timing::record(kernel_name, crate::types::Backend::Cpu, start.elapsed().as_nanos() as u64);
 
 	result
 }
@@ -226,24 +226,96 @@ fn rayon_dispatch<P: Copy + Sync>(
 	_in_buf: &[u8],
 	out_stride_bytes: usize,
 ) -> Result<(), ae::Error> {
-	use rayon::prelude::*;
-	use std::sync::atomic::{AtomicBool, Ordering};
+	rayon_dispatch_raw(width, buffers, tp, user_params, dispatch_fn, out_buf, out_stride_bytes);
+	Ok(())
+}
 
-	let first_call = AtomicBool::new(true);
+/// AE-free rayon dispatcher. Shared by the host-side render path (Premiere /
+/// non-AE AE path) and the `prgpu::bench` harness.
+///
+/// # Safety considerations
+/// - `buffers.0` must outlive the dispatch and point to memory of the sizes
+///   implied by `tp` and the kernel's buffer slots.
+/// - `out_buf` must be the backing storage of `buffers.0[2]` (the dest buffer);
+///   it is used purely to partition row iteration across rayon workers.
+/// - `user_params` must live across the call.
+pub(crate) fn rayon_dispatch_raw<P: Copy + Sync>(
+	width: u32,
+	buffers: SafeBuffers,
+	tp: FrameParams,
+	user_params: &P,
+	dispatch_fn: CpuDispatchFn,
+	out_buf: &mut [u8],
+	out_stride_bytes: usize,
+) {
+	use rayon::prelude::*;
 
 	let buf_ptr = buffers.0.as_ptr() as usize;
 	let tp_ptr = &tp as *const _ as usize;
 	let up_ptr = user_params as *const _ as usize;
 
 	out_buf.par_chunks_mut(out_stride_bytes).enumerate().for_each(move |(y, _row_bytes)| {
-		first_call.swap(false, Ordering::Relaxed);
-
 		for x in 0..width {
 			unsafe {
 				dispatch_fn(x, y as u32, buf_ptr as *const *const c_void, tp_ptr as *const c_void, up_ptr as *const c_void);
 			}
 		}
 	});
+}
 
-	Ok(())
+/// Dispatch a CPU kernel without any After Effects / Premiere plumbing.
+///
+/// Used by the `prgpu::bench` harness and any host-side driver that already has
+/// raw buffer pointers in a [`Configuration`]. This is the same code path as
+/// the Premiere render route (pure rayon), minus the AE fallback.
+///
+/// The output buffer partitioning uses `config.dest_pitch_px * config.bytes_per_pixel`
+/// as row stride and assumes the dest buffer contains `config.height` rows
+/// starting at `config.dest_data`.
+///
+/// # Safety
+/// All pointers in `config` must be valid, non-aliasing where the kernel expects
+/// them to be non-aliasing, and remain alive for the duration of the call.
+pub unsafe fn render_cpu_direct<P: Copy + Sync>(
+	kernel_name: &'static str,
+	config: &Configuration,
+	dispatch_fn: CpuDispatchFn,
+	user_params: &P,
+) {
+	let w = config.width;
+	let h = config.height;
+	if w == 0 || h == 0 {
+		return;
+	}
+
+	let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
+	let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
+	let dest_ptr = config.dest_data as *const c_void;
+
+	let buffers = SafeBuffers([outgoing_ptr, incoming_ptr, dest_ptr]);
+
+	let tp = FrameParams {
+		out_pitch: config.outgoing_pitch_px as u32,
+		in_pitch: config.incoming_pitch_px as u32,
+		dest_pitch: config.dest_pitch_px as u32,
+		width: w,
+		height: h,
+		progress: config.progress,
+		bpp: config.bytes_per_pixel,
+		pixel_layout: config.pixel_layout,
+	};
+
+	let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
+	let out_buf_size = (h as usize) * out_stride_bytes;
+
+	let start = std::time::Instant::now();
+
+	if out_buf_size > 0 && !dest_ptr.is_null() {
+		// SAFETY: dest_ptr points to `out_buf_size` bytes of writable memory by
+		// caller contract; slice is used only to partition rows across rayon workers.
+		let out_buf = unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, out_buf_size) };
+		rayon_dispatch_raw(w, buffers, tp, user_params, dispatch_fn, out_buf, out_stride_bytes);
+	}
+
+	crate::timing::record(kernel_name, crate::types::Backend::Cpu, start.elapsed().as_nanos() as u64);
 }

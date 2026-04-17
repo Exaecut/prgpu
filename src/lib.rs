@@ -16,4 +16,7 @@ pub mod params;
 #[cfg(feature = "build")]
 pub mod build;
 
+#[cfg(feature = "bench")]
+pub mod bench;
+
 pub use paste;

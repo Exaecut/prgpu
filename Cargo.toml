@@ -19,6 +19,7 @@ timing = [] # enable per-kernel dispatch timing (CPU + GPU)
 bench = ["dep:criterion"]
 
 [dependencies]
+log = { workspace = true }
 after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
 	"catch-panics",
 ] }

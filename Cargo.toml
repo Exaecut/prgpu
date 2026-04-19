@@ -2,27 +2,27 @@
 name = "prgpu"
 version = "0.1.2"
 edition = "2024"
+description = "GPU-accelerated rendering utilities for Adobe Premiere Pro and After Effects plugins"
+license = "MIT"
+keywords = ["gpu", "video", "after-effects", "premiere", "rendering"]
+categories = ["graphics", "multimedia::video", "rendering"]
+readme = "README.md"
+repository = "https://github.com/Exaecut/prgpu"
+homepage = "https://github.com/Exaecut/prgpu"
+documentation = "https://docs.rs/prgpu"
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE", "docs/**"]
 
 [features]
-default = ["cargo-clippy"] # build with no Metal backend by default
+default = ["cargo-clippy"]
 cargo-clippy = []
-shader_hotreload = [
-	"cudarc/nvrtc",
-	"libloading",
-	"cc",
-	"regex-lite",
-] # enable shader hot-reloading (for development only)
+shader_hotreload = ["cudarc/nvrtc", "libloading", "cc", "regex-lite"]
 build = ["cc", "regex-lite"]
-timing = [] # enable per-kernel dispatch timing (CPU + GPU)
-# Kernel-developer-facing criterion benchmark harness (see `prgpu::bench`).
-# Enable via `[dev-dependencies] prgpu = { ..., features = ["bench"] }`.
+timing = []
 bench = ["dep:criterion"]
 
 [dependencies]
-log = { workspace = true }
-after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = [
-	"catch-panics",
-] }
+log = { version = "0.4", features = ["release_max_level_trace", "max_level_trace"] }
+after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = ["catch-panics"] }
 premiere = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 bytemuck = { version = "1.23.1", features = ["derive", "min_const_generics"] }
 parking_lot = "0.12.3"
@@ -34,40 +34,19 @@ libloading = { version = "0.9", optional = true }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc = { version = "0.2.7" }
+objc = "0.2.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = [
-	"std",
-	"driver",
-	"fallback-dynamic-loading",
-	"cuda-13010",
-] }
-opencl3 = { version = "0.12.1" }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
+opencl3 = "0.12.1"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = [
-	"std",
-	"driver",
-	"nvrtc",
-	"fallback-dynamic-loading",
-	"cuda-13010",
-] }
-opencl3 = { version = "0.12.1" }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }
+opencl3 = "0.12.1"
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = [
-	"std",
-	"driver",
-	"fallback-dynamic-loading",
-	"cuda-13010",
-] }
-opencl3 = { version = "0.12.1" }
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
+opencl3 = "0.12.1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-	"cfg(shader_hotreload)",
-	"cfg(does_dialog)",
-	"cfg(with_premiere)",
-	"cfg(threaded_rendering)",
-] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)", "cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

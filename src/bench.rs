@@ -253,7 +253,7 @@ impl Scene {
 	}
 
 	/// Build a single-pass `Configuration`: `input → output`, matching sizes,
-	/// tight pitch.
+	/// tight pitch. `time` defaults to 0.0 (bench has no timeline context).
 	pub fn simple_config(&mut self) -> Configuration {
 		let ptr_in = self.input.as_ptr() as *mut c_void;
 		let ptr_out = self.output.as_mut_ptr() as *mut c_void;

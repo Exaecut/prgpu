@@ -8,6 +8,7 @@ use premiere::{self as pr, PixelFormat, Property};
 #[derive(Clone)]
 pub struct GPURenderProperties<'a> {
 	pub progress: f32,
+	pub time: f32,
 	pub gpu_index: u32,
 	pub pixel_format: PixelFormat,
 	pub half_precision: bool,
@@ -105,8 +106,16 @@ impl<'a> GPURenderProperties<'a> {
 
 		let bytes_per_pixel = gpu_bytes_per_pixels(pixel_format);
 
+		let ticks_per_frame = render_params.render_ticks_per_frame();
+		let time = if ticks_per_frame != 0 {
+			render_params.clip_time() as f32 / ticks_per_frame as f32
+		} else {
+			0.0
+		};
+
 		Ok(GPURenderProperties {
 			progress,
+			time,
 			gpu_index,
 			pixel_format,
 			half_precision,

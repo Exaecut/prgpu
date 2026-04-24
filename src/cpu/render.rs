@@ -139,12 +139,19 @@ pub fn render_cpu<P: Copy + Sync>(
 
 	let buffers = SafeBuffers([outgoing_ptr, incoming_ptr, dest_ptr]);
 
+	let time = if in_data.time_scale() != 0 {
+		in_data.current_time() as f32 / in_data.time_scale() as f32
+	} else {
+		0.0
+	};
+
 	let tp = FrameParams {
 		out_pitch: config.outgoing_pitch_px as u32,
 		in_pitch: config.incoming_pitch_px as u32,
 		dest_pitch: config.dest_pitch_px as u32,
 		width: w,
 		height: h,
+		time,
 		progress: config.progress,
 		bpp: config.bytes_per_pixel,
 		pixel_layout: config.pixel_layout,
@@ -300,6 +307,7 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 		dest_pitch: config.dest_pitch_px as u32,
 		width: w,
 		height: h,
+		time: config.time,
 		progress: config.progress,
 		bpp: config.bytes_per_pixel,
 		pixel_layout: config.pixel_layout,

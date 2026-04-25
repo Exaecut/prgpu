@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "prgpu-macro"]
+
 [package]
 name = "prgpu"
 version = "0.1.2"
@@ -28,6 +31,7 @@ bytemuck = { version = "1.23.1", features = ["derive", "min_const_generics"] }
 parking_lot = "0.12.3"
 paste = "1.0.15"
 rayon = "1.10"
+prgpu-macro = { version = "0.1.0", path = "prgpu-macro" }
 cc = { version = "1", optional = true }
 regex-lite = { version = "0.1", optional = true }
 libloading = { version = "0.9", optional = true }
@@ -47,6 +51,9 @@ opencl3 = "0.12.1"
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 opencl3 = "0.12.1"
+
+[dev-dependencies]
+trybuild = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)", "cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

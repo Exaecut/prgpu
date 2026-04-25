@@ -1,0 +1,5 @@
+error: [f32; 3] is rejected by default (ambiguous GPU ABI layout); use Vec3, [f32; 4], or enable allow_vec3
+ --> tests/gpu_struct/compile-fail/vec3_array_rejected.rs:5:14
+  |
+5 |     pub rgb: [f32; 3],
+  |              ^^^^^^^^

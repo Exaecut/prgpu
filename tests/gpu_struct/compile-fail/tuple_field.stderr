@@ -1,0 +1,5 @@
+error: tuple types are not supported in #[gpu_struct]; use a named struct or array
+ --> tests/gpu_struct/compile-fail/tuple_field.rs:5:15
+  |
+5 |     pub pair: (f32, f32),
+  |               ^^^^^^^^^^

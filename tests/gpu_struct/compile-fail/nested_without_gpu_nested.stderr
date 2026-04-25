@@ -1,0 +1,5 @@
+error: nested struct `Custom` is not recognized as GPU-safe; annotate the field with #[gpu_nested] to assert ABI safety, or replace with an approved type
+ --> tests/gpu_struct/compile-fail/nested_without_gpu_nested.rs:9:16
+  |
+9 |     pub inner: Custom,
+  |                ^^^^^^

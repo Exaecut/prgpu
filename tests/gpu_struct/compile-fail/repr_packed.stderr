@@ -1,0 +1,5 @@
+error: #[repr(packed)] is incompatible with #[gpu_struct]; GPU structs require natural alignment for correct memory layout
+ --> tests/gpu_struct/compile-fail/repr_packed.rs:4:8
+  |
+4 | #[repr(packed)]
+  |        ^^^^^^

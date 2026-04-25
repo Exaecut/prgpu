@@ -20,3 +20,4 @@ pub mod build;
 pub mod bench;
 
 pub use paste;
+pub use prgpu_macro::gpu_struct;

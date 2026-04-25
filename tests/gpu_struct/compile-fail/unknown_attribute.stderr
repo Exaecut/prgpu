@@ -1,0 +1,5 @@
+error: unknown attribute 'unknown_attr'; valid: targets, align, allow_vec3, allow_bool, debug_layout, emit_offsets, strict, bytemuck, pad
+ --> tests/gpu_struct/compile-fail/unknown_attribute.rs:3:14
+  |
+3 | #[gpu_struct(unknown_attr)]
+  |              ^^^^^^^^^^^^

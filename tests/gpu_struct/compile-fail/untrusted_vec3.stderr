@@ -1,0 +1,5 @@
+error: type `fake::Vec3` is not a recognized GPU Vec3; only Vec3 / crate::Vec3 / prgpu::Vec3 are trusted. Import from prgpu::types or use a different name.
+ --> tests/gpu_struct/compile-fail/untrusted_vec3.rs:7:12
+  |
+7 |     pub v: fake::Vec3,
+  |            ^^^^

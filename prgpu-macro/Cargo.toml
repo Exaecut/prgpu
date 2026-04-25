@@ -1,0 +1,15 @@
+[package]
+name = "prgpu-macro"
+version = "0.1.0"
+edition = "2024"
+description = "Procedural macros for prgpu GPU struct ABI generation"
+license = "MIT"
+repository = "https://github.com/Exaecut/prgpu"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

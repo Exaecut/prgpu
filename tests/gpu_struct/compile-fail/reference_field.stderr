@@ -1,0 +1,5 @@
+error: reference types are not supported in #[gpu_struct]; GPU structs must be Copy and self-contained
+ --> tests/gpu_struct/compile-fail/reference_field.rs:5:12
+  |
+5 |     pub x: &'static f32,
+  |            ^

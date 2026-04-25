@@ -1,0 +1,5 @@
+error: #[gpu_struct] does not support generic structs; remove generic parameters or use a concrete type
+ --> tests/gpu_struct/compile-fail/generic_struct.rs:4:12
+  |
+4 | pub struct Generic<T> {
+  |            ^^^^^^^

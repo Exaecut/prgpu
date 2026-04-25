@@ -1,0 +1,5 @@
+error: #[gpu_struct] cannot be applied to unit structs; add at least one field
+ --> tests/gpu_struct/compile-fail/unit_struct.rs:4:12
+  |
+4 | pub struct Unit;
+  |            ^^^^

@@ -116,6 +116,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			dest_pitch: config.dest_pitch_px as u32,
 			width: config.width,
 			height: config.height,
+			time: config.time,
 			progress: config.progress,
 			bpp: config.bytes_per_pixel,
 			pixel_layout: config.pixel_layout,

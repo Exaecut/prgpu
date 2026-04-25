@@ -177,6 +177,7 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 /// | `point_pct_x(V)`  | `point.0` (pre-normalized)       | `point.0 / width`             |
 /// | `point_pct_y(V)`  | `point.1` (pre-normalized)       | `point.1 / height`            |
 /// | `checkbox(V)`     | `get_param::<bool> as u32`       | `params.checkbox(V)? as u32`   |
+/// | `popup(V)`        | `get_param::<i32> as u32`        | `params.popup(V)? as u32`      |
 ///
 /// Append `/ expr` or `* expr` after the extractor for a post-transform.
 /// Fields without `= ...` are zero-initialized padding.
@@ -263,6 +264,9 @@ macro_rules! kernel_params {
     (@gpu_base checkbox, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {
         $crate::params::get_param::<bool, _>($f, <$P>::$v, $rp) as u32
     };
+    (@gpu_base popup, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {
+        $crate::params::get_param::<i32, _>($f, <$P>::$v, $rp) as u32
+    };
     (@gpu_base color_r, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {{
         let __c: $crate::types::Pixel = $crate::params::get_param($f, <$P>::$v, $rp);
         __c.red as f32
@@ -318,6 +322,9 @@ macro_rules! kernel_params {
     };
     (@cpu_base checkbox, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.checkbox(<$P>::$v)? as u32
+    };
+    (@cpu_base popup, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
+        $p.popup(<$P>::$v)? as u32
     };
     // Color params: Premiere fills PF_Pixel with BGRA byte order, so .red
     // actually contains Blue and .blue contains Red.  AE uses ARGB (correct).

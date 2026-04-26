@@ -186,6 +186,7 @@ pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 			.include(&utils_str)
 			.include(shader_dir_abs.to_str().unwrap())
 			.define("VEKL_CPU", Some("1"))
+			.flag_if_supported("/Zc:preprocessor")
 			.flag_if_supported("/std:c++14")
 			.flag_if_supported("-std=c++14")
 			.flag_if_supported("/Z7")

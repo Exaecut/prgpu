@@ -24,17 +24,14 @@ fn main() {
 
 	println!("cargo:rustc-cfg=gpu_backend=\"{}\"", backend);
 
-	let hotreload_env = env::var("EX_SHADER_HOTRELOAD").unwrap_or("false".to_string()) == "true";
-	let hotreload_feature = env::var_os("CARGO_FEATURE_SHADER_HOTRELOAD").is_some();
-	let shader_hotreload = hotreload_env || hotreload_feature;
-
-	if shader_hotreload {
-        println!("cargo:warning=Hot reloading shaders is enabled. This is not recommended for production builds.");
+	// Shader hot-reload: propagate Cargo feature → custom cfg.
+	// Only the Cargo feature is checked here because the feature is what activates
+	// the cudarc/nvrtc dependency used in this mode.
+	if env::var_os("CARGO_FEATURE_SHADER_HOTRELOAD").is_some() {
 		println!("cargo:rustc-cfg=shader_hotreload");
 	}
 
 	println!("cargo:rerun-if-env-changed=GPU_BACKEND");
 	println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENCL");
-    println!("cargo:rerun-if-env-changed=EX_SHADER_HOTRELOAD");
 	println!("cargo:rerun-if-changed=build.rs");
 }

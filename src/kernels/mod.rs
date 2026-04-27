@@ -16,15 +16,10 @@
 /// - The GPU function registers the effect's shader directory once via a `Once` guard,
 ///   then routes every dispatch through the hot-reload pipeline (NVRTC / Metal runtime
 ///   compiler) with automatic fallback to the embedded build-time artifact.
-/// - The CPU function registers its shader directory the same way and resolves the
-///   dispatch function pointer through `cpu::pipeline::get_dispatch_fn()`, which
-///   compiles the `.vekl` to a shared library on first use (or after `hot_reload()`)
-///   and falls back to the statically-linked symbol on any error.
 ///
 /// Without `shader_hotreload`:
 /// - GPU dispatch uses the embedded build-time artifact directly (zero indirection).
-/// - CPU dispatch calls the statically-linked `{name}_cpu_dispatch` symbol directly
-///   via the no-op `cpu::pipeline::get_dispatch_fn()` stub that returns the fallback.
+/// - CPU dispatch calls the statically-linked `{name}_cpu_dispatch` symbol directly.
 #[macro_export]
 macro_rules! declare_kernel {
 	($name:ident, $user_params_ty:ty) => {
@@ -119,30 +114,13 @@ macro_rules! declare_kernel {
 				config: &$crate::types::Configuration,
 				user_params: $user_params_ty,
 			) -> Result<(), after_effects::Error> {
-
-				#[cfg(shader_hotreload)]
-				{
-					static SHADER_DIR_INIT: std::sync::Once = std::sync::Once::new();
-					SHADER_DIR_INIT.call_once(|| {
-						let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-						let shader_dir = manifest.join("shaders");
-						let vekl_dir = manifest.join("..").join("vekl");
-						$crate::cpu::pipeline::set_shader_dirs(shader_dir, vec![vekl_dir]);
-					});
-				}
-
-				let dispatch_fn = $crate::cpu::pipeline::get_dispatch_fn(
-					stringify!($name),
-					[<$name _cpu_dispatch>],
-				);
-
 				$crate::cpu::render::render_cpu(
 						stringify!($name),
 						in_data,
 						in_layer,
 						out_layer,
 						config,
-						dispatch_fn,
+						[<$name _cpu_dispatch>],
 						&user_params,
 					)
 			}

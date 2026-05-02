@@ -698,7 +698,6 @@ dependencies = [
  "cc",
  "criterion",
  "cudarc",
- "libloading 0.9.0",
  "log",
  "objc",
  "opencl3",

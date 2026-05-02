@@ -78,14 +78,25 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 	out.push_str("extern \"C\" {\n");
 	out.push_str("#endif\n\n");
 
-	out.push_str(&format!("VEKL_EXPORT void {}_cpu_dispatch(\n", sig.name));
-	out.push_str("    unsigned int __gid_x,\n");
-	out.push_str("    unsigned int __gid_y,\n");
-	out.push_str("    const void* const* __buffers,\n");
-	out.push_str("    const void* __transition_params,\n");
-	out.push_str("    const void* __user_params\n");
-	out.push_str(") {\n");
+	// Single-pixel entry (legacy; used by AE iterate_with path).
+	emit_buffer_unpacks_and_pixel_entry(&mut out, sig);
 
+	// Tile entry (new hot path; used by rayon dispatcher).
+	//
+	// Does the same buffer/param unpacks once per tile, then loops y/x
+	// internally. Every kernel invocation is a direct in-TU call (no FFI
+	// boundary) which lets LLVM inline the kernel body and hoist the TLS
+	// writes for `__cpu_dispatch_w / _h / _format` outside the loop.
+	emit_tile_entry(&mut out, sig);
+
+	out.push_str("#ifdef __cplusplus\n");
+	out.push_str("}\n");
+	out.push_str("#endif\n");
+
+	out
+}
+
+fn emit_param_unpacks(out: &mut String, sig: &KernelSignature) -> (Vec<String>, String) {
 	let mut forward_args = Vec::new();
 	let mut buf_idx = 0u32;
 	let mut tp_name = String::new();
@@ -138,6 +149,20 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 		panic!("Kernel '{}' has no param_dev_cbuf(FrameParams, ...) — required for CPU dispatch", sig.name);
 	}
 
+	(forward_args, tp_name)
+}
+
+fn emit_buffer_unpacks_and_pixel_entry(out: &mut String, sig: &KernelSignature) {
+	out.push_str(&format!("VEKL_EXPORT void {}_cpu_dispatch(\n", sig.name));
+	out.push_str("    unsigned int __gid_x,\n");
+	out.push_str("    unsigned int __gid_y,\n");
+	out.push_str("    const void* const* __buffers,\n");
+	out.push_str("    const void* __transition_params,\n");
+	out.push_str("    const void* __user_params\n");
+	out.push_str(") {\n");
+
+	let (forward_args, tp_name) = emit_param_unpacks(out, sig);
+
 	out.push('\n');
 	out.push_str(&format!("    __cpu_dispatch_w = {}.width;\n", tp_name));
 	out.push_str(&format!("    __cpu_dispatch_h = {}.height;\n", tp_name));
@@ -146,10 +171,35 @@ pub(crate) fn generate_cpu_dispatch_wrapper(shader_abs_path: &str, sig: &KernelS
 	out.push_str("    __cpu_gid_y = __gid_y;\n");
 	out.push_str(&format!("    {}({});\n", sig.name, forward_args.join(", ")));
 	out.push_str("}\n\n");
+}
 
-	out.push_str("#ifdef __cplusplus\n");
-	out.push_str("}\n");
-	out.push_str("#endif\n");
+fn emit_tile_entry(out: &mut String, sig: &KernelSignature) {
+	out.push_str(&format!("VEKL_EXPORT void {}_cpu_dispatch_tile(\n", sig.name));
+	out.push_str("    unsigned int __y0,\n");
+	out.push_str("    unsigned int __y1,\n");
+	out.push_str("    unsigned int __width,\n");
+	out.push_str("    const void* const* __buffers,\n");
+	out.push_str("    const void* __transition_params,\n");
+	out.push_str("    const void* __user_params\n");
+	out.push_str(") {\n");
 
-	out
+	let (forward_args, tp_name) = emit_param_unpacks(out, sig);
+
+	out.push('\n');
+	// TLS writes are kept inside the innermost loop so every kernel invocation
+	// observes a fresh write — matches the per-pixel wrapper's semantics and
+	// preserves the race-free guarantee that was established when `__cpu_format`
+	// was made `volatile`. The tile wrapper's win comes from amortizing the
+	// FFI/buffer unpack overhead over an entire tile, not from hoisting TLS.
+	out.push_str("    for (unsigned int __y = __y0; __y < __y1; ++__y) {\n");
+	out.push_str("        for (unsigned int __x = 0; __x < __width; ++__x) {\n");
+	out.push_str(&format!("            __cpu_dispatch_w = {}.width;\n", tp_name));
+	out.push_str(&format!("            __cpu_dispatch_h = {}.height;\n", tp_name));
+	out.push_str(&format!("            __cpu_format = {}.bpp;\n", tp_name));
+	out.push_str("            __cpu_gid_x = __x;\n");
+	out.push_str("            __cpu_gid_y = __y;\n");
+	out.push_str(&format!("            {}({});\n", sig.name, forward_args.join(", ")));
+	out.push_str("        }\n");
+	out.push_str("    }\n");
+	out.push_str("}\n\n");
 }

@@ -56,10 +56,31 @@ mod imp {
 	use super::{Backend, KernelTiming};
 	use parking_lot::Mutex;
 	use std::collections::HashMap;
-	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 	use std::sync::OnceLock;
 
 	static ENABLED: AtomicBool = AtomicBool::new(true);
+
+	/// How often `log_snapshot()` actually emits a line. With a value of 60
+	/// we get one line per ~1 second at 60 fps instead of one per frame,
+	/// which drastically cuts `OutputDebugStringW` / `DBWinMutex` contention
+	/// that otherwise dominates wall-clock variance in Premiere.
+	///
+	/// `0` disables throttling (emit every call). Default: 60.
+	static LOG_SNAPSHOT_INTERVAL: AtomicU64 = AtomicU64::new(60);
+	static LOG_SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+	/// Set how many `log_snapshot()` calls must happen between emitted lines.
+	/// `0` disables throttling (emit every call). Default: 60.
+	pub fn set_log_snapshot_interval(interval: u64) {
+		LOG_SNAPSHOT_INTERVAL.store(interval, Ordering::Relaxed);
+	}
+
+	/// Emit an aggregated snapshot immediately, ignoring the throttle counter.
+	/// Useful for a one-shot dump at shutdown.
+	pub fn log_snapshot_now() {
+		emit_snapshot();
+	}
 
 	struct PerKernelStats {
 		backend: Backend,
@@ -76,8 +97,26 @@ mod imp {
 		TIMINGS.get_or_init(|| Mutex::new(HashMap::new()))
 	}
 
-	/// Log all accumulated timing data.
+	/// Log all accumulated timing data, throttled by
+	/// [`set_log_snapshot_interval`] to avoid `OutputDebugStringW` contention
+	/// when called every frame. Call [`log_snapshot_now`] for an unconditional
+	/// emit.
 	pub fn log_snapshot() {
+		let interval = LOG_SNAPSHOT_INTERVAL.load(Ordering::Relaxed);
+		if interval == 0 {
+			emit_snapshot();
+			return;
+		}
+		// fetch_add returns the previous value; emit only on the 1st call and
+		// then every `interval`-th call thereafter.
+		let prev = LOG_SNAPSHOT_COUNTER.fetch_add(1, Ordering::Relaxed);
+		if prev % interval == 0 {
+			emit_snapshot();
+		}
+	}
+
+	#[inline]
+	fn emit_snapshot() {
 		let timings = snapshot();
 		for t in &timings {
 			after_effects::log::info!(
@@ -169,6 +208,12 @@ mod imp {
 
 	#[inline]
 	pub fn log_snapshot() {}
+
+	#[inline]
+	pub fn log_snapshot_now() {}
+
+	#[inline]
+	pub fn set_log_snapshot_interval(_interval: u64) {}
 
 	#[inline]
 	pub fn reset() {}

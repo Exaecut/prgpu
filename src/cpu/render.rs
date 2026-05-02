@@ -4,7 +4,15 @@ use after_effects as ae;
 
 use crate::types::{Configuration, FrameParams};
 
+/// Per-pixel CPU dispatch: kernel is invoked once per `(x, y)` tuple.
+/// Kept for the AE `iterate_with` path that drives `(x, y)` externally.
 pub type CpuDispatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *const c_void, *const c_void);
+
+/// Tile CPU dispatch: kernel is invoked over a `[y0, y1) × [0, width)` range
+/// inside a single C-side loop. Used by the rayon path so a single FFI
+/// boundary amortizes over an entire tile — roughly `rows_per_task × width`
+/// kernel invocations become one extern "C" call.
+pub type CpuDispatchTileFn = unsafe extern "C" fn(u32, u32, u32, *const *const c_void, *const c_void, *const c_void);
 
 /// Wrapper to make buffer pointer array `Send + Sync`.
 ///
@@ -125,13 +133,22 @@ pub fn render_cpu<P: Copy + Sync>(
 	out_layer: &mut ae::Layer,
 	config: &Configuration,
 	dispatch_fn: CpuDispatchFn,
+	dispatch_tile_fn: CpuDispatchTileFn,
 	user_params: &P,
 ) -> Result<(), ae::Error> {
+	use crate::cpu::diag;
+
 	let w = config.width;
 	let h = config.height;
 	if w == 0 || h == 0 {
 		return Ok(());
 	}
+
+	// Start global wall-clock + concurrency tracking as soon as we enter the
+	// dispatcher. `setup_ns` covers everything before the rayon / AE loop
+	// body; `body_ns` is the loop itself.
+	let guard = diag::DispatchGuard::enter();
+	let wall_start = std::time::Instant::now();
 
 	let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
 	let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
@@ -159,14 +176,19 @@ pub fn render_cpu<P: Copy + Sync>(
 
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
 
-	let start = std::time::Instant::now();
+	let setup_ns = wall_start.elapsed().as_nanos() as u64;
+	let body_start = std::time::Instant::now();
 
-	let result = if can_iterate_with {
-		ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn)
+	let (path, chunk_rows, result) = if can_iterate_with {
+		// AE iterate_with drives (x, y) externally, so we must use the
+		// per-pixel entry point.
+		(
+			diag::DispatchPath::AeIterate,
+			1u32,
+			ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn),
+		)
 	} else {
-		// Use config-provided buffer pointers directly.
-		// Do NOT replace with AE layer pointers — intermediate buffers
-		// (e.g., blur temporaries) have their own pointers that must be respected.
+		// Rayon fallback — use the tile entry point (one FFI call per chunk).
 		let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
 		let out_buf_size = (h as usize) * out_stride_bytes;
 
@@ -179,12 +201,15 @@ pub fn render_cpu<P: Copy + Sync>(
 		} else {
 			&mut []
 		};
-		let in_buf = in_layer.buffer();
 
-		rayon_dispatch(w, h, buffers, tp, user_params, dispatch_fn, out_buf, in_buf, out_stride_bytes)
+		let rows = rayon_dispatch_tile(w, buffers, tp, user_params, dispatch_tile_fn, out_buf, out_stride_bytes);
+		(diag::DispatchPath::Rayon, rows, Ok(()))
 	};
 
-	crate::timing::record(kernel_name, crate::types::Backend::Cpu, start.elapsed().as_nanos() as u64);
+	let body_ns = body_start.elapsed().as_nanos() as u64;
+	crate::timing::record(kernel_name, crate::types::Backend::Cpu, setup_ns + body_ns);
+	diag::log_dispatch(kernel_name, path, w, h, chunk_rows, setup_ns, body_ns, guard.concurrent_at_entry());
+	drop(guard);
 
 	result
 }
@@ -222,23 +247,32 @@ fn ae_dispatch<P: Copy + Sync>(
 	)
 }
 
-fn rayon_dispatch<P: Copy + Sync>(
-	width: u32,
-	_height: u32,
-	buffers: SafeBuffers,
-	tp: FrameParams,
-	user_params: &P,
-	dispatch_fn: CpuDispatchFn,
-	out_buf: &mut [u8],
-	_in_buf: &[u8],
-	out_stride_bytes: usize,
-) -> Result<(), ae::Error> {
-	rayon_dispatch_raw(width, buffers, tp, user_params, dispatch_fn, out_buf, out_stride_bytes);
-	Ok(())
+
+/// Compute how many rows of work each rayon task should own.
+///
+/// The default strategy aims for ~4 tasks per worker thread — enough for good
+/// load balancing but coarse enough to amortize rayon's fork-join overhead
+/// across the per-pixel inner loop. For a 1516-row frame on 16 threads we go
+/// from 1516 tasks (one per row) down to ~64, cutting scheduler work by ~24×.
+#[inline]
+fn compute_rows_per_task(height: u32) -> u32 {
+	// Base chunking on the bounded render pool's worker count, not the global
+	// rayon pool, so task granularity matches the pool we actually dispatch on.
+	let threads = crate::cpu::pool::worker_count().max(1) as u32;
+	let target_tasks = threads.saturating_mul(4).max(1);
+	((height + target_tasks - 1) / target_tasks).max(1)
 }
 
-/// AE-free rayon dispatcher. Shared by the host-side render path (Premiere /
-/// non-AE AE path) and the `prgpu::bench` harness.
+/// AE-free rayon tile dispatcher. Shared by the host-side render path
+/// (Premiere / non-AE AE path) and the `prgpu::bench` harness.
+///
+/// Calls `dispatch_tile_fn` **once per rayon chunk**; the C-side wrapper
+/// loops over the chunk's `[y0, y1) × [0, width)` internally. This
+/// eliminates the per-pixel FFI boundary that, on Windows plugin DLLs with
+/// dynamic-TLS, was costing ~100 ns/pixel (~350 ms per 3.57 Mpx frame).
+///
+/// Returns `rows_per_task`, i.e. the chunk granularity used by rayon; the
+/// caller forwards this to the per-dispatch diagnostic.
 ///
 /// # Safety considerations
 /// - `buffers.0` must outlive the dispatch and point to memory of the sizes
@@ -246,28 +280,42 @@ fn rayon_dispatch<P: Copy + Sync>(
 /// - `out_buf` must be the backing storage of `buffers.0[2]` (the dest buffer);
 ///   it is used purely to partition row iteration across rayon workers.
 /// - `user_params` must live across the call.
-pub(crate) fn rayon_dispatch_raw<P: Copy + Sync>(
+pub(crate) fn rayon_dispatch_tile<P: Copy + Sync>(
 	width: u32,
 	buffers: SafeBuffers,
 	tp: FrameParams,
 	user_params: &P,
-	dispatch_fn: CpuDispatchFn,
+	dispatch_tile_fn: CpuDispatchTileFn,
 	out_buf: &mut [u8],
 	out_stride_bytes: usize,
-) {
+) -> u32 {
 	use rayon::prelude::*;
 
 	let buf_ptr = buffers.0.as_ptr() as usize;
 	let tp_ptr = &tp as *const _ as usize;
 	let up_ptr = user_params as *const _ as usize;
 
-	out_buf.par_chunks_mut(out_stride_bytes).enumerate().for_each(move |(y, _row_bytes)| {
-		for x in 0..width {
-			unsafe {
-				dispatch_fn(x, y as u32, buf_ptr as *const *const c_void, tp_ptr as *const c_void, up_ptr as *const c_void);
-			}
+	let height = tp.height as usize;
+	let rows_per_task = compute_rows_per_task(tp.height) as usize;
+	let chunk_bytes = rows_per_task * out_stride_bytes;
+
+	crate::cpu::pool::ensure_initialized();
+	out_buf.par_chunks_mut(chunk_bytes).enumerate().for_each(move |(chunk_idx, _chunk_bytes)| {
+		let y0 = (chunk_idx * rows_per_task) as u32;
+		let y1 = ((chunk_idx * rows_per_task + rows_per_task).min(height)) as u32;
+		unsafe {
+			dispatch_tile_fn(
+				y0,
+				y1,
+				width,
+				buf_ptr as *const *const c_void,
+				tp_ptr as *const c_void,
+				up_ptr as *const c_void,
+			);
 		}
 	});
+
+	rows_per_task as u32
 }
 
 /// Dispatch a CPU kernel without any After Effects / Premiere plumbing.
@@ -286,14 +334,19 @@ pub(crate) fn rayon_dispatch_raw<P: Copy + Sync>(
 pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 	kernel_name: &'static str,
 	config: &Configuration,
-	dispatch_fn: CpuDispatchFn,
+	dispatch_tile_fn: CpuDispatchTileFn,
 	user_params: &P,
 ) {
+	use crate::cpu::diag;
+
 	let w = config.width;
 	let h = config.height;
 	if w == 0 || h == 0 {
 		return;
 	}
+
+	let guard = diag::DispatchGuard::enter();
+	let wall_start = std::time::Instant::now();
 
 	let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
 	let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut()) as *const c_void;
@@ -316,14 +369,19 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 	let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
 	let out_buf_size = (h as usize) * out_stride_bytes;
 
-	let start = std::time::Instant::now();
+	let setup_ns = wall_start.elapsed().as_nanos() as u64;
+	let body_start = std::time::Instant::now();
+	let mut chunk_rows = 1u32;
 
 	if out_buf_size > 0 && !dest_ptr.is_null() {
 		// SAFETY: dest_ptr points to `out_buf_size` bytes of writable memory by
 		// caller contract; slice is used only to partition rows across rayon workers.
 		let out_buf = unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, out_buf_size) };
-		rayon_dispatch_raw(w, buffers, tp, user_params, dispatch_fn, out_buf, out_stride_bytes);
+		chunk_rows = rayon_dispatch_tile(w, buffers, tp, user_params, dispatch_tile_fn, out_buf, out_stride_bytes);
 	}
 
-	crate::timing::record(kernel_name, crate::types::Backend::Cpu, start.elapsed().as_nanos() as u64);
+	let body_ns = body_start.elapsed().as_nanos() as u64;
+	crate::timing::record(kernel_name, crate::types::Backend::Cpu, setup_ns + body_ns);
+	diag::log_dispatch(kernel_name, diag::DispatchPath::Direct, w, h, chunk_rows, setup_ns, body_ns, guard.concurrent_at_entry());
+	drop(guard);
 }

@@ -57,7 +57,7 @@ use std::time::Duration;
 
 pub use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use crate::cpu::render::{render_cpu_direct, CpuDispatchFn};
+use crate::cpu::render::{render_cpu_direct, CpuDispatchTileFn};
 use crate::types::Configuration;
 
 // ---------------------------------------------------------------------------
@@ -270,12 +270,13 @@ impl Scene {
 		)
 	}
 
-	/// Run a single-pass dispatch (`input → output`) on this scene.
-	pub fn dispatch_simple<P: Copy + Sync>(&mut self, dispatch_fn: CpuDispatchFn, params: &P) {
+	/// Run a single-pass dispatch (`input → output`) on this scene using
+	/// the tile dispatcher (one FFI call per rayon chunk).
+	pub fn dispatch_simple<P: Copy + Sync>(&mut self, dispatch_tile_fn: CpuDispatchTileFn, params: &P) {
 		let cfg = self.simple_config();
 		// SAFETY: pointers in `cfg` come from `self` and live for the call;
 		// the dispatch function only reads `input` and writes `output`.
-		unsafe { render_cpu_direct("bench", &cfg, dispatch_fn, params) };
+		unsafe { render_cpu_direct("bench", &cfg, dispatch_tile_fn, params) };
 	}
 
 	/// Run a kernel with a user-supplied [`Configuration`] (multi-pass scenario).
@@ -284,8 +285,8 @@ impl Scene {
 	/// `cfg`'s buffer pointers must remain valid for the duration of the call;
 	/// typically obtained from [`Scene::input_ptr`] / [`Scene::output_ptr`] /
 	/// [`Scene::aux_ptr`] on this same [`Scene`].
-	pub fn dispatch_with<P: Copy + Sync>(&self, cfg: &Configuration, dispatch_fn: CpuDispatchFn, params: &P) {
-		unsafe { render_cpu_direct("bench", cfg, dispatch_fn, params) };
+	pub fn dispatch_with<P: Copy + Sync>(&self, cfg: &Configuration, dispatch_tile_fn: CpuDispatchTileFn, params: &P) {
+		unsafe { render_cpu_direct("bench", cfg, dispatch_tile_fn, params) };
 	}
 }
 
@@ -342,7 +343,7 @@ pub type CustomizeFn<P> = fn(&mut P, Resolution, PixelFormat);
 
 pub struct KernelBenchmark<P: Copy + Sync + 'static> {
 	name: String,
-	dispatch_fn: CpuDispatchFn,
+	dispatch_fn: CpuDispatchTileFn,
 	user_params: P,
 	resolutions: Vec<Resolution>,
 	formats: Vec<PixelFormat>,
@@ -356,7 +357,7 @@ impl<P: Copy + Sync + 'static> KernelBenchmark<P> {
 	/// Create a new benchmark for `dispatch_fn`. `name` becomes the criterion
 	/// **group** name; individual benches within the group are identified by
 	/// the `(format, resolution)` tuple.
-	pub fn new(name: impl Into<String>, dispatch_fn: CpuDispatchFn, user_params: P) -> Self {
+	pub fn new(name: impl Into<String>, dispatch_fn: CpuDispatchTileFn, user_params: P) -> Self {
 		Self {
 			name: name.into(),
 			dispatch_fn,

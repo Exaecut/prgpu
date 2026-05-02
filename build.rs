@@ -21,7 +21,7 @@ fn main() {
 	};
 
 	println!("cargo:rustc-check-cfg=cfg(gpu_backend, values(\"metal\", \"cuda\", \"opencl\", \"other\"))");
-
+    println!("cargo:rustc-cfg=with_premiere");
 	println!("cargo:rustc-cfg=gpu_backend=\"{}\"", backend);
 
 	// Shader hot-reload: propagate Cargo feature → custom cfg.

@@ -1,10 +1,10 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::PathBuf, process::Command};
 
 #[cfg(target_os = "windows")]
 use cudarc::nvrtc::{CompileError, CompileOptions};
 
 use crate::cpu::codegen::{generate_cpu_dispatch_wrapper, parse_kernel_signature};
-use crate::gpu::shaders::expand_includes_runtime;
+use crate::gpu::shaders::{expand_includes_runtime, prepare_metal_source};
 
 type DynError = Box<dyn Error + Send + Sync>;
 

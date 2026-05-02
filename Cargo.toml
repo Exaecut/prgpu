@@ -25,7 +25,7 @@ bench = ["dep:criterion"]
 
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_trace", "max_level_trace"] }
-after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master", features = ["catch-panics"] }
+after-effects = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 premiere = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 bytemuck = { version = "1.23.1", features = ["derive", "min_const_generics"] }
 parking_lot = "0.12.3"
@@ -53,6 +53,9 @@ opencl3 = "0.12.1"
 
 [dev-dependencies]
 trybuild = "1"
+
+[patch.crates-io]
+premiere-sys = { git = "https://github.com/Exaecut/after-effects.git", branch = "master" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)", "cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

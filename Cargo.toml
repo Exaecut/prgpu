@@ -19,7 +19,7 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE", "docs/**"]
 default = ["cargo-clippy"]
 cargo-clippy = []
 shader_hotreload = ["cudarc/nvrtc"]
-build = ["cc", "regex-lite"]
+build = ["dep:cc", "dep:serde", "dep:serde_json", "dep:ureq", "dep:tar", "dep:flate2", "dep:regex-lite"]
 timing = []
 bench = ["dep:criterion"]
 
@@ -33,6 +33,11 @@ paste = "1.0.15"
 rayon = "1.10"
 prgpu-macro = { version = "0.1.0", path = "prgpu-macro" }
 cc = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+ureq = { version = "3", optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
 regex-lite = { version = "0.1", optional = true }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports"], optional = true }
 

@@ -163,15 +163,13 @@ pub fn render_cpu<P: Copy + Sync>(
 	};
 
 	let tp = FrameParams {
-		out_pitch: config.outgoing_pitch_px as u32,
-		in_pitch: config.incoming_pitch_px as u32,
-		dest_pitch: config.dest_pitch_px as u32,
+		out_desc: crate::types::make_texture_desc(w, h, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		in_desc: crate::types::make_texture_desc(w, h, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		dst_desc: crate::types::make_texture_desc(w, h, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		width: w,
 		height: h,
 		time,
 		progress: config.progress,
-		bpp: config.bytes_per_pixel,
-		pixel_layout: config.pixel_layout,
 	};
 
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
@@ -189,7 +187,7 @@ pub fn render_cpu<P: Copy + Sync>(
 		)
 	} else {
 		// Rayon fallback — use the tile entry point (one FFI call per chunk).
-		let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
+		let out_stride_bytes = tp.dst_desc.pitch_bytes as usize;
 		let out_buf_size = (h as usize) * out_stride_bytes;
 
 		// SAFETY: dest_ptr points to a buffer of at least out_buf_size bytes,
@@ -355,18 +353,16 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 	let buffers = SafeBuffers([outgoing_ptr, incoming_ptr, dest_ptr]);
 
 	let tp = FrameParams {
-		out_pitch: config.outgoing_pitch_px as u32,
-		in_pitch: config.incoming_pitch_px as u32,
-		dest_pitch: config.dest_pitch_px as u32,
+		out_desc: crate::types::make_texture_desc(w, h, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		in_desc: crate::types::make_texture_desc(w, h, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		dst_desc: crate::types::make_texture_desc(w, h, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		width: w,
 		height: h,
 		time: config.time,
 		progress: config.progress,
-		bpp: config.bytes_per_pixel,
-		pixel_layout: config.pixel_layout,
 	};
 
-	let out_stride_bytes = (tp.dest_pitch * tp.bpp) as usize;
+	let out_stride_bytes = tp.dst_desc.pitch_bytes as usize;
 	let out_buf_size = (h as usize) * out_stride_bytes;
 
 	let setup_ns = wall_start.elapsed().as_nanos() as u64;

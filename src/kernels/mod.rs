@@ -4,52 +4,26 @@
 ///
 /// Generates:
 /// - `const VIGNETTE_SHADER_SRC` — the primary shader artifact for the active backend:
-///   - Metal: embedded `.metal` source (`include_shader!(name, metal)`)
+///   - Metal: embedded `.metallib` bytes (`include_shader!(name, metal)`)
 ///   - CUDA: embedded `.ptx` source (`include_shader!(name, cuda)`)
-///   - OpenCL: embedded `.cl` source (`include_shader!(name, opencl)`)
-/// - `const VIGNETTE_SHADER_SRC_F16` — CUDA half-precision PTX; empty string on non-CUDA
 /// - `const VIGNETTE_KERNEL_ENTRY_POINT`
 /// - `pub unsafe fn vignette(config, user_params)` (GPU dispatch)
 /// - `pub fn vignette_cpu(in_data, in_layer, out_layer, config, user_params)` (CPU dispatch)
-///
-/// Under `shader_hotreload`:
-/// - The GPU function registers the effect's shader directory once via a `Once` guard,
-///   then routes every dispatch through the hot-reload pipeline (NVRTC / Metal runtime
-///   compiler) with automatic fallback to the embedded build-time artifact.
-///
-/// Without `shader_hotreload`:
-/// - GPU dispatch uses the embedded build-time artifact directly (zero indirection).
-/// - CPU dispatch calls the statically-linked `{name}_cpu_dispatch` symbol directly.
 #[macro_export]
 macro_rules! declare_kernel {
 	($name:ident, $user_params_ty:ty) => {
 		$crate::paste::paste! {
 
 			#[allow(non_upper_case_globals)]
-			const [<$name:upper _SHADER_SRC>]: &str = {
+			const [<$name:upper _SHADER_SRC>]: &[u8] = {
 				#[cfg(gpu_backend = "metal")]
 				{ $crate::include_shader!($name, metal) }
 
 				#[cfg(gpu_backend = "cuda")]
 				{ $crate::include_shader!($name, cuda) }
 
-				#[cfg(gpu_backend = "opencl")]
-				{ $crate::include_shader!($name, opencl) }
-
-				#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda", gpu_backend = "opencl")))]
-				{ "" }
-			};
-		}
-
-		$crate::paste::paste! {
-
-			#[allow(non_upper_case_globals)]
-			const [<$name:upper _SHADER_SRC_F16>]: &str = {
-				#[cfg(gpu_backend = "cuda")]
-				{ $crate::include_shader!($name, cuda, halfprecision) }
-
-				#[cfg(not(gpu_backend = "cuda"))]
-				{ "" }
+				#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+				{ &[] }
 			};
 		}
 
@@ -63,22 +37,10 @@ macro_rules! declare_kernel {
 				config: &$crate::types::Configuration,
 				user_params: $user_params_ty,
 			) -> Result<(), &'static str> {
-				#[cfg(shader_hotreload)]
-				{
-					static SHADER_DIR_INIT: std::sync::Once = std::sync::Once::new();
-					SHADER_DIR_INIT.call_once(|| {
-						let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-						let shader_dir = manifest.join("shaders");
-						let vekl_dir = manifest.join("..").join("vekl");
-						$crate::gpu::pipeline::set_shader_dirs(shader_dir, vec![vekl_dir]);
-					});
-				}
-
 				$crate::backends::dispatch_kernel::<$user_params_ty>(
 					config,
 					user_params,
 					[<$name:upper _SHADER_SRC>],
-					[<$name:upper _SHADER_SRC_F16>],
 					[<$name:upper _KERNEL_ENTRY_POINT>],
 				)
 			}
@@ -95,9 +57,6 @@ macro_rules! declare_kernel {
 				);
 
 				/// Tile entry — loops `y ∈ [y0, y1) × x ∈ [0, width)` in C.
-				/// Used by the rayon dispatcher; eliminates the per-pixel
-				/// FFI boundary that dominates empty-kernel overhead on
-				/// Windows plugin DLLs.
 				pub fn [<$name _cpu_dispatch_tile>](
 					y0: u32,
 					y1: u32,
@@ -109,14 +68,11 @@ macro_rules! declare_kernel {
 			}
 
 			/// Typed pointer to the per-pixel CPU dispatch function.
-			/// Used by the AE `iterate_with` fallback path.
 			#[allow(non_upper_case_globals)]
 			pub const [<$name:upper _CPU_DISPATCH>]: $crate::cpu::render::CpuDispatchFn =
 				[<$name _cpu_dispatch>];
 
-			/// Typed pointer to the tile CPU dispatch function. Primary
-			/// entry point for the rayon render path and the
-			/// `prgpu::bench` harness.
+			/// Typed pointer to the tile CPU dispatch function.
 			#[allow(non_upper_case_globals)]
 			pub const [<$name:upper _CPU_DISPATCH_TILE>]: $crate::cpu::render::CpuDispatchTileFn =
 				[<$name _cpu_dispatch_tile>];

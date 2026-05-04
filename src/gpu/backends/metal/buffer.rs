@@ -125,7 +125,7 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 		}
 		DeviceHandleInit::FromSuite((device_index, suite)) => {
 			let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
-			unsafe { suite.allocate_device_memory(device_index, length) }.unwrap_or_else(|e| {
+			suite.allocate_device_memory(device_index, length).unwrap_or_else(|e| {
 				after_effects::log::error!("[Metal] GPUDevice suite allocation failed: {e:?}");
 				std::ptr::null_mut()
 			})

@@ -77,10 +77,9 @@ pub mod buffer;
 pub mod fence;
 pub mod pipeline;
 
-use crate::logging::{GpuLogCursor, VeklLogBuffer};
 use crate::{Configuration, FrameParams};
 
-pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str, entry: &'static str) -> Result<(), &'static str> {
+pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry: &'static str) -> Result<(), &'static str> {
 	use objc::rc::autoreleasepool;
 	autoreleasepool(|| {
 		if config.device_handle.is_null() || config.command_queue_handle.is_null() {
@@ -103,30 +102,25 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 		let device = config.device_handle as *mut Object;
 		let queue = config.command_queue_handle as *mut Object;
 
-		let (pso_f32, pso_f16) = unsafe { crate::gpu::pipeline::load_kernel(device, shader_src, entry) }?;
-		let pipeline: *mut Object = if config.is16f { pso_f16 } else { pso_f32 };
+		let pipeline = unsafe { crate::gpu::pipeline::load_kernel(device, shader_src, entry) }?;
 		if pipeline.is_null() {
 			log::error!("[Metal] pipeline state is null");
 			return Err("null pipeline state");
 		}
 
 		let frame_params = FrameParams {
-			out_pitch: config.outgoing_pitch_px as u32,
-			in_pitch: config.incoming_pitch_px as u32,
-			dest_pitch: config.dest_pitch_px as u32,
+			out_desc: crate::types::make_texture_desc(config.width, config.height, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+			in_desc: crate::types::make_texture_desc(config.width, config.height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+			dst_desc: crate::types::make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 			width: config.width,
 			height: config.height,
 			time: config.time,
 			progress: config.progress,
-			bpp: config.bytes_per_pixel,
-			pixel_layout: config.pixel_layout,
 		};
 
 		let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut());
 		let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut());
 
-		// Constant buffers: Shared storage is correct for single-frame CPU→GPU upload.
-		// +1 retained — must release after use.
 		let frame_params_buffer: *mut Object = unsafe {
 			msg_send![
 				device,
@@ -156,43 +150,11 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			return Err("user params buffer allocation failed");
 		}
 
-		let log_buffer: *mut Object = unsafe {
-			msg_send![
-				device,
-				newBufferWithLength: std::mem::size_of::<VeklLogBuffer>()
-				options: 0u64
-			]
-		};
-		if log_buffer.is_null() {
-			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-				let _: () = msg_send![user_params_buffer, release];
-			}
-			log::error!("[Metal] failed to create log buffer");
-			return Err("log buffer allocation failed");
-		}
-
-		let log_buffer_contents: *mut c_void = unsafe { msg_send![log_buffer, contents] };
-		if log_buffer_contents.is_null() {
-			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-				let _: () = msg_send![user_params_buffer, release];
-				let _: () = msg_send![log_buffer, release];
-			}
-			log::error!("[Metal] failed to map log buffer contents");
-			return Err("log buffer contents unavailable");
-		}
-
-		let log_buffer_host = log_buffer_contents as *mut VeklLogBuffer;
-		unsafe { (*log_buffer_host).initialize() };
-		let mut log_cursor = GpuLogCursor::default();
-
 		let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
 		if cmd.is_null() {
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
-				let _: () = msg_send![log_buffer, release];
 			}
 			log::error!("[Metal] failed to create command buffer");
 			return Err("command buffer creation failed");
@@ -203,7 +165,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
-				let _: () = msg_send![log_buffer, release];
 			}
 			log::error!("[Metal] failed to create compute encoder");
 			return Err("compute encoder creation failed");
@@ -216,7 +177,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
 			let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
 			let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
-			let _: () = msg_send![enc, setBuffer: log_buffer                    offset: 0usize  atIndex: 5usize];
 		}
 
 		let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
@@ -249,8 +209,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 		}
 
 		loop {
-			unsafe { (&*log_buffer_host).drain_into_host_log(&mut log_cursor, entry, "metal") };
-
 			let status: u64 = unsafe { msg_send![cmd, status] };
 			if status >= 4 {
 				break;
@@ -261,13 +219,10 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 
 		unsafe {
 			let _: () = msg_send![cmd, waitUntilCompleted];
-			(&*log_buffer_host).drain_into_host_log(&mut log_cursor, entry, "metal");
 		}
 
-		// Check command buffer error status
 		let status: u64 = unsafe { msg_send![cmd, status] };
 		if status == 5 {
-			// MTLCommandBufferStatusError = 5
 			let error: *mut Object = unsafe { msg_send![cmd, error] };
 			if let Some(msg) = unsafe { ns_error(error) } {
 				log::error!("[Metal] command buffer error: {msg}");
@@ -275,7 +230,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			unsafe {
 				let _: () = msg_send![frame_params_buffer, release];
 				let _: () = msg_send![user_params_buffer, release];
-				let _: () = msg_send![log_buffer, release];
 			}
 			return Err("GPU execution error");
 		}
@@ -293,11 +247,9 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &'static str
 			log::info!("[Metal] `{entry}` gen={generation}: gpu={gpu_ms:.3}ms, cpu={cpu_elapsed:?}");
 		}
 
-		// Release per-frame constant buffers (+1 retained from newBufferWithBytes)
 		unsafe {
 			let _: () = msg_send![frame_params_buffer, release];
 			let _: () = msg_send![user_params_buffer, release];
-			let _: () = msg_send![log_buffer, release];
 		}
 
 		Ok(())

@@ -31,7 +31,6 @@ pub struct Configuration {
 	pub dest_pitch_px: i32,
 	pub width: u32,
 	pub height: u32,
-	pub is16f: bool,
 	pub bytes_per_pixel: u32,
 	pub time: f32,
 	pub progress: f32,
@@ -87,7 +86,6 @@ impl Configuration {
 			dest_pitch_px,
 			width: width as u32,
 			height: height as u32,
-			is16f: render_properties.half_precision,
 			bytes_per_pixel: render_properties.bytes_per_pixel as u32,
 			time: render_properties.time,
 			progress: render_properties.progress,
@@ -96,16 +94,7 @@ impl Configuration {
 		})
 	}
 
-	/// Builds a `Configuration` for CPU (After Effects software render).
-	///
-	/// `in_data` and `out_data` must point to valid pixel buffers for the
-	/// duration of the kernel dispatch. Pitches are in pixels, not bytes.
-	///
-	/// `time` defaults to `0.0`. When dispatching via [`crate::cpu::render::render_cpu`],
-	/// time is populated automatically from `in_data.current_time() / in_data.time_scale()`.
-	/// When dispatching via [`crate::cpu::render::render_cpu_direct`] (e.g. benchmarks),
-	/// set `config.time` explicitly before calling.
-	pub fn cpu(in_data: *mut c_void, out_data: *mut c_void, in_pitch_px: i32, out_pitch_px: i32, width: u32, height: u32, is16f: bool, bytes_per_pixel: u32, pixel_layout: u32) -> Self {
+	pub fn cpu(in_data: *mut c_void, out_data: *mut c_void, in_pitch_px: i32, out_pitch_px: i32, width: u32, height: u32, bytes_per_pixel: u32, pixel_layout: u32) -> Self {
 		Self {
 			device_handle: std::ptr::null_mut(),
 			context_handle: None,
@@ -118,7 +107,6 @@ impl Configuration {
 			dest_pitch_px: out_pitch_px,
 			width,
 			height,
-			is16f,
 			bytes_per_pixel,
 			time: 0.0,
 			progress: 0.0,
@@ -165,7 +153,6 @@ impl Configuration {
 			dest_pitch_px,
 			width: width as u32,
 			height: height as u32,
-			is16f: render_properties.half_precision,
 			bytes_per_pixel: render_properties.bytes_per_pixel as u32,
 			time: render_properties.time,
 			progress: render_properties.progress,
@@ -177,14 +164,48 @@ impl Configuration {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct TextureDesc {
+	pub width: u32,
+	pub height: u32,
+	pub pitch_bytes: u32,
+	pub bytes_per_pixel: u32,
+	pub storage: u32,
+	pub layout: u32,
+	pub address_mode: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FrameParams {
-	pub out_pitch: u32,
-	pub in_pitch: u32,
-	pub dest_pitch: u32,
+	pub out_desc: TextureDesc,
+	pub in_desc: TextureDesc,
+	pub dst_desc: TextureDesc,
 	pub width: u32,
 	pub height: u32,
 	pub time: f32,
 	pub progress: f32,
-	pub bpp: u32,
-	pub pixel_layout: u32, // 0=RGBA, 1=BGRA, 2=VUYA601, 3=VUYA709
+}
+
+pub const PIXEL_STORAGE_UNORM8X4: u32 = 0;
+pub const PIXEL_STORAGE_UNORM16X4: u32 = 1;
+pub const PIXEL_STORAGE_FLOAT32X4: u32 = 2;
+
+pub fn storage_from_bpp(bpp: u32) -> u32 {
+	match bpp {
+		8 => PIXEL_STORAGE_UNORM16X4,
+		16 => PIXEL_STORAGE_FLOAT32X4,
+		_ => PIXEL_STORAGE_UNORM8X4,
+	}
+}
+
+pub fn make_texture_desc(width: u32, height: u32, pitch_px: u32, bpp: u32, pixel_layout: u32) -> TextureDesc {
+	TextureDesc {
+		width,
+		height,
+		pitch_bytes: pitch_px * bpp,
+		bytes_per_pixel: bpp,
+		storage: storage_from_bpp(bpp),
+		layout: pixel_layout,
+		address_mode: 0, // Clamp
+	}
 }

@@ -264,7 +264,6 @@ impl Scene {
 			self.pitch_px,
 			self.width,
 			self.height,
-			self.format.is16f(),
 			self.format.bpp(),
 			self.format.layout_id(),
 		)

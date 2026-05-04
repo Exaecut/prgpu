@@ -8,18 +8,42 @@ pub mod cpu_dispatch;
 
 type DynError = Box<dyn Error + Send + Sync>;
 
+/// Compile all `.slang` shaders in `shader_dir` with vekl auto-discovered as
+/// an include path. If vekl is not found (no `vekl/` sibling of prgpu), the
+/// shader directory is the only include path — no error is raised.
+///
+/// Slang is always required. vekl is optional.
 pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
+	let mut include_dirs = Vec::new();
+
+	let vekl_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("vekl");
+	if vekl_dir.is_dir() {
+		include_dirs.push(vekl_dir);
+	}
+
+	compile_shaders_with(shader_dir, &include_dirs)
+}
+
+/// Compile all `.slang` shaders in `shader_dir` with explicit include
+/// directories. Use this when you need custom include paths or want to
+/// omit vekl entirely.
+///
+/// The shader directory is always added as the first include path.
+pub fn compile_shaders_with(shader_dir: &str, include_dirs: &[PathBuf]) -> Result<(), DynError> {
 	let out_dir = std::env::var("OUT_DIR").unwrap();
 	let out_path = PathBuf::from(&out_dir);
 
 	let shader_dir_abs = PathBuf::from(shader_dir).canonicalize().unwrap();
 
-	compile_slang_shaders(&shader_dir_abs, &out_path)?;
+	let mut all_include = vec![shader_dir_abs.clone()];
+	all_include.extend(include_dirs.iter().cloned());
+
+	compile_slang_shaders(&shader_dir_abs, &out_path, &all_include)?;
 
 	Ok(())
 }
 
-fn compile_slang_shaders(shader_dir: &PathBuf, out_dir: &PathBuf) -> Result<(), DynError> {
+fn compile_slang_shaders(shader_dir: &PathBuf, out_dir: &PathBuf, include_dirs: &[PathBuf]) -> Result<(), DynError> {
 	let slang_files: Vec<PathBuf> = std::fs::read_dir(shader_dir)
 		.unwrap()
 		.filter_map(|e| e.ok())
@@ -41,16 +65,13 @@ fn compile_slang_shaders(shader_dir: &PathBuf, out_dir: &PathBuf) -> Result<(), 
 		);
 	}
 
-	let vekl_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("vekl");
-	let include_dirs = vec![shader_dir.clone(), vekl_dir];
-
 	let mut cpu_cpp_paths: Vec<PathBuf> = Vec::new();
 
 	for slang_file in &slang_files {
 		let name = slang_file.file_stem().unwrap().to_str().unwrap().to_string();
 
 		let compiled = compile::compile_shader(
-			&sdk, slang_file, &name, out_dir, &include_dirs,
+			&sdk, slang_file, &name, out_dir, include_dirs,
 		);
 
 		cpu_cpp_paths.push(compiled.cpp_path.clone());

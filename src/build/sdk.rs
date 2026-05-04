@@ -19,11 +19,12 @@ fn detect_platform() -> (&'static str, &'static str) {
 	(os, arch)
 }
 
-/// SDK directory at `target/{profile}/.slang-sdk/{version}/`. Auto-downloads if missing.
+/// SDK directory at `{workspace_root}/target/.slang-sdk/{version}/`.
+/// Shared across all workspace members — downloaded once.
+/// Auto-downloads if missing.
 pub fn sdk_dir() -> PathBuf {
-	let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-	let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-	let sdk = manifest_dir.join("target").join(profile).join(".slang-sdk").join(SLANG_VERSION);
+	let target_dir = find_shared_target_dir();
+	let sdk = target_dir.join(".slang-sdk").join(SLANG_VERSION);
 
 	if sdk.join("bin").exists() && sdk.join("include").exists() {
 		return sdk;
@@ -32,6 +33,29 @@ pub fn sdk_dir() -> PathBuf {
 	println!("cargo:warning=[slang] Slang SDK v{SLANG_VERSION} not found, downloading...");
 	download_sdk(&sdk);
 	sdk
+}
+
+/// Find the shared `target/` directory for the workspace.
+///
+/// In a build.rs, `OUT_DIR` is `<root>/target/debug/build/<crate-hash>/out`.
+/// Walk up from OUT_DIR to find the `target/` directory. This ensures every
+/// workspace member resolves to the same target directory, so the Slang SDK
+/// is downloaded exactly once.
+///
+/// Works for both workspaces (shared target/) and standalone crates.
+fn find_shared_target_dir() -> PathBuf {
+	let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
+	let mut dir = out_dir.as_path();
+	while let Some(parent) = dir.parent() {
+		if parent.file_name().is_some_and(|n| n == "target") {
+			return parent.to_path_buf();
+		}
+		dir = parent;
+	}
+	panic!(
+		"Could not locate workspace target/ directory from OUT_DIR={}",
+		out_dir.display()
+	);
 }
 
 pub fn slangc_bin(sdk: &Path) -> PathBuf {

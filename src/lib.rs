@@ -10,6 +10,7 @@ pub mod types;
 pub use types::*;
 
 pub mod params;
+pub mod ui;
 
 #[cfg(feature = "build")]
 pub mod build;

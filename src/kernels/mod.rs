@@ -1,3 +1,5 @@
+pub mod helpers;
+
 /// Declares a GPU kernel (CUDA & Metal) + CPU fallback dispatch.
 ///
 /// Usage: `declare_kernel!(vignette, VignetteParams);`

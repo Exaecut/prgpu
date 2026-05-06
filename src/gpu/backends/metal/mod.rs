@@ -108,9 +108,11 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			return Err("null pipeline state");
 		}
 
+		// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
+		// dst_desc + width/height describe the DESTINATION (drives dispatch grid).
 		let frame_params = FrameParams {
-			out_desc: crate::types::make_texture_desc(config.width, config.height, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
-			in_desc: crate::types::make_texture_desc(config.width, config.height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+			out_desc: crate::types::make_texture_desc(config.outgoing_width, config.outgoing_height, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+			in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 			dst_desc: crate::types::make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 			width: config.width,
 			height: config.height,
@@ -121,11 +123,13 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 		let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut());
 		let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut());
 
+		let frame_params_size = std::mem::size_of::<FrameParams>();
+		log::info!("[Metal] FrameParams size = {} bytes", frame_params_size);
 		let frame_params_buffer: *mut Object = unsafe {
 			msg_send![
 				device,
 				newBufferWithBytes: &frame_params as *const _ as *const c_void
-				length: std::mem::size_of::<FrameParams>()
+				length: frame_params_size
 				options: 0u64
 			]
 		};
@@ -134,11 +138,13 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			return Err("params buffer allocation failed");
 		}
 
+		let user_param_size = std::mem::size_of::<UP>();
+		log::info!("[Metal] dispatching kernel '{}' with user params size = {} bytes ({} floats)", entry, user_param_size, user_param_size / 4);
 		let user_params_buffer: *mut Object = unsafe {
 			msg_send![
 				device,
 				newBufferWithBytes: &user_params as *const _ as *const c_void
-				length: std::mem::size_of::<UP>()
+				length: user_param_size
 				options: 0u64
 			]
 		};

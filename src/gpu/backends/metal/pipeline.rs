@@ -1,12 +1,26 @@
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
 use after_effects::log;
-use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+use objc::{msg_send, runtime::Object, sel, sel_impl};
 use parking_lot::Mutex;
 
 use super::ns_error;
+
+// libdispatch FFI: newLibraryWithData expects a dispatch_data_t, not an NSData.
+// Toll-free bridging works for genuine NSData but can fail for static read-only buffers
+// wrapped via dataWithBytesNoCopy:freeWhenDone:NO. NULL destructor = copy internally.
+unsafe extern "C" {
+    fn dispatch_data_create(
+        buffer: *const c_void,
+        size: usize,
+        queue: *mut c_void,
+        destructor: *mut c_void,
+    ) -> *mut Object;
+    fn dispatch_release(object: *mut Object);
+}
 
 pub struct Pipeline {
     pub pso: *mut Object,
@@ -65,16 +79,22 @@ pub unsafe fn load_kernel(device: *mut Object, metallib_bytes: &[u8], fname: &st
         }
     }
 
-    let data: *mut Object = msg_send![class!(NSData), dataWithBytesNoCopy: metallib_bytes.as_ptr() as *const std::ffi::c_void
-        length: metallib_bytes.len()
-        freeWhenDone: false];
+    let data: *mut Object = unsafe {
+        dispatch_data_create(
+            metallib_bytes.as_ptr() as *const c_void,
+            metallib_bytes.len(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(), // DISPATCH_DATA_DESTRUCTOR_DEFAULT (libdispatch copies internally)
+        )
+    };
     if data.is_null() {
-        log::error!("[Metal] failed to create NSData from metallib bytes");
-        return Err("NSData creation failed");
+        log::error!("[Metal] dispatch_data_create failed for metallib ({} bytes)", metallib_bytes.len());
+        return Err("dispatch_data_create failed");
     }
 
     let mut error: *mut Object = std::ptr::null_mut();
     let library: *mut Object = msg_send![device, newLibraryWithData: data error: &mut error];
+    unsafe { dispatch_release(data) };
     if library.is_null() {
         if let Some(msg) = unsafe { ns_error(error) } {
             log::error!("[Metal] newLibraryWithData failed: {msg}");

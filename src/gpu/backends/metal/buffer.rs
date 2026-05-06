@@ -70,7 +70,20 @@ fn cache() -> &'static Mutex<OrderedLru> {
 	CACHE.get_or_init(|| Mutex::new(OrderedLru::new(MAX_GPU_BUFFER_ENTRIES)))
 }
 
-pub(crate) unsafe fn allocate(device: *mut Object, length_bytes: u64) -> *mut Object {
+pub(crate) unsafe fn allocate(device: *mut Object, length_bytes: u64, width: u32, height: u32, bpp: u32) -> *mut Object {
+	const MAX_REASONABLE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB safety limit for image buffers
+	if length_bytes > MAX_REASONABLE_BYTES {
+		after_effects::log::error!(
+			"[Metal] ABORT: refusing absurd buffer allocation of {} bytes ({} MiB) for {}x{} @ {} bpp — this is almost certainly a struct layout mismatch between Rust kernel_params! and the slang ConstantBuffer",
+			length_bytes,
+			length_bytes / 1024 / 1024,
+			width,
+			height,
+			bpp
+		);
+		// Return a null buffer so the caller can detect failure instead of crashing the driver
+		return std::ptr::null_mut();
+	}
 	let opts = StorageMode::Private.as_resource_options();
 	msg_send![device, newBufferWithLength: length_bytes options: opts]
 }
@@ -118,17 +131,26 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	}
 
 	// Cache miss
-	let raw = match device {
-		DeviceHandleInit::FromPtr(device) => {
-			let length = compute_length_bytes(width, height, bytes_per_pixel);
-			unsafe { allocate(device as *mut Object, length) as *mut std::ffi::c_void }
-		}
+		let raw = match device {
+			DeviceHandleInit::FromPtr(device) => {
+				let length = compute_length_bytes(width, height, bytes_per_pixel);
+				unsafe { allocate(device as *mut Object, length, width, height, bytes_per_pixel) as *mut std::ffi::c_void }
+			}
 		DeviceHandleInit::FromSuite((device_index, suite)) => {
-			let length = compute_length_bytes(width, height, bytes_per_pixel) as usize;
-			suite.allocate_device_memory(device_index, length).unwrap_or_else(|e| {
-				after_effects::log::error!("[Metal] GPUDevice suite allocation failed: {e:?}");
+			let length = compute_length_bytes(width, height, bytes_per_pixel);
+			const MAX_REASONABLE_BYTES: u64 = 512 * 1024 * 1024;
+			if length > MAX_REASONABLE_BYTES {
+				after_effects::log::error!(
+					"[Metal] ABORT (suite): refusing absurd buffer of {} bytes ({} MiB) for {}x{} @ {} bpp",
+					length, length / 1024 / 1024, width, height, bytes_per_pixel
+				);
 				std::ptr::null_mut()
-			})
+			} else {
+				suite.allocate_device_memory(device_index, length as usize).unwrap_or_else(|e| {
+					after_effects::log::error!("[Metal] GPUDevice suite allocation failed: {e:?}");
+					std::ptr::null_mut()
+				})
+			}
 		}
 	};
 

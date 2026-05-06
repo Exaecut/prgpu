@@ -41,13 +41,23 @@ impl<'a> GPURenderProperties<'a> {
 
 		let is_transition = frame_count >= 2 && pr::suites::Transition::new().is_ok();
 
-		let frames = frames_as_slice(frames, frame_count)?;
+		let raw_frames = frames_as_slice(frames, frame_count).unwrap_or(&[]);
+		let first = raw_frames.first().copied().unwrap_or(std::ptr::null_mut());
 
-		let outgoing = frames.first().copied().ok_or(pr::Error::Fail)?;
+		let outgoing = if !first.is_null() { first } else { std::ptr::null_mut() };
 		let incoming = if is_transition {
-			frames.get(1).copied().ok_or(pr::Error::Fail)?
+			raw_frames.get(1).copied().unwrap_or(std::ptr::null_mut())
 		} else {
 			std::ptr::null_mut()
+		};
+
+		// Use output frame as source if first input frame is missing/null
+		let main_source = if !outgoing.is_null() {
+			outgoing
+		} else if !out_frame.is_null() {
+			unsafe { *out_frame }
+		} else {
+			return Err(pr::Error::Fail);
 		};
 
 		let key = if is_transition {
@@ -69,16 +79,18 @@ impl<'a> GPURenderProperties<'a> {
 			}
 		} as f32;
 
-		let properties = if !incoming.is_null() {
-			incoming
-		} else if !outgoing.is_null() {
-			outgoing
-		} else if !out_frame.is_null() {
-			unsafe { *out_frame }
-		} else {
-			return Err(pr::Error::Fail);
-		};
+		// Prefer a source that actually has GPU data
+		let mut source = if !incoming.is_null() { incoming } else { main_source };
+		if filter.gpu_device_suite.gpu_ppix_data(source).is_err() {
+			if !out_frame.is_null() {
+				let out = unsafe { *out_frame };
+				if filter.gpu_device_suite.gpu_ppix_data(out).is_ok() {
+					source = out;
+				}
+			}
+		}
 
+		let properties = source;
 		let gpu_index = match filter.gpu_device_suite.gpu_ppix_device_index(properties) {
 			Ok(index) => index,
 			Err(_) => {
@@ -95,13 +107,26 @@ impl<'a> GPURenderProperties<'a> {
 			}
 		};
 
-		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
-		let bounds: after_effects::Rect = after_effects::Rect::from(PrRect::from(filter.ppix_suite.bounds(properties).unwrap()));
-
 		let output_frame = unsafe { *out_frame };
 		if output_frame.is_null() {
 			log::error!("Output frame is null");
 			return Err(pr::Error::Fail);
+		}
+
+		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
+
+		// Source of truth for dimensions: render_params (always valid, matches sequence size).
+		// ppix_suite.bounds() can return garbage for GPU PPix in some Metal render contexts.
+		let rw = render_params.render_width() as i32;
+		let rh = render_params.render_height() as i32;
+		let mut bounds = after_effects::Rect { left: 0, top: 0, right: rw, bottom: rh };
+		if bounds.width() <= 0 || bounds.height() <= 0 {
+			if let Ok(b) = filter.ppix_suite.bounds(output_frame) {
+				let r = after_effects::Rect::from(PrRect::from(b));
+				if r.width() > 0 && r.height() > 0 {
+					bounds = r;
+				}
+			}
 		}
 
 		let bytes_per_pixel = gpu_bytes_per_pixels(pixel_format);
@@ -122,7 +147,7 @@ impl<'a> GPURenderProperties<'a> {
 			bounds,
 			output_frame,
 			bytes_per_pixel,
-			frames: (incoming, outgoing),
+			frames: (incoming, source),
 			filter,
 		})
 	}

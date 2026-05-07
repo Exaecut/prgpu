@@ -1,26 +1,61 @@
 //! Built-in mip-chain downsampler shared by any effect that opts into the
-//! pyramid via `Configuration::outgoing_mip_levels`. The actual shader
-//! (`prgpu/shaders/mip_downsample.slang`) is compiled by prgpu's own
-//! `build.rs` into prgpu's `OUT_DIR`; the `declare_kernel!` invocation
-//! below wires the `include_shader!` + CPU FFI + GPU dispatch for it.
+//! pyramid via `Configuration::outgoing_mip_levels`. Host API +
+//! full CPU / GPU walkthrough: [`prgpu/docs/mip_chain.md`](../../../docs/mip_chain.md).
+//! Shader-side reference: [`vekl/docs/reference/texture/view.md`](../../../../vekl/docs/reference/texture/view.md).
 //!
-//! Effect gpu.rs pattern (Phase 3 will consume this):
+//! The actual shader (`prgpu/shaders/mip_downsample.slang`) is compiled by
+//! prgpu's own `build.rs` into prgpu's `OUT_DIR`; the `declare_kernel!`
+//! invocation below wires the `include_shader!` + CPU FFI + GPU dispatch.
+//!
+//! # Three-step host recipe
+//!
+//! Every effect that wants a mip-chain source does exactly this, same
+//! shape on CPU and GPU paths (the only backend-specific bit is the
+//! allocator + the level-0 copy in step 2):
+//!
 //! ```ignore
+//! // 1. Request a chain.
 //! config.outgoing_mip_levels = 4;
-//! let mip_buf = unsafe { prgpu::gpu::buffer::get_or_create_with_mips(
-//!     device, w, h, bpp, 4, MIP_TAG,
-//! ) };
-//! // Blit/copy level 0 from Premiere's outgoing into mip_buf.
-//! let mut mip_cfg = config;
-//! mip_cfg.outgoing_data = Some(mip_buf.buf.raw);
-//! prgpu::kernels::mip::generate_mips(&mip_cfg)?;
-//! // Swap outgoing on the user config and dispatch the effect kernel.
+//!
+//! // 2. Allocate a mip-capable buffer for the chosen backend, copy
+//! //    Premiere's outgoing into level 0, and redirect config.outgoing_data.
+//! let mip_buf = unsafe {
+//!     prgpu::gpu::backends::metal::buffer::get_or_create_with_mips(
+//!         device, w, h, bpp, config.outgoing_mip_levels, MIP_TAG,
+//!     )
+//! };
+//! // (Metal: MTLBlitCommandEncoder copyFromBuffer:...)
+//! // (CUDA:  cuMemcpyDtoD_v2(...))
+//! // (CPU:   std::ptr::copy_nonoverlapping(...))
 //! config.outgoing_data = Some(mip_buf.buf.raw);
+//!
+//! // 3. Fill levels 1..N-1 and run the effect kernel. prgpu's dispatcher
+//! //    calls make_outgoing_desc(&config), which auto-populates the
+//! //    mip metadata in frame.outDesc — no shader-side setup.
+//! unsafe { prgpu::kernels::mip::generate_mips(&config)?; }
 //! unsafe { effect_kernel(&config, user_params)?; }
 //! ```
 //!
-//! On CPU, the same entry point is called via `render_cpu_direct` so the
-//! bench harness + Premiere GPU-failover path work without any AE plumbing.
+//! # CPU vs GPU dispatch routing
+//!
+//! `generate_mips` auto-routes based on `config.device_handle`:
+//!
+//! - `device_handle != null`  → GPU path (`mip_downsample(&pass_cfg, params)`)
+//!   which goes through `backends::dispatch_kernel` (Metal or CUDA).
+//! - `device_handle == null`  → CPU path (`render_cpu_direct`) that reuses
+//!   the bench harness's pure-rayon tile loop. Same code path as
+//!   Premiere's CPU failover.
+//!
+//! Effects don't need to fork on backend — one call site works for bench,
+//! GPU render, and CPU failover alike.
+//!
+//! # Cache / allocator
+//!
+//! Use `{cpu,gpu::backends::metal,gpu::backends::cuda}::buffer::get_or_create_with_mips`;
+//! the legacy 4-arg `get_or_create` still works (it delegates with
+//! `mip_levels = 1`). Every allocator is a 12-slot LRU keyed on
+//! `(device, w, h, bpp, mip_levels, tag)` so mip buffers and plain
+//! buffers at the same dims don't share a slot.
 
 use crate::declare_kernel;
 use crate::types::{Configuration, MAX_MIP};

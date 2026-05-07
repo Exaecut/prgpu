@@ -58,7 +58,7 @@ pub fn vekl_include_path() -> Option<PathBuf> {
 /// ```
 ///
 /// `shader_dir` is currently advisory — the mirror always lives at
-/// `<user_crate>/.slang-lsp/vekl/` regardless. Accepted as a parameter so a
+/// `<user_crate>/.slang-deps/vekl/` regardless. Accepted as a parameter so a
 /// future version can write a `.slangd` alongside shaders for editors that
 /// prefer the clangd-style config.
 ///

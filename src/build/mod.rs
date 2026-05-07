@@ -5,8 +5,11 @@ pub mod compile;
 pub mod reflection;
 pub mod bindings;
 pub mod cpu_dispatch;
+pub mod lsp;
 
-type DynError = Box<dyn Error + Send + Sync>;
+pub type DynError = Box<dyn Error + Send + Sync>;
+
+pub use lsp::{vekl_include_path, write_slang_lsp_config};
 
 /// Compile all `.slang` shaders in `shader_dir` with vekl auto-discovered as
 /// an include path. Two locations are checked, in order:

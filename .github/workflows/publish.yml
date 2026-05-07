@@ -15,7 +15,10 @@ concurrency:
 jobs:
   publish:
     name: Publish changed crates
-    runs-on: ubuntu-latest
+    # macos-latest is required because cargo publish verifies by compiling
+    # the full dep graph. prgpu depends on `exaecut-after-effects`, which is
+    # #[cfg(target_os)]-gated to macOS + Windows only — verify fails on Linux.
+    runs-on: macos-latest
     permissions:
       contents: read
     steps:

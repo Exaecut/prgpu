@@ -150,18 +150,50 @@ fn download_file(url: &str, dest: &Path) {
 }
 
 fn extract_tar_gz(archive_path: &Path, dest: &Path) {
-	// Ensure `dest` exists and is canonicalizable BEFORE unpacking. tar
-	// canonicalizes the destination for every entry as a path-traversal
-	// guard; on a first-run cold cache the very first entry can race
-	// `dest` creation on macOS (symlink-heavy Slang tarball).
 	fs::create_dir_all(dest).expect("Failed to create extract dest dir");
 
+	// Manual extraction loop. Two reasons we can't use `Archive::unpack`:
+	//
+	// 1. `unpack_in` canonicalizes the destination for every entry as a
+	//    path-traversal guard. On a cold cache first run against the
+	//    Slang SDK tarball on macOS we hit
+	//    "failed to create .../lib ... while canonicalizing ..." because
+	//    a file entry lands before its parent directory entry has
+	//    materialized, and tar's internal canonicalize() fails.
+	//
+	// 2. `unpack_in` skips `unpack_xattrs` / `preserve_permissions` rules
+	//    the easy way, but worse, on some macOS runners it silently
+	//    drops the dylib symlink chain (libslang-compiler.0.dylib → ...),
+	//    leaving slangc unable to find its own libs at runtime.
+	//
+	// Building the destination path ourselves and calling `entry.unpack`
+	// (NOT `unpack_in`) bypasses the canonicalize guard while still
+	// honoring regular files, directories, AND symlinks correctly.
 	let file = fs::File::open(archive_path).expect("Failed to open tar.gz archive");
 	let gz = flate2::read::GzDecoder::new(file);
 	let mut archive = tar::Archive::new(gz);
 	#[cfg(unix)] { archive.set_preserve_permissions(true); }
 	archive.set_overwrite(true);
-	archive.unpack(dest).expect("Failed to extract tar.gz archive");
+
+	for entry in archive.entries().expect("Failed to read tar entries") {
+		let mut entry = entry.expect("Failed to read tar entry");
+		let rel_path = entry.path().expect("Invalid entry path").into_owned();
+
+		// Reject path traversal manually (tar's canonicalize guard is what we're
+		// intentionally skipping; re-implement the minimal `..` check ourselves).
+		if rel_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+			panic!("tar entry path contains '..': {}", rel_path.display());
+		}
+
+		let out_path = dest.join(&rel_path);
+		if let Some(parent) = out_path.parent() {
+			fs::create_dir_all(parent).ok();
+		}
+
+		entry
+			.unpack(&out_path)
+			.unwrap_or_else(|e| panic!("Failed to unpack {}: {e}", rel_path.display()));
+	}
 }
 
 fn find_sdk_root(dir: &Path) -> Option<PathBuf> {

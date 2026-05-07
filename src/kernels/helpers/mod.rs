@@ -4,3 +4,4 @@
 //! every effect can pull in regardless of how it ultimately runs the kernel.
 
 pub mod blur;
+pub mod sweep;

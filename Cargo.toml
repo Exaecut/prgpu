@@ -47,6 +47,18 @@ objc = "0.2.7"
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 opencl3 = "0.12.1"
 
+[build-dependencies]
+# Reused by prgpu's own build.rs to compile the built-in shaders
+# (mip_downsample, etc.) into prgpu's OUT_DIR. The `build` feature in
+# `[features]` covers the same deps for effects that call into
+# `prgpu::build::compile_shaders` from their own build.rs.
+cc = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "3"
+tar = "0.4"
+flate2 = "1"
+
 [target.'cfg(target_os = "windows")'.build-dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }
 opencl3 = "0.12.1"

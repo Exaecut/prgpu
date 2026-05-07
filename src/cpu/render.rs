@@ -164,8 +164,9 @@ pub fn render_cpu<P: Copy + Sync>(
 
 	// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
 	// dst_desc + width/height describe the DESTINATION (drives iteration extent).
+	// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
 	let tp = FrameParams {
-		out_desc: crate::types::make_texture_desc(config.outgoing_width, config.outgoing_height, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		dst_desc: crate::types::make_texture_desc(w, h, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		width: w,
@@ -356,8 +357,9 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 
 	// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
 	// dst_desc + width/height describe the DESTINATION (drives iteration extent).
+	// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
 	let tp = FrameParams {
-		out_desc: crate::types::make_texture_desc(config.outgoing_width, config.outgoing_height, config.outgoing_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		dst_desc: crate::types::make_texture_desc(w, h, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		width: w,

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 
-use crate::types::{compute_length_bytes, compute_row_bytes, BufferObj, ImageBuffer};
+use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferObj, ImageBuffer};
 
 const ALLOC_GUARD_BYTES: usize = 64;
 const MAX_CPU_BUFFER_ENTRIES: usize = 12;
@@ -12,6 +12,7 @@ struct Key {
 	height: u32,
 	bytes_per_pixel: u32,
 	tag: u32,
+	mip_levels: u32,
 }
 
 /// Simple ordered LRU cache: most-recently-used at the back, LRU at the front.
@@ -71,11 +72,22 @@ thread_local! {
 }
 
 pub fn get_or_create(width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
+	get_or_create_with_mips(width, height, bytes_per_pixel, 1, tag)
+}
+
+/// Same as [`get_or_create`] but allocates a byte budget that fits a
+/// `mip_levels`-deep mip chain (level 0 pitch-packed at `width * bpp`,
+/// every level below tightly packed). `mip_levels <= 1` behaves exactly
+/// like [`get_or_create`]; the extra byte budget is rounded up to the
+/// `mip_buffer_size_bytes` formula so a prgpu-dispatched downsample pass
+/// can write through without re-allocation.
+pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
 	let key = Key {
 		width,
 		height,
 		bytes_per_pixel,
 		tag,
+		mip_levels: mip_levels.max(1),
 	};
 
 	CPU_CACHE.with(|cache| {
@@ -95,7 +107,11 @@ pub fn get_or_create(width: u32, height: u32, bytes_per_pixel: u32, tag: u32) ->
 		}
 
 		// Cache miss — allocate new buffer
-		let len = compute_length_bytes(width, height, bytes_per_pixel) as usize;
+		let len = if mip_levels <= 1 {
+			compute_length_bytes(width, height, bytes_per_pixel) as usize
+		} else {
+			mip_buffer_size_bytes(width, height, bytes_per_pixel, mip_levels) as usize
+		};
 		let data = vec![0u8; len + ALLOC_GUARD_BYTES];
 
 		guard.insert(key, data);

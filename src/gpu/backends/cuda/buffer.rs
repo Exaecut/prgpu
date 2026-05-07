@@ -3,7 +3,7 @@ use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::ffi::c_void;
 
-use crate::types::{compute_length_bytes, compute_row_bytes, BufferKey, BufferObj, ImageBuffer};
+use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferKey, BufferObj, ImageBuffer};
 use crate::DeviceHandleInit;
 use after_effects::log;
 
@@ -90,6 +90,16 @@ unsafe fn free_buffer(buf: BufferObj) {
 /// # Safety
 /// `device` must be a valid CUcontext pointer (FromPtr) or valid suite handle (FromSuite).
 pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
+	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
+}
+
+/// Same as [`get_or_create`] but allocates a byte budget that fits a
+/// `mip_levels`-deep mip chain.
+///
+/// # Safety
+/// See [`get_or_create`].
+pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
+	let mips = mip_levels.max(1);
 	let key = match device {
 		DeviceHandleInit::FromPtr(device) => BufferKey {
 			device: device as usize,
@@ -97,6 +107,7 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 			height,
 			bytes_per_pixel,
 			tag,
+			mip_levels: mips,
 		},
 		DeviceHandleInit::FromSuite((device_index, suite)) => {
 			let device_handle = suite.device_info(device_index).map(|info| info.outDeviceHandle as usize).unwrap_or(0);
@@ -106,6 +117,7 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 				height,
 				bytes_per_pixel,
 				tag,
+				mip_levels: mips,
 			}
 		}
 	};
@@ -125,7 +137,11 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	}
 
 	// Cache miss - allocate new buffer
-	let length = compute_length_bytes(width, height, bytes_per_pixel);
+	let length = if mips <= 1 {
+		compute_length_bytes(width, height, bytes_per_pixel)
+	} else {
+		mip_buffer_size_bytes(width, height, bytes_per_pixel, mips) as u64
+	};
 	let raw = match device {
 		DeviceHandleInit::FromPtr(device) => unsafe { allocate(device, length) },
 		DeviceHandleInit::FromSuite((device_index, suite)) => {

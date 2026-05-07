@@ -7,6 +7,12 @@ pub struct BufferKey {
     pub height: u32,
     pub bytes_per_pixel: u32,
     pub tag: u32,
+    /// Number of mip levels the cached buffer was allocated for.
+    /// `1` = no mip chain (legacy single-level buffer). Keyed so that
+    /// the same logical buffer requested with and without a mip chain
+    /// resolves to separate cache slots instead of sharing a too-small
+    /// allocation.
+    pub mip_levels: u32,
 }
 
 #[repr(transparent)]

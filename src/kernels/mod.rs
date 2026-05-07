@@ -1,4 +1,5 @@
 pub mod helpers;
+pub mod mip;
 
 /// Declares a GPU kernel (CUDA & Metal) + CPU fallback dispatch.
 ///

@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use objc::{msg_send, runtime::Object, sel, sel_impl};
 use parking_lot::Mutex;
 
-use crate::types::{compute_length_bytes, compute_row_bytes, BufferKey, BufferObj, ImageBuffer};
+use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferKey, BufferObj, ImageBuffer};
 use crate::DeviceHandleInit;
 
 const MAX_GPU_BUFFER_ENTRIES: usize = 12;
@@ -96,6 +96,19 @@ unsafe fn free_buffer(buf: BufferObj) {
 }
 
 pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
+	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
+}
+
+/// Same as [`get_or_create`] but allocates a byte budget that fits a
+/// `mip_levels`-deep mip chain. `mip_levels <= 1` behaves exactly like the
+/// legacy form; higher values size the Metal buffer to
+/// [`mip_buffer_size_bytes`] so the prgpu mip-downsample kernel can write
+/// through without a re-alloc.
+///
+/// # Safety
+/// See [`get_or_create`].
+pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
+	let mips = mip_levels.max(1);
 	let key = match device {
 		DeviceHandleInit::FromPtr(device) => BufferKey {
 			device: device as usize,
@@ -103,6 +116,7 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 			height,
 			bytes_per_pixel,
 			tag,
+			mip_levels: mips,
 		},
 		DeviceHandleInit::FromSuite((device_index, suite)) => {
 			let device_handle = suite.device_info(device_index).map(|info| info.outDeviceHandle as usize).unwrap_or(0);
@@ -112,6 +126,7 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 				height,
 				bytes_per_pixel,
 				tag,
+				mip_levels: mips,
 			}
 		}
 	};
@@ -131,22 +146,25 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	}
 
 	// Cache miss
+	let alloc_len = if mips <= 1 {
+		compute_length_bytes(width, height, bytes_per_pixel)
+	} else {
+		mip_buffer_size_bytes(width, height, bytes_per_pixel, mips) as u64
+	};
 		let raw = match device {
 			DeviceHandleInit::FromPtr(device) => {
-				let length = compute_length_bytes(width, height, bytes_per_pixel);
-				unsafe { allocate(device as *mut Object, length, width, height, bytes_per_pixel) as *mut std::ffi::c_void }
+				unsafe { allocate(device as *mut Object, alloc_len, width, height, bytes_per_pixel) as *mut std::ffi::c_void }
 			}
 		DeviceHandleInit::FromSuite((device_index, suite)) => {
-			let length = compute_length_bytes(width, height, bytes_per_pixel);
 			const MAX_REASONABLE_BYTES: u64 = 512 * 1024 * 1024;
-			if length > MAX_REASONABLE_BYTES {
+			if alloc_len > MAX_REASONABLE_BYTES {
 				after_effects::log::error!(
 					"[Metal] ABORT (suite): refusing absurd buffer of {} bytes ({} MiB) for {}x{} @ {} bpp",
-					length, length / 1024 / 1024, width, height, bytes_per_pixel
+					alloc_len, alloc_len / 1024 / 1024, width, height, bytes_per_pixel
 				);
 				std::ptr::null_mut()
 			} else {
-				suite.allocate_device_memory(device_index, length as usize).unwrap_or_else(|e| {
+				suite.allocate_device_memory(device_index, alloc_len as usize).unwrap_or_else(|e| {
 					after_effects::log::error!("[Metal] GPUDevice suite allocation failed: {e:?}");
 					std::ptr::null_mut()
 				})

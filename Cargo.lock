@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "prgpu"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bytemuck",
  "cc",

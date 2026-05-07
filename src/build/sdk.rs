@@ -150,10 +150,10 @@ fn download_file(url: &str, dest: &Path) {
 }
 
 fn extract_tar_gz(archive_path: &Path, dest: &Path) {
-	// Ensure `dest` exists and is canonicalizable BEFORE unpacking: the tar
-	// crate canonicalizes parent paths for every entry as a path-traversal
-	// guard, and on a first-run cold cache `dest` itself can race the very
-	// first entry creation on macOS (symlink-heavy Slang tarball).
+	// Ensure `dest` exists and is canonicalizable BEFORE unpacking. tar
+	// canonicalizes the destination for every entry as a path-traversal
+	// guard; on a first-run cold cache the very first entry can race
+	// `dest` creation on macOS (symlink-heavy Slang tarball).
 	fs::create_dir_all(dest).expect("Failed to create extract dest dir");
 
 	let file = fs::File::open(archive_path).expect("Failed to open tar.gz archive");
@@ -161,23 +161,7 @@ fn extract_tar_gz(archive_path: &Path, dest: &Path) {
 	let mut archive = tar::Archive::new(gz);
 	#[cfg(unix)] { archive.set_preserve_permissions(true); }
 	archive.set_overwrite(true);
-
-	// Stream entries manually so directory entries are materialized BEFORE
-	// any file entry inside them — `Archive::unpack` processes entries in
-	// tarball order and sometimes fails with
-	// "failed to create .../lib … while canonicalizing …" when a dir entry
-	// follows its own files. Creating parents first side-steps the race.
-	for entry in archive.entries().expect("Failed to read tar entries") {
-		let mut entry = entry.expect("Failed to read tar entry");
-		let path = entry.path().expect("Invalid entry path").into_owned();
-		let out_path = dest.join(&path);
-		if let Some(parent) = out_path.parent() {
-			fs::create_dir_all(parent).ok();
-		}
-		entry
-			.unpack_in(dest)
-			.unwrap_or_else(|e| panic!("Failed to unpack {}: {e}", path.display()));
-	}
+	archive.unpack(dest).expect("Failed to extract tar.gz archive");
 }
 
 fn find_sdk_root(dir: &Path) -> Option<PathBuf> {

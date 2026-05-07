@@ -22,10 +22,47 @@ fn detect_platform() -> (&'static str, &'static str) {
 /// SDK directory at `{workspace_root}/target/.slang-sdk/{version}/`.
 /// Shared across all workspace members — downloaded once.
 /// Auto-downloads if missing.
+///
+/// Concurrency: cargo compiles prgpu once per `(pkg, feature-set)` pair,
+/// so effects that depend on prgpu both at runtime AND as a build-dep
+/// (which is the scaffold default) spawn two parallel build.rs runs that
+/// both enter this function. Without serialization they race on
+/// `download_sdk` and corrupt each other's tmp_dir. We guard the
+/// download path with a cross-process advisory file lock.
 pub fn sdk_dir() -> PathBuf {
 	let target_dir = find_shared_target_dir();
 	let sdk = target_dir.join(".slang-sdk").join(SLANG_VERSION);
 
+	if sdk.join("bin").exists() && sdk.join("include").exists() {
+		return sdk;
+	}
+
+	// Acquire an exclusive file lock inside `.slang-sdk/` so concurrent
+	// build.rs runs serialize through download_sdk(). The lock file lives
+	// outside the SDK dir itself so it isn't affected by the wipe-then-
+	// rename dance in download_sdk().
+	let lock_dir = target_dir.join(".slang-sdk");
+	fs::create_dir_all(&lock_dir).ok();
+	let lock_path = lock_dir.join(format!("{SLANG_VERSION}.lock"));
+	let lock_file = fs::OpenOptions::new()
+		.create(true)
+		.truncate(false)
+		.read(true)
+		.write(true)
+		.open(&lock_path)
+		.unwrap_or_else(|e| panic!("Failed to open SDK lock file {}: {e}", lock_path.display()));
+
+	// Block until we hold the lock. On Unix this is flock(2); on Windows,
+	// LockFileEx. Dropped on function return → lock released for the next
+	// build.rs instance (which will find the SDK already installed and
+	// early-return below).
+	use fs2::FileExt;
+	lock_file
+		.lock_exclusive()
+		.unwrap_or_else(|e| panic!("Failed to acquire SDK lock: {e}"));
+
+	// Re-check AFTER we have the lock: another build.rs run might have
+	// done the full download + install while we were blocked here.
 	if sdk.join("bin").exists() && sdk.join("include").exists() {
 		return sdk;
 	}

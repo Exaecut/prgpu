@@ -6,7 +6,6 @@ on:
     paths:
       - 'Cargo.toml'
       - 'prgpu-macro/Cargo.toml'
-      - 'vekl/**'             # vendored vekl refresh triggers a prgpu republish too
   workflow_dispatch:
 
 concurrency:
@@ -20,10 +19,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout (with 2 commits of history)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -43,42 +40,57 @@ jobs:
           git clone --depth 1 https://github.com/Exaecut/vekl.git vekl
           rm -rf vekl/.git
 
-      - name: Publish crates whose version bumped
+      - name: Publish crates whose on-disk version isn't on crates.io yet
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
 
-          version_at() {
-            local ref="$1" file="$2"
-            git show "$ref:$file" 2>/dev/null \
-              | awk -F'"' '/^version = "/ { print $2; exit }'
+          # Extract `version = "X.Y.Z"` from a Cargo.toml on disk.
+          version_of() {
+            local file="$1"
+            awk -F'"' '/^version = "/ { print $2; exit }' "$file"
           }
 
-          publish_if_bumped() {
+          # Return 0 if <pkg> <version> is already on crates.io, else 1.
+          already_published() {
+            local pkg="$1" version="$2"
+            local code
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "https://crates.io/api/v1/crates/$pkg/$version")
+            [[ "$code" == "200" ]]
+          }
+
+          publish_if_needed() {
             local pkg="$1" manifest_path="$2"
-            local new_v old_v
-            new_v="$(version_at HEAD "$manifest_path" || true)"
-            old_v="$(version_at HEAD~1 "$manifest_path" || true)"
-            if [[ -z "$new_v" ]]; then
-              echo "::warning::$pkg: Cargo.toml missing at HEAD, skipping"
+            local v
+            v=$(version_of "$manifest_path" || true)
+            if [[ -z "$v" ]]; then
+              echo "::warning::$pkg: no version in $manifest_path, skipping"
               return 0
             fi
-            if [[ "$new_v" == "$old_v" ]]; then
-              echo "$pkg: unchanged (v$new_v), skipping"
+            if already_published "$pkg" "$v"; then
+              echo "$pkg v$v: already on crates.io, skipping"
               return 0
             fi
-            echo "::notice::Publishing $pkg v$new_v (was v${old_v:-none})"
+            echo "::notice::Publishing $pkg v$v"
             cargo publish -p "$pkg" --allow-dirty \
-              || cargo_publish_retry_or_fail "$pkg" "$new_v"
+              || cargo_publish_retry "$pkg" "$v"
           }
 
-          cargo_publish_retry_or_fail() {
+          # Retry up to 3 extra times on transient failures (rate limit,
+          # sparse-index lag, etc). 60s between attempts.
+          cargo_publish_retry() {
             local pkg="$1" version="$2"
             local attempt
             for attempt in 2 3 4; do
-              echo "::warning::$pkg v$version publish attempt $attempt after sleep 60s"
+              echo "::warning::$pkg v$version publish attempt $attempt after 60s sleep"
               sleep 60
+              # Re-check in case a parallel workflow beat us to it.
+              if already_published "$pkg" "$version"; then
+                echo "$pkg v$version: landed on crates.io between attempts, skipping"
+                return 0
+              fi
               if cargo publish -p "$pkg" --allow-dirty; then
                 return 0
               fi
@@ -88,6 +100,10 @@ jobs:
           }
 
           # Order: prgpu-macro first (prgpu depends on it).
-          publish_if_bumped prgpu-macro prgpu-macro/Cargo.toml
+          publish_if_needed prgpu-macro prgpu-macro/Cargo.toml
+
+          # Let the crates.io sparse index catch up if we actually uploaded a
+          # new prgpu-macro before prgpu tries to resolve it.
           sleep 60
-          publish_if_bumped prgpu       Cargo.toml
+
+          publish_if_needed prgpu Cargo.toml

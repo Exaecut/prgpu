@@ -202,3 +202,74 @@ pub unsafe fn cleanup() {
 		}
 	}
 }
+
+/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Submits
+/// its own `MTLCommandBuffer` to `command_queue` and waits on the GPU-
+/// side fence before returning, so subsequent dispatches on the same
+/// queue see the copied data.
+///
+/// Handles mismatched row pitches (src padded by Premiere vs. tight mip
+/// buffer) via row-by-row blits. When both pitches match, a single flat
+/// blit covers the whole region.
+///
+/// # Safety
+/// - `command_queue`, `src`, `dst` must be a valid `MTLCommandQueue`,
+///   `MTLBuffer`, `MTLBuffer` respectively (non-null).
+/// - `src` must hold at least `src_pitch_bytes * height` bytes starting
+///   at `src_offset`; same for `dst` with `dst_pitch_bytes`.
+/// - No outstanding GPU work may read from `dst` concurrently.
+pub unsafe fn copy_buffer(
+	command_queue: *mut Object,
+	src: *mut Object,
+	src_offset: u64,
+	src_pitch_bytes: u32,
+	dst: *mut Object,
+	dst_offset: u64,
+	dst_pitch_bytes: u32,
+	width_bytes: u32,
+	height: u32,
+) -> Result<(), &'static str> {
+	if command_queue.is_null() || src.is_null() || dst.is_null() {
+		return Err("copy_buffer: null handle");
+	}
+
+	let cmd: *mut Object = unsafe { msg_send![command_queue, commandBuffer] };
+	if cmd.is_null() {
+		return Err("copy_buffer: commandBuffer() returned null");
+	}
+
+	let enc: *mut Object = unsafe { msg_send![cmd, blitCommandEncoder] };
+	if enc.is_null() {
+		return Err("copy_buffer: blitCommandEncoder() returned null");
+	}
+
+	if src_pitch_bytes == dst_pitch_bytes && src_pitch_bytes == width_bytes {
+		// Tight on both sides and matching pitch: one flat copy.
+		let total = (width_bytes as u64) * (height as u64);
+		unsafe {
+			let _: () = msg_send![enc,
+				copyFromBuffer: src sourceOffset: src_offset
+				toBuffer: dst destinationOffset: dst_offset
+				size: total as usize];
+		}
+	} else {
+		// Different pitches: row-by-row flat copies.
+		for y in 0..(height as u64) {
+			let src_row_off = src_offset + y * (src_pitch_bytes as u64);
+			let dst_row_off = dst_offset + y * (dst_pitch_bytes as u64);
+			unsafe {
+				let _: () = msg_send![enc,
+					copyFromBuffer: src sourceOffset: src_row_off
+					toBuffer: dst destinationOffset: dst_row_off
+					size: width_bytes as usize];
+			}
+		}
+	}
+
+	unsafe {
+		let _: () = msg_send![enc, endEncoding];
+		let _: () = msg_send![cmd, commit];
+		let _: () = msg_send![cmd, waitUntilCompleted];
+	}
+	Ok(())
+}

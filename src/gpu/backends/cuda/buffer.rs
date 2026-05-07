@@ -176,6 +176,75 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	}
 }
 
+/// Buffer-to-buffer device-side copy. Handles mismatched row pitches
+/// (Premiere's padded source vs. tight mip buffer) via `cuMemcpy2D_v2`;
+/// when pitches match exactly, falls back to the flat `cuMemcpyDtoD_v2`
+/// which is marginally faster on older drivers.
+///
+/// Synchronous — uses the default stream and returns after the copy
+/// completes, so subsequent kernel dispatches see the copied data.
+///
+/// # Safety
+/// - `device` must be a valid `CUcontext` that currently owns both `src`
+///   and `dst` allocations.
+/// - Both `src` and `dst` must hold at least `pitch_bytes * height`
+///   bytes starting at their respective offsets.
+/// - No other GPU work may read/write `dst` concurrently.
+pub unsafe fn copy_buffer(
+	device: *mut c_void,
+	src: *mut c_void,
+	src_offset: u64,
+	src_pitch_bytes: u32,
+	dst: *mut c_void,
+	dst_offset: u64,
+	dst_pitch_bytes: u32,
+	width_bytes: u32,
+	height: u32,
+) -> Result<(), &'static str> {
+	use cudarc::driver::sys::{cuMemcpy2D_v2, cuMemcpyDtoD_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
+
+	let ctx = device as cudarc::driver::sys::CUcontext;
+	unsafe { cuCtxSetCurrent(ctx) };
+
+	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset as usize);
+	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset as usize);
+
+	if src_pitch_bytes == dst_pitch_bytes && src_pitch_bytes == width_bytes {
+		let total = (width_bytes as usize).saturating_mul(height as usize);
+		let res = unsafe { cuMemcpyDtoD_v2(dst_dev, src_dev, total) };
+		if res != CUresult::CUDA_SUCCESS {
+			log::error!("[CUDA/buffer] cuMemcpyDtoD_v2 failed: {:?}", res);
+			return Err("cuMemcpyDtoD_v2 failed");
+		}
+	} else {
+		let cp = CUDA_MEMCPY2D_v2 {
+			srcXInBytes: 0,
+			srcY: 0,
+			srcMemoryType: CUmemorytype::CU_MEMORYTYPE_DEVICE,
+			srcHost: std::ptr::null(),
+			srcDevice: src_dev,
+			srcArray: std::ptr::null_mut(),
+			srcPitch: src_pitch_bytes as usize,
+			dstXInBytes: 0,
+			dstY: 0,
+			dstMemoryType: CUmemorytype::CU_MEMORYTYPE_DEVICE,
+			dstHost: std::ptr::null_mut(),
+			dstDevice: dst_dev,
+			dstArray: std::ptr::null_mut(),
+			dstPitch: dst_pitch_bytes as usize,
+			WidthInBytes: width_bytes as usize,
+			Height: height as usize,
+		};
+		let res = unsafe { cuMemcpy2D_v2(&cp) };
+		if res != CUresult::CUDA_SUCCESS {
+			log::error!("[CUDA/buffer] cuMemcpy2D_v2 failed: {:?}", res);
+			return Err("cuMemcpy2D_v2 failed");
+		}
+	}
+
+	Ok(())
+}
+
 /// # Safety
 /// No GPU work may reference these buffers.
 pub unsafe fn cleanup() {

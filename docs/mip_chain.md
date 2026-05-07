@@ -64,31 +64,41 @@ returns the exact byte count needed. Every allocator that takes a
 
 ---
 
-## The three-step recipe
+## The two-call recipe
 
-Every effect that opts into mips does exactly this in its dispatch
-path (same on CPU and GPU — see below for the tiny differences):
+Every effect that opts into mips does exactly this:
 
 ```rust
-// 1. Request a mip chain on the Configuration.
 config.outgoing_mip_levels = 4;
-
-// 2. Allocate a mip-capable buffer, copy Premiere's outgoing into
-//    level 0, and redirect `config.outgoing_data` to it.
-let mip_buf = /* backend-specific allocator, see below */;
-copy_level0(config.outgoing_data, mip_buf.buf.raw, ...);
-config.outgoing_data = Some(mip_buf.buf.raw);
-
-// 3. Fill levels 1..N-1 via prgpu's built-in mip downsampler, then
-//    dispatch the effect kernel normally. prgpu's dispatcher reads
-//    `config.outgoing_mip_levels` and auto-populates the mip fields
-//    in `frame.outDesc` so the shader just sees a mip-enabled view.
+let _mip_buf = unsafe {
+    prgpu::kernels::mip::prepare_mip_source(&mut config, MY_MIP_TAG)?
+};
 unsafe { prgpu::kernels::mip::generate_mips(&config)?; }
 unsafe { effect_kernel(&config, user_params)?; }
 ```
 
-Steps 1 and 3 are identical across all backends. Step 2 is the only
-thing that varies.
+`prepare_mip_source` handles all three backend-specific steps
+internally:
+
+1. Allocates a mip-capable buffer via the backend allocator (CPU `Vec`
+   cache, Metal `MTLBuffer`, or CUDA device memory).
+2. Copies the current `config.outgoing_data` into level 0 of that
+   buffer using the backend-native copy primitive (`std::ptr::
+   copy_nonoverlapping` / `MTLBlitCommandEncoder` / `cuMemcpy2D_v2`),
+   handling mismatched row pitches when Premiere's source has padding
+   rows that the tight mip buffer doesn't.
+3. Swaps `config.outgoing_data` to the new buffer so subsequent
+   dispatches (mip gen + effect kernel) read through it.
+
+The returned `ImageBuffer` keeps the allocation alive in the prgpu
+cache — the caller binds it to `_` so the borrow checker keeps it in
+scope for the remainder of the frame. Dropping it has no GPU side
+effect; the cache owns the allocation and reuses it across frames.
+
+`generate_mips` then runs the prgpu built-in downsampler N-1 times to
+fill levels 1..N-1. Both functions are cheap no-ops when
+`outgoing_mip_levels <= 1`, so effects can unconditionally call them
+when the user's quality knob sits at zero.
 
 ---
 
@@ -119,19 +129,19 @@ on eviction the old buffer is released (Metal `release`, CUDA
 
 ### 2. Copying level 0 in
 
-The allocator returns an uninitialised buffer — you have to put the
-pixels there yourself before `generate_mips` can run a box filter on
-them.
+The allocator returns an uninitialised buffer — `prepare_mip_source`
+handles the copy for you. Under the hood it picks the right primitive
+for the backend:
 
-| Backend | Typical approach |
-|---------|------------------|
-| CPU     | `std::ptr::copy_nonoverlapping(src, dst, row_bytes * height)` if the source is already contiguous (common: bench harness, direct-from-Layer). If the source has pitch padding, copy row-by-row. |
-| Metal   | `MTLBlitCommandEncoder` `copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:` inside the same command buffer that later launches `generate_mips` + the effect kernel — no CPU round-trip. |
-| CUDA    | `cuMemcpyDtoD_v2(dst, src, size)` (device-to-device) inside the same stream as subsequent kernel launches. |
+| Backend | Copy primitive |
+|---------|----------------|
+| CPU     | `std::ptr::copy_nonoverlapping(src, dst, row_bytes × height)` when pitches match; row-by-row copies otherwise. |
+| Metal   | `MTLBlitCommandEncoder` `copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:` — a single flat blit when pitches match, otherwise one blit per row. Command buffer is submitted + awaited inside `prepare_mip_source` so `generate_mips` sees the copied data. |
+| CUDA    | `cuMemcpyDtoD_v2(dst, src, size)` when pitches match, `cuMemcpy2D_v2` (with explicit src/dst pitch) when they don't. Synchronous on the default stream. |
 
-Phase 3 of the radialblur perf plan will land a `prgpu::kernels::mip::prepare_mip_source(...)`
-convenience helper that allocates + copies + swaps `config.outgoing_data`
-in one call per backend. Until then each effect handles its own copy.
+Calling the helper yourself is only useful if you need a custom
+copy path (e.g. color-converting the source before the pyramid).
+Otherwise `prepare_mip_source` is all you need.
 
 ### 3. `generate_mips` dispatch routing
 

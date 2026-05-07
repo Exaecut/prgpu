@@ -333,9 +333,6 @@ buffer is returned verbatim.
 
 ## MIP_BLIT_PATTERN (Metal)
 
-Representative of what the Phase 3 helper will encapsulate. Not
-production-ready; use as a template.
-
 ```rust
 // SAFETY: src / dst must be valid MTLBuffers of at least `size_bytes`,
 // command_queue must belong to the same MTLDevice that owns both.

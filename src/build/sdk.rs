@@ -150,45 +150,76 @@ fn download_file(url: &str, dest: &Path) {
 }
 
 fn extract_tar_gz(archive_path: &Path, dest: &Path) {
-	// tar's `Archive::unpack` internally canonicalizes `dest` for every
-	// entry as a path-traversal guard. On a cold-cache first run against
-	// the Slang SDK tarball on macOS that race sometimes fails with
-	// "... while canonicalizing ..." even though the directory exists —
-	// seemingly a filesystem metadata stall. Pre-creating + pre-
-	// canonicalizing the dest, plus a single retry, makes the extraction
-	// deterministic. `Archive::unpack` preserves the dylib symlink chain
-	// that manual entry.unpack() iteration tends to break, so we always
-	// go through the high-level API.
 	fs::create_dir_all(dest).expect("Failed to create extract dest dir");
-	let canonical = fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf());
 
-	let mut last_err: Option<std::io::Error> = None;
-	for attempt in 1..=3 {
-		let file = fs::File::open(archive_path).expect("Failed to open tar.gz archive");
-		let gz = flate2::read::GzDecoder::new(file);
-		let mut archive = tar::Archive::new(gz);
-		#[cfg(unix)] { archive.set_preserve_permissions(true); }
-		archive.set_overwrite(true);
-
-		match archive.unpack(&canonical) {
-			Ok(()) => {
-				if attempt > 1 {
-					println!("cargo:warning=[slang] Extraction succeeded on retry #{attempt}");
-				}
-				return;
-			}
-			Err(e) => {
-				println!("cargo:warning=[slang] Extraction attempt {attempt} failed: {e}");
-				last_err = Some(e);
-				// Clean the dest and re-create before retry so we don't
-				// mix partial state with a fresh unpack.
-				let _ = fs::remove_dir_all(&canonical);
-				fs::create_dir_all(&canonical).ok();
-				std::thread::sleep(std::time::Duration::from_millis(200));
-			}
+	// Primary path: shell out to the system `tar`.
+	//
+	// tar-rs (0.4.x) calls `fs::canonicalize(dst)` for every entry as a
+	// path-traversal guard. On macOS APFS that canonicalize can transiently
+	// return NotFound for a directory that was created microseconds
+	// earlier (dentry-cache propagation lag), and the extraction aborts
+	// mid-way — leaving the SDK unusable on the user's very first
+	// `cargo check`. The native `tar` binary doesn't share this race
+	// AND handles the dylib symlink chain identically on every platform.
+	//
+	// Availability: macOS ships bsdtar (always present), Linux ships GNU
+	// tar (always present), Windows 10 build 17063+ ships `tar.exe`
+	// natively. Anything older — or locked-down CI images without tar
+	// — falls back to tar-rs below.
+	match try_system_tar(archive_path, dest) {
+		Ok(()) => return,
+		Err(reason) => {
+			println!(
+				"cargo:warning=[slang] system tar unavailable ({reason}), falling back to tar-rs"
+			);
 		}
 	}
-	panic!("Failed to extract tar.gz archive after 3 attempts: {}", last_err.unwrap());
+
+	// Fallback: tar-rs. Accepts the macOS race — on the first run it may
+	// return an error that the caller (build.rs) will surface; a
+	// subsequent build normally succeeds because the dentry cache is
+	// primed.
+	extract_tar_gz_rust(archive_path, dest);
+}
+
+/// Invoke the system `tar` binary (`tar` on Unix, `tar.exe` on Windows)
+/// to extract `archive_path` into `dest`. Returns `Ok(())` on a zero-exit
+/// extraction, or `Err(reason)` if the binary isn't usable (not on PATH,
+/// spawn failed, or the child exited non-zero).
+fn try_system_tar(archive_path: &Path, dest: &Path) -> Result<(), String> {
+	let tar_bin = if cfg!(target_os = "windows") { "tar.exe" } else { "tar" };
+
+	let output = std::process::Command::new(tar_bin)
+		.arg("-xzf")
+		.arg(archive_path)
+		.arg("-C")
+		.arg(dest)
+		.output()
+		.map_err(|e| format!("failed to spawn `{tar_bin}`: {e}"))?;
+
+	if output.status.success() {
+		return Ok(());
+	}
+
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	Err(format!(
+		"`{tar_bin}` exited with {}: {}",
+		output.status,
+		stderr.trim()
+	))
+}
+
+/// Pure-Rust fallback. Used only when the system `tar` binary isn't on
+/// PATH (e.g. stripped-down Windows containers, minimal Alpine images).
+fn extract_tar_gz_rust(archive_path: &Path, dest: &Path) {
+	let file = fs::File::open(archive_path).expect("Failed to open tar.gz archive");
+	let gz = flate2::read::GzDecoder::new(file);
+	let mut archive = tar::Archive::new(gz);
+	#[cfg(unix)] { archive.set_preserve_permissions(true); }
+	archive.set_overwrite(true);
+	archive
+		.unpack(dest)
+		.expect("Failed to extract tar.gz archive (tar-rs fallback)");
 }
 
 fn find_sdk_root(dir: &Path) -> Option<PathBuf> {

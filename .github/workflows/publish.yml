@@ -52,13 +52,34 @@ jobs:
             awk -F'"' '/^version = "/ { print $2; exit }' "$file"
           }
 
-          # Return 0 if <pkg> <version> is already on crates.io, else 1.
+          # Probe crates.io with a User-Agent that their API prefers
+          # (plain curl has been observed to return 403 in some regions).
+          # Returns 0 if the <pkg>@<version> is on crates.io, else 1.
           already_published() {
             local pkg="$1" version="$2"
             local code
             code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -A 'exaecut-publish-ci (marvin.cano@exaecut.io)' \
               "https://crates.io/api/v1/crates/$pkg/$version")
             [[ "$code" == "200" ]]
+          }
+
+          # Try to publish once. Return 0 on success OR if cargo itself says
+          # the version is already live (idempotent success). Return 1 only
+          # on a real transient error.
+          try_publish() {
+            local pkg="$1" version="$2"
+            local output exit_code
+            output=$(cargo publish -p "$pkg" --allow-dirty 2>&1) && exit_code=0 || exit_code=$?
+            printf '%s\n' "$output"
+            if [[ "$exit_code" -eq 0 ]]; then
+              return 0
+            fi
+            if printf '%s' "$output" | grep -q "already exists on crates.io index"; then
+              echo "::notice::$pkg v$version already on crates.io — idempotent success"
+              return 0
+            fi
+            return 1
           }
 
           publish_if_needed() {
@@ -74,36 +95,28 @@ jobs:
               return 0
             fi
             echo "::notice::Publishing $pkg v$v"
-            cargo publish -p "$pkg" --allow-dirty \
-              || cargo_publish_retry "$pkg" "$v"
-          }
-
-          # Retry up to 3 extra times on transient failures (rate limit,
-          # sparse-index lag, etc). 60s between attempts.
-          cargo_publish_retry() {
-            local pkg="$1" version="$2"
             local attempt
-            for attempt in 2 3 4; do
-              echo "::warning::$pkg v$version publish attempt $attempt after 60s sleep"
-              sleep 60
-              # Re-check in case a parallel workflow beat us to it.
-              if already_published "$pkg" "$version"; then
-                echo "$pkg v$version: landed on crates.io between attempts, skipping"
-                return 0
+            for attempt in 1 2 3 4; do
+              if [[ "$attempt" -gt 1 ]]; then
+                echo "::warning::$pkg v$v attempt $attempt after 60s sleep"
+                sleep 60
               fi
-              if cargo publish -p "$pkg" --allow-dirty; then
+              if try_publish "$pkg" "$v"; then
                 return 0
               fi
             done
-            echo "::error::$pkg v$version publish failed after 4 attempts"
+            echo "::error::$pkg v$v publish failed after 4 attempts"
             return 1
           }
 
           # Order: prgpu-macro first (prgpu depends on it).
           publish_if_needed prgpu-macro prgpu-macro/Cargo.toml
 
-          # Let the crates.io sparse index catch up if we actually uploaded a
-          # new prgpu-macro before prgpu tries to resolve it.
-          sleep 60
+          # Only wait on the index if we actually uploaded something new;
+          # `already_published` or the "already exists" short-circuit skip
+          # this sleep on no-op re-runs.
+          if ! already_published prgpu "$(version_of Cargo.toml)"; then
+            sleep 60
+          fi
 
           publish_if_needed prgpu Cargo.toml

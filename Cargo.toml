@@ -90,14 +90,5 @@ opencl3 = "0.12.1"
 [dev-dependencies]
 trybuild = "1"
 
-# [patch.crates-io] intentionally lives only in the *workspace* roots that
-# use prgpu — see effects/Cargo.toml and transitions/Cargo.toml. Keeping it
-# out of this manifest means CI builds (which don't have Exaecut/after-effects
-# checked out as a sibling) can resolve exaecut-* deps straight from crates.io.
-# Local `cargo publish --dry-run` / `cargo test` inside the prgpu workspace
-# itself will also hit crates.io for those deps — fine because they're already
-# published and stable. To work against WIP fork changes, bump the fork
-# crate + publish, then bump prgpu's dep version range.
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)", "cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

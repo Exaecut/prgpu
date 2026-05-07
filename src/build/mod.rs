@@ -9,16 +9,31 @@ pub mod cpu_dispatch;
 type DynError = Box<dyn Error + Send + Sync>;
 
 /// Compile all `.slang` shaders in `shader_dir` with vekl auto-discovered as
-/// an include path. If vekl is not found (no `vekl/` sibling of prgpu), the
-/// shader directory is the only include path — no error is raised.
+/// an include path. Two locations are checked, in order:
+///
+/// 1. `CARGO_MANIFEST_DIR/vekl` — the **vendored** copy that ships inside the
+///    published `prgpu` crate tarball. This is how crates.io users get vekl
+///    for free when they consume `prgpu = "0.1"`.
+/// 2. `CARGO_MANIFEST_DIR/../vekl` — the **workspace sibling**. This is what
+///    the Exaecut internal workspace uses so vekl development stays hot-linked
+///    (no copy step during dev).
+///
+/// If neither exists, the shader directory is the only include path — no
+/// error is raised. That lets users who ship their own shader library skip
+/// vekl entirely via [`compile_shaders_with`].
 ///
 /// Slang is always required. vekl is optional.
 pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 	let mut include_dirs = Vec::new();
 
-	let vekl_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("vekl");
-	if vekl_dir.is_dir() {
-		include_dirs.push(vekl_dir);
+	let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	let vendored = manifest_dir.join("vekl");
+	let sibling = manifest_dir.parent().map(|p| p.join("vekl"));
+
+	if vendored.is_dir() {
+		include_dirs.push(vendored);
+	} else if let Some(sibling) = sibling.filter(|p| p.is_dir()) {
+		include_dirs.push(sibling);
 	}
 
 	compile_shaders_with(shader_dir, &include_dirs)

@@ -2,9 +2,15 @@
 name = "prgpu-macro"
 version = "0.1.0"
 edition = "2024"
-description = "Procedural macros for prgpu GPU struct ABI generation"
-license = "MIT"
+authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
+description = "Procedural macros for prgpu — GPU struct layout / ABI codegen"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Exaecut/prgpu"
+homepage = "https://github.com/Exaecut/prgpu"
+readme = "README.md"
+keywords = ["gpu", "macro", "rendering", "video", "after-effects"]
+categories = ["rendering", "development-tools::procedural-macro-helpers"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md"]
 
 [lib]
 proc-macro = true

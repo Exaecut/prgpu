@@ -1,0 +1,93 @@
+name: Publish prgpu + prgpu-macro to crates.io
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'Cargo.toml'
+      - 'prgpu-macro/Cargo.toml'
+      - 'vekl/**'             # vendored vekl refresh triggers a prgpu republish too
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish changed crates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (with 2 commits of history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Refresh vendored vekl before publish
+        run: |
+          # The authoritative vekl lives at github.com/Exaecut/vekl and is
+          # NOT committed into this repo (see .gitignore). Clone it fresh so
+          # the published tarball ships with the latest vekl bundled for
+          # crates.io consumers. Strip .git so the tree is publish-ready.
+          rm -rf vekl
+          git clone --depth 1 https://github.com/Exaecut/vekl.git vekl
+          rm -rf vekl/.git
+
+      - name: Publish crates whose version bumped
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            local ref="$1" file="$2"
+            git show "$ref:$file" 2>/dev/null \
+              | awk -F'"' '/^version = "/ { print $2; exit }'
+          }
+
+          publish_if_bumped() {
+            local pkg="$1" manifest_path="$2"
+            local new_v old_v
+            new_v="$(version_at HEAD "$manifest_path" || true)"
+            old_v="$(version_at HEAD~1 "$manifest_path" || true)"
+            if [[ -z "$new_v" ]]; then
+              echo "::warning::$pkg: Cargo.toml missing at HEAD, skipping"
+              return 0
+            fi
+            if [[ "$new_v" == "$old_v" ]]; then
+              echo "$pkg: unchanged (v$new_v), skipping"
+              return 0
+            fi
+            echo "::notice::Publishing $pkg v$new_v (was v${old_v:-none})"
+            cargo publish -p "$pkg" --allow-dirty \
+              || cargo_publish_retry_or_fail "$pkg" "$new_v"
+          }
+
+          cargo_publish_retry_or_fail() {
+            local pkg="$1" version="$2"
+            local attempt
+            for attempt in 2 3 4; do
+              echo "::warning::$pkg v$version publish attempt $attempt after sleep 60s"
+              sleep 60
+              if cargo publish -p "$pkg" --allow-dirty; then
+                return 0
+              fi
+            done
+            echo "::error::$pkg v$version publish failed after 4 attempts"
+            return 1
+          }
+
+          # Order: prgpu-macro first (prgpu depends on it).
+          publish_if_bumped prgpu-macro prgpu-macro/Cargo.toml
+          sleep 60
+          publish_if_bumped prgpu       Cargo.toml

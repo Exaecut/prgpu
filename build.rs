@@ -72,16 +72,19 @@ fn main() {
 fn compile_builtin_shaders(shader_dir: &Path) {
 	let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
 
-	// Include vekl so `import vekl;` resolves.
-	let vekl_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-		.parent()
-		.unwrap()
-		.join("vekl");
-	let include_dirs: Vec<PathBuf> = if vekl_dir.is_dir() {
-		vec![shader_dir.to_path_buf(), vekl_dir]
-	} else {
-		vec![shader_dir.to_path_buf()]
-	};
+	// Include vekl so `import vekl;` resolves. Check the vendored copy
+	// (shipped inside the prgpu crate tarball for crates.io consumers) first,
+	// then fall back to the workspace sibling used during Exaecut dev.
+	let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+	let vendored = manifest_dir.join("vekl");
+	let sibling = manifest_dir.parent().map(|p| p.join("vekl"));
+
+	let mut include_dirs: Vec<PathBuf> = vec![shader_dir.to_path_buf()];
+	if vendored.is_dir() {
+		include_dirs.push(vendored);
+	} else if let Some(sibling) = sibling.filter(|p| p.is_dir()) {
+		include_dirs.push(sibling);
+	}
 
 	let slang_files: Vec<PathBuf> = std::fs::read_dir(shader_dir)
 		.unwrap()

@@ -9,40 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "after-effects"
-version = "0.4.0"
-source = "git+https://github.com/Exaecut/after-effects.git?branch=master#3b3bc37b230f5f829a8db9737a72a81415838dbc"
-dependencies = [
- "after-effects-sys",
- "bincode",
- "bitflags",
- "cstr-literal",
- "fastrand",
- "hash32",
- "log",
- "num-traits",
- "objc2-core-foundation",
- "once_cell",
- "oslog",
- "parking_lot",
- "paste",
- "serde",
- "serde_json",
- "widestring",
- "win_dbg_logger",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "after-effects-sys"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a588fadd80fd7ed09cc0a335c8a3169f632cdb90acc757c8e238880fa964950"
-dependencies = [
- "bindgen",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -452,6 +418,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "exaecut-after-effects"
+version = "0.5.0"
+dependencies = [
+ "bincode",
+ "bitflags",
+ "cstr-literal",
+ "exaecut-after-effects-sys",
+ "fastrand",
+ "hash32",
+ "log",
+ "num-traits",
+ "objc2-core-foundation",
+ "once_cell",
+ "oslog",
+ "parking_lot",
+ "paste",
+ "serde",
+ "serde_json",
+ "widestring",
+ "win_dbg_logger",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "exaecut-after-effects-sys"
+version = "0.5.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
+name = "exaecut-premiere"
+version = "0.5.0"
+dependencies = [
+ "base64",
+ "bincode",
+ "bitflags",
+ "exaecut-premiere-sys",
+ "fastrand",
+ "log",
+ "parking_lot",
+ "serde",
+]
+
+[[package]]
+name = "exaecut-premiere-sys"
+version = "0.5.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,29 +844,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
-name = "premiere"
-version = "0.4.0"
-source = "git+https://github.com/Exaecut/after-effects.git?branch=master#3b3bc37b230f5f829a8db9737a72a81415838dbc"
-dependencies = [
- "base64",
- "bincode",
- "bitflags",
- "fastrand",
- "log",
- "parking_lot",
- "premiere-sys",
- "serde",
-]
-
-[[package]]
-name = "premiere-sys"
-version = "0.4.0"
-source = "git+https://github.com/Exaecut/after-effects.git?branch=master#3b3bc37b230f5f829a8db9737a72a81415838dbc"
-dependencies = [
- "bindgen",
-]
-
-[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -862,18 +857,18 @@ dependencies = [
 name = "prgpu"
 version = "0.1.2"
 dependencies = [
- "after-effects",
  "bytemuck",
  "cc",
  "criterion",
  "cudarc",
+ "exaecut-after-effects",
+ "exaecut-premiere",
  "flate2",
  "log",
  "objc",
  "opencl3",
  "parking_lot",
  "paste",
- "premiere",
  "prgpu-macro",
  "rayon",
  "serde",

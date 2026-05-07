@@ -1,2 +1,11 @@
 /target
 /plans
+
+# Vendored Exaecut/vekl snapshot.
+# NOT committed — the authoritative source lives at github.com/Exaecut/vekl.
+# Local devs: run `./scripts/sync-vekl.sh` before `cargo publish` so the
+#             published tarball ships with vekl bundled for crates.io users.
+# CI: the publish workflow clones vekl fresh on every run.
+# Local builds inside the Exaecut workspace don't need this path populated
+# because `compile_shaders` falls back to `../vekl` (sibling submodule).
+/vekl

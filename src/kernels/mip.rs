@@ -300,6 +300,153 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 	}
 }
 
+/// Allocate a tight private GPU/CPU buffer, copy `config.outgoing_data`
+/// into it, and redirect `config.outgoing_data` to the new buffer.
+/// Returns the [`ImageBuffer`] so the caller can keep it alive for the
+/// remainder of the frame.
+///
+/// This is the **no-mip** companion to [`prepare_mip_source`]. Use it
+/// when an effect's main pass would otherwise read directly from
+/// Premiere's outgoing PPix while writing to its destination PPix.
+/// Premiere can hand the same `MTLBuffer` (or CUDA device pointer) as
+/// both source and destination in some pipeline configurations — for
+/// instance when `gpu_ppix_data(source)` falls back to `*out_frame` in
+/// `GPURenderProperties::new`. A multi-tap kernel reading and writing
+/// the same memory then races on neighbour pixels and produces visible
+/// flicker / corruption in regions where the read offset diverges from
+/// the write coordinate (e.g. the corners of a CRT-curved distortion).
+///
+/// Effects that already chain through prgpu LRU buffers (signal_noise →
+/// compress → main, or any pass that uses [`prepare_mip_source`]) get
+/// this protection for free — the first pass writes to a private buffer
+/// and the main pass reads from there. Only the case where every
+/// optional intermediate pass is disabled needs the explicit copy.
+///
+/// ```ignore
+/// // Always copy upfront so the main pass never reads while writing
+/// // through Premiere's aliased input/output PPix:
+/// let _src_copy = unsafe { prepare_source_copy(&mut config, MY_SRC_TAG)? };
+/// // ... optional intermediate passes ...
+/// unsafe { my_main_kernel(&main_cfg, params)? };
+/// ```
+///
+/// `tag` participates in the cache key alongside `(w, h, bpp)` so
+/// distinct effect instances don't stomp on each other's source copies.
+/// Convention: upper half = effect namespace, lower half = role
+/// (e.g. `0x5256_0003` for retrovhs's source copy).
+///
+/// After `prepare_source_copy` returns, `config.outgoing_data` points at
+/// the private buffer with `outgoing_pitch_px = outgoing_width` (tight).
+///
+/// # Safety
+/// - `config.outgoing_data` must point to a readable buffer of at least
+///   `config.outgoing_pitch_px * config.outgoing_height * config.bytes_per_pixel`
+///   bytes (GPU buffer on device paths, host memory on CPU path).
+/// - On Metal, `config.command_queue_handle` must be a valid
+///   `MTLCommandQueue` on the same device as `config.device_handle`.
+/// - No other CPU / GPU work may touch the returned buffer until the
+///   caller's effect kernel dispatch completes.
+pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Result<ImageBuffer, &'static str> {
+	let w = config.outgoing_width;
+	let h = config.outgoing_height;
+	let bpp = config.bytes_per_pixel;
+	let src_ptr = config.outgoing_data.ok_or("prepare_source_copy: outgoing_data is None")?;
+	let src_pitch_bytes = (config.outgoing_pitch_px as u32).saturating_mul(bpp);
+	let dst_pitch_bytes = w.saturating_mul(bpp); // private buffer is tight-packed
+
+	if config.device_handle.is_null() {
+		// ---- CPU path -------------------------------------------------------
+		let buf = crate::cpu::buffer::get_or_create(w, h, bpp, tag);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_copy: CPU allocator returned null");
+		}
+		unsafe {
+			if src_pitch_bytes == dst_pitch_bytes {
+				std::ptr::copy_nonoverlapping(
+					src_ptr as *const u8,
+					buf.buf.raw as *mut u8,
+					(dst_pitch_bytes as usize) * (h as usize),
+				);
+			} else {
+				for y in 0..(h as usize) {
+					std::ptr::copy_nonoverlapping(
+						(src_ptr as *const u8).add(y * src_pitch_bytes as usize),
+						(buf.buf.raw as *mut u8).add(y * dst_pitch_bytes as usize),
+						dst_pitch_bytes as usize,
+					);
+				}
+			}
+		}
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	// ---- GPU path -----------------------------------------------------------
+	#[cfg(gpu_backend = "metal")]
+	unsafe {
+		use crate::DeviceHandleInit;
+		let buf = crate::gpu::backends::metal::buffer::get_or_create(
+			DeviceHandleInit::FromPtr(config.device_handle),
+			w,
+			h,
+			bpp,
+			tag,
+		);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_copy: Metal allocator returned null");
+		}
+		crate::gpu::backends::metal::buffer::copy_buffer(
+			config.command_queue_handle as *mut objc::runtime::Object,
+			src_ptr as *mut objc::runtime::Object,
+			0,
+			src_pitch_bytes,
+			buf.buf.raw as *mut objc::runtime::Object,
+			0,
+			dst_pitch_bytes,
+			dst_pitch_bytes,
+			h,
+		)?;
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	#[cfg(gpu_backend = "cuda")]
+	unsafe {
+		use crate::DeviceHandleInit;
+		let buf = crate::gpu::backends::cuda::buffer::get_or_create(
+			DeviceHandleInit::FromPtr(config.device_handle),
+			w,
+			h,
+			bpp,
+			tag,
+		);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_copy: CUDA allocator returned null");
+		}
+		crate::gpu::backends::cuda::buffer::copy_buffer(
+			config.device_handle,
+			src_ptr,
+			0,
+			src_pitch_bytes,
+			buf.buf.raw,
+			0,
+			dst_pitch_bytes,
+			dst_pitch_bytes,
+			h,
+		)?;
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+	{
+		Err("prepare_source_copy: no GPU backend enabled")
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

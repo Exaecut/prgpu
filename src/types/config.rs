@@ -11,6 +11,7 @@ pub enum DeviceHandleInit<'a> {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct MTLSize {
 	pub width: usize,
 	pub height: usize,

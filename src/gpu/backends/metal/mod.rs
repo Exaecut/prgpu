@@ -157,35 +157,8 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			return Err("user params buffer allocation failed");
 		}
 
-		let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
-		if cmd.is_null() {
-			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-				let _: () = msg_send![user_params_buffer, release];
-			}
-			log::error!("[Metal] failed to create command buffer");
-			return Err("command buffer creation failed");
-		}
-
-		let enc: *mut Object = unsafe { msg_send![cmd, computeCommandEncoder] };
-		if enc.is_null() {
-			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-				let _: () = msg_send![user_params_buffer, release];
-			}
-			log::error!("[Metal] failed to create compute encoder");
-			return Err("compute encoder creation failed");
-		}
-
-		unsafe {
-			let _: () = msg_send![enc, setComputePipelineState: pipeline];
-			let _: () = msg_send![enc, setBuffer: outgoing_ptr as *mut Object   offset: 0usize  atIndex: 0usize];
-			let _: () = msg_send![enc, setBuffer: incoming_ptr as *mut Object   offset: 0usize  atIndex: 1usize];
-			let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
-			let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
-			let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
-		}
-
+		// Threadgroup geometry is invariant across retry attempts — derive it
+		// from the pipeline once.
 		let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
 		let max_threads: usize = unsafe { msg_send![pipeline, maxTotalThreadsPerThreadgroup] };
 		let tg_w = tew.max(1);
@@ -204,55 +177,128 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			depth: 1,
 		};
 
-		unsafe {
-			let _: () = msg_send![enc, dispatchThreadgroups: tg threadsPerThreadgroup: tp];
-			let _: () = msg_send![enc, endEncoding];
-		}
+		// macOS Metal: the GPU watchdog (kIOGPUCommandBufferCallbackError-
+		// ImpactingInteractivity) aborts any command buffer that runs longer
+		// than the OS-permitted budget. The first dispatch of a heavy kernel
+		// is the typical trigger because three transient costs land at once:
+		//
+		//   1. The MTLComputePipelineState is being JIT-specialized for the
+		//      device on top of the cached metallib.
+		//   2. GPU texture / buffer caches are cold — the first read pays a
+		//      full DRAM round-trip.
+		//   3. Premiere is concurrently decoding the source clip, drawing
+		//      timeline / waveform UI, and rebuilding effect previews — all
+		//      contend for GPU bandwidth.
+		//
+		// On the second attempt every one of those is paid down. Retrying
+		// once with a small cool-down silently masks the transient and
+		// surfaces a clean rendered frame to Premiere. Non-watchdog errors
+		// propagate immediately so OOM / bad-descriptor / shader-fault
+		// paths still show up in the logs.
+		const MAX_ATTEMPTS: u32 = 2;
+		let mut attempt: u32 = 0;
+		let gpu_ms = loop {
+			attempt += 1;
 
-		let cpu_start = Instant::now();
-
-		unsafe {
-			let _: () = msg_send![cmd, commit];
-		}
-
-		loop {
-			let status: u64 = unsafe { msg_send![cmd, status] };
-			if status >= 4 {
-				break;
+			let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
+			if cmd.is_null() {
+				unsafe {
+					let _: () = msg_send![frame_params_buffer, release];
+					let _: () = msg_send![user_params_buffer, release];
+				}
+				log::error!("[Metal] failed to create command buffer");
+				return Err("command buffer creation failed");
 			}
 
-			std::thread::sleep(Duration::from_millis(1));
-		}
-
-		unsafe {
-			let _: () = msg_send![cmd, waitUntilCompleted];
-		}
-
-		let status: u64 = unsafe { msg_send![cmd, status] };
-		if status == 5 {
-			let error: *mut Object = unsafe { msg_send![cmd, error] };
-			if let Some(msg) = unsafe { ns_error(error) } {
-				log::error!("[Metal] command buffer error: {msg}");
+			let enc: *mut Object = unsafe { msg_send![cmd, computeCommandEncoder] };
+			if enc.is_null() {
+				unsafe {
+					let _: () = msg_send![frame_params_buffer, release];
+					let _: () = msg_send![user_params_buffer, release];
+				}
+				log::error!("[Metal] failed to create compute encoder");
+				return Err("compute encoder creation failed");
 			}
+
 			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-				let _: () = msg_send![user_params_buffer, release];
+				let _: () = msg_send![enc, setComputePipelineState: pipeline];
+				let _: () = msg_send![enc, setBuffer: outgoing_ptr as *mut Object   offset: 0usize  atIndex: 0usize];
+				let _: () = msg_send![enc, setBuffer: incoming_ptr as *mut Object   offset: 0usize  atIndex: 1usize];
+				let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
+				let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
+				let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
+				let _: () = msg_send![enc, dispatchThreadgroups: tg threadsPerThreadgroup: tp];
+				let _: () = msg_send![enc, endEncoding];
 			}
-			return Err("GPU execution error");
-		}
 
-		let gpu_start: f64 = unsafe { msg_send![cmd, GPUStartTime] };
-		let gpu_end: f64 = unsafe { msg_send![cmd, GPUEndTime] };
-		let gpu_ms = (gpu_end - gpu_start) * 1000.0;
-		let cpu_elapsed = cpu_start.elapsed();
+			#[cfg(debug_assertions)]
+			let cpu_start = Instant::now();
+
+			unsafe {
+				let _: () = msg_send![cmd, commit];
+			}
+
+			loop {
+				let status: u64 = unsafe { msg_send![cmd, status] };
+				if status >= 4 {
+					break;
+				}
+				std::thread::sleep(Duration::from_millis(1));
+			}
+
+			unsafe {
+				let _: () = msg_send![cmd, waitUntilCompleted];
+			}
+
+			let status: u64 = unsafe { msg_send![cmd, status] };
+			if status == 5 {
+				let error: *mut Object = unsafe { msg_send![cmd, error] };
+				let msg = unsafe { ns_error(error) };
+				// The watchdog message reads as "MTLCommandBufferErrorDomain (1):
+				// Execution of the command buffer was aborted due to an error
+				// during execution. Impacting Interactivity (0000000e:kIO…)".
+				// Match on either the human string or the IOKit error code.
+				let is_watchdog = msg
+					.as_ref()
+					.is_some_and(|m| m.contains("Impacting Interactivity") || m.contains("kIOGPUCommandBufferCallbackError"));
+
+				if is_watchdog && attempt < MAX_ATTEMPTS {
+					log::warn!(
+						"[Metal] '{entry}' hit GPU watchdog (attempt {attempt}/{MAX_ATTEMPTS}) — cooling down 50ms and retrying"
+					);
+					std::thread::sleep(Duration::from_millis(50));
+					continue;
+				}
+
+				if let Some(m) = msg {
+					log::error!("[Metal] command buffer error: {m}");
+				}
+				unsafe {
+					let _: () = msg_send![frame_params_buffer, release];
+					let _: () = msg_send![user_params_buffer, release];
+				}
+				return Err("GPU execution error");
+			}
+
+			if attempt > 1 {
+				log::info!("[Metal] '{entry}' recovered after watchdog retry (attempt {attempt})");
+			}
+
+			let gpu_start: f64 = unsafe { msg_send![cmd, GPUStartTime] };
+			let gpu_end: f64 = unsafe { msg_send![cmd, GPUEndTime] };
+			let gpu_ms = (gpu_end - gpu_start) * 1000.0;
+
+			#[cfg(debug_assertions)]
+			{
+				let cpu_elapsed = cpu_start.elapsed();
+				let generation = config.render_generation;
+				log::info!("[Metal] `{entry}` gen={generation}: gpu={gpu_ms:.3}ms, cpu={cpu_elapsed:?}");
+			}
+
+			break gpu_ms;
+		};
 
 		crate::timing::record(entry, crate::types::Backend::Metal, (gpu_ms * 1_000_000.0) as u64);
-
-		#[cfg(debug_assertions)]
-		{
-			let generation = config.render_generation;
-			log::info!("[Metal] `{entry}` gen={generation}: gpu={gpu_ms:.3}ms, cpu={cpu_elapsed:?}");
-		}
 
 		unsafe {
 			let _: () = msg_send![frame_params_buffer, release];

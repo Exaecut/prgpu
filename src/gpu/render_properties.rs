@@ -22,10 +22,9 @@ pub struct GPURenderProperties<'a> {
 
 impl<'a> GPURenderProperties<'a> {
 	/// # Safety
-	/// Dereferences raw pointers (`filter.instance_ptr`, `frames`, `out_frame`) which must be valid, non-null, and properly aligned.
-	/// `frames` must reference an array of at least `frame_count` valid `PPixHand` elements.
-	/// Assumes all Premiere SDK suite calls return handles tied to the same GPU device and lifetime context.
-	/// Caller must guarantee no aliasing or concurrent mutation of underlying frame data during execution.
+	/// `filter.instance_ptr`, `frames`, `out_frame` must be valid, non-null, and aligned;
+	/// `frames` must hold at least `frame_count` valid `PPixHand`s. No aliasing or
+	/// concurrent mutation of frame data.
 	pub unsafe fn new(
 		filter: &'a premiere::GpuFilterData,
 		render_params: premiere::RenderParams,
@@ -51,7 +50,7 @@ impl<'a> GPURenderProperties<'a> {
 			std::ptr::null_mut()
 		};
 
-		// Use output frame as source if first input frame is missing/null
+		// Use the output frame as source if the first input frame is missing.
 		let main_source = if !outgoing.is_null() {
 			outgoing
 		} else if !out_frame.is_null() {
@@ -79,7 +78,7 @@ impl<'a> GPURenderProperties<'a> {
 			}
 		} as f32;
 
-		// Prefer a source that actually has GPU data
+		// Prefer a source that actually has GPU data.
 		let mut source = if !incoming.is_null() { incoming } else { main_source };
 		if filter.gpu_device_suite.gpu_ppix_data(source).is_err() {
 			if !out_frame.is_null() {
@@ -115,8 +114,7 @@ impl<'a> GPURenderProperties<'a> {
 
 		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
 
-		// Source of truth for dimensions: render_params (always valid, matches sequence size).
-		// ppix_suite.bounds() can return garbage for GPU PPix in some Metal render contexts.
+		// `render_params` is the source of truth for dimensions; `ppix_suite.bounds()` returns garbage for some Metal GPU PPix.
 		let rw = render_params.render_width() as i32;
 		let rh = render_params.render_height() as i32;
 		let mut bounds = after_effects::Rect { left: 0, top: 0, right: rw, bottom: rh };

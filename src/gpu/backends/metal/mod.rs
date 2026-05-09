@@ -108,9 +108,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			return Err("null pipeline state");
 		}
 
-		// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
-		// dst_desc + width/height describe the DESTINATION (drives dispatch grid).
-		// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
+		// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the dispatch grid.
 		let frame_params = FrameParams {
 			out_desc: crate::types::make_outgoing_desc(config),
 			in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
@@ -157,8 +155,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			return Err("user params buffer allocation failed");
 		}
 
-		// Threadgroup geometry is invariant across retry attempts — derive it
-		// from the pipeline once.
+		// Threadgroup geometry is invariant across retries; derive it once.
 		let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
 		let max_threads: usize = unsafe { msg_send![pipeline, maxTotalThreadsPerThreadgroup] };
 		let tg_w = tew.max(1);
@@ -177,24 +174,12 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			depth: 1,
 		};
 
-		// macOS Metal: the GPU watchdog (kIOGPUCommandBufferCallbackError-
-		// ImpactingInteractivity) aborts any command buffer that runs longer
-		// than the OS-permitted budget. The first dispatch of a heavy kernel
-		// is the typical trigger because three transient costs land at once:
-		//
-		//   1. The MTLComputePipelineState is being JIT-specialized for the
-		//      device on top of the cached metallib.
-		//   2. GPU texture / buffer caches are cold — the first read pays a
-		//      full DRAM round-trip.
-		//   3. Premiere is concurrently decoding the source clip, drawing
-		//      timeline / waveform UI, and rebuilding effect previews — all
-		//      contend for GPU bandwidth.
-		//
-		// On the second attempt every one of those is paid down. Retrying
-		// once with a small cool-down silently masks the transient and
-		// surfaces a clean rendered frame to Premiere. Non-watchdog errors
-		// propagate immediately so OOM / bad-descriptor / shader-fault
-		// paths still show up in the logs.
+		// macOS Metal's GPU watchdog (kIOGPUCommandBufferCallbackError-
+		// ImpactingInteractivity) aborts command buffers that exceed the OS budget.
+		// First dispatches of a heavy kernel typically trip it because pipeline JIT,
+		// cold caches, and Premiere's concurrent decode/UI all land at once.
+		// Retrying once with a small cool-down silently masks that transient; non-
+		// watchdog errors still propagate so OOM / shader-fault paths show up.
 		const MAX_ATTEMPTS: u32 = 2;
 		let mut attempt: u32 = 0;
 		let gpu_ms = loop {
@@ -254,10 +239,8 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			if status == 5 {
 				let error: *mut Object = unsafe { msg_send![cmd, error] };
 				let msg = unsafe { ns_error(error) };
-				// The watchdog message reads as "MTLCommandBufferErrorDomain (1):
-				// Execution of the command buffer was aborted due to an error
-				// during execution. Impacting Interactivity (0000000e:kIO…)".
-				// Match on either the human string or the IOKit error code.
+				// The watchdog message reads as "Impacting Interactivity" /
+				// kIOGPUCommandBufferCallbackError. Match either form.
 				let is_watchdog = msg
 					.as_ref()
 					.is_some_and(|m| m.contains("Impacting Interactivity") || m.contains("kIOGPUCommandBufferCallbackError"));

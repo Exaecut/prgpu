@@ -15,30 +15,24 @@ pub fn generate(
 
     let align_val = layout.struct_align;
 
-    // Check if struct contains GpuStruct (unknown-size) fields
     let has_unknown_size_fields = resolved_fields
         .iter()
         .any(|(_, gpu_type, _)| matches!(gpu_type, GpuType::GpuStruct { .. }));
 
-    // Remove existing repr attributes
     item_struct
         .attrs
         .retain(|attr| !attr.path().is_ident("repr"));
 
-    // Add #[repr(C, align(N))]
     let align_val_token = syn::LitInt::new(&align_val.to_string(), proc_macro2::Span::call_site());
     let repr_attr: syn::Attribute = syn::parse_quote!(#[repr(C, align(#align_val_token))]);
     item_struct.attrs.push(repr_attr);
 
-    // Determine whether to inject explicit padding fields
-    // Pod requires all bytes defined, so padding fields are mandatory for Pod
+    // Pod requires every byte to be defined, so explicit padding is mandatory when bytemuck is on.
     let needs_explicit_padding = config.bytemuck || config.pad;
 
-    // When bytemuck is on but we have unknown-size nested structs,
-    // we can't guarantee no implicit padding, so Pod must be skipped
+    // Unknown-size nested structs can introduce implicit padding; skip Pod in that case.
     let can_derive_pod = config.bytemuck && !has_unknown_size_fields;
 
-    // Build derive list
     let derive_tokens = build_derive_tokens(item_struct, can_derive_pod);
     let derive_attr: syn::Attribute = syn::parse_quote!(#[derive(#(#derive_tokens),*)]);
     item_struct
@@ -46,7 +40,6 @@ pub fn generate(
         .retain(|attr| !attr.path().is_ident("derive"));
     item_struct.attrs.push(derive_attr);
 
-    // Remove #[gpu_nested] field attributes
     if let syn::Fields::Named(fields) = &mut item_struct.fields {
         for field in &mut fields.named {
             field
@@ -55,7 +48,6 @@ pub fn generate(
         }
     }
 
-    // Transform bool fields to u32
     if let syn::Fields::Named(fields) = &mut item_struct.fields {
         for field in &mut fields.named {
             if let Some(ident) = &field.ident {
@@ -71,37 +63,28 @@ pub fn generate(
         }
     }
 
-    // Insert explicit padding fields between fields and at tail
-    // Only when bytemuck or pad is enabled, and no unknown-size nested fields
     if needs_explicit_padding && !has_unknown_size_fields {
-        // Collect padding info before mutating
         let padding_gaps: Vec<(usize, usize)> = compute_padding_gaps(layout);
         let tail_padding = layout.tail_padding;
 
         inject_padding_fields(item_struct, &padding_gaps, tail_padding);
     }
 
-    // Generate SIZE and ALIGN constants
     let size_val = layout.struct_size;
     let align_val_const = layout.struct_align;
 
     let size_align_tokens = if has_unknown_size_fields {
         quote! {
-            /// Total size in bytes, matching GPU buffer stride.
             pub const SIZE: usize = core::mem::size_of::<Self>();
-            /// Minimum alignment in bytes, matching GPU buffer binding requirements.
             pub const ALIGN: usize = core::mem::align_of::<Self>();
         }
     } else {
         quote! {
-            /// Total size in bytes, matching GPU buffer stride.
             pub const SIZE: usize = #size_val;
-            /// Minimum alignment in bytes, matching GPU buffer binding requirements.
             pub const ALIGN: usize = #align_val_const;
         }
     };
 
-    // Generate offset constants if debug_layout or emit_offsets
     let offset_constants = if config.debug_layout || config.emit_offsets {
         let offset_consts: Vec<TokenStream2> = layout
             .fields
@@ -124,10 +107,8 @@ pub fn generate(
         quote! {}
     };
 
-    // Generate bool helper methods
     let bool_helpers = generate_bool_helpers(resolved_fields);
 
-    // Generate compile-time assertions
     let assertions = generate_assertions(&struct_ident, layout, config, has_unknown_size_fields);
 
     let struct_tokens = quote! { #item_struct };
@@ -147,8 +128,7 @@ pub fn generate(
     }
 }
 
-/// Compute inter-field padding gaps from the layout.
-/// Returns (field_index, gap_bytes) pairs.
+/// Returns (field_index, gap_bytes) pairs for inter-field padding.
 fn compute_padding_gaps(layout: &StructLayout) -> Vec<(usize, usize)> {
     let mut gaps = Vec::new();
     let mut current_offset = 0usize;
@@ -170,7 +150,6 @@ fn inject_padding_fields(
     tail_padding: usize,
 ) {
     if let syn::Fields::Named(fields) = &mut item_struct.fields {
-        // Collect existing fields into a vec
         let original: Vec<syn::Field> = fields.named.iter().cloned().collect();
         fields.named.clear();
 
@@ -178,7 +157,6 @@ fn inject_padding_fields(
         let mut gap_iter = padding_gaps.iter().peekable();
 
         for (i, field) in original.into_iter().enumerate() {
-            // Insert padding before this field if needed
             while let Some(&(gap_idx, gap_size)) = gap_iter.peek() {
                 if *gap_idx == i {
                     let pad_ident = syn::Ident::new(
@@ -200,7 +178,6 @@ fn inject_padding_fields(
             fields.named.push(field);
         }
 
-        // Tail padding
         if tail_padding > 0 {
             let pad_ident = syn::Ident::new(
                 "_prgpu_pad_tail",
@@ -339,7 +316,6 @@ fn generate_assertions(
         });
     }
 
-    // Field offset assertions with debug_layout or emit_offsets
     if config.debug_layout || config.emit_offsets {
         for field_layout in &layout.fields {
             let field_name = &field_layout.name;

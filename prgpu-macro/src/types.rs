@@ -67,7 +67,6 @@ fn align_up(offset: usize, alignment: usize) -> usize {
     (offset + alignment - 1) & !(alignment - 1)
 }
 
-// Trusted path prefixes for Vec2/Vec3 recognition.
 const TRUSTED_VEC2_PATHS: &[&str] = &[
     "Vec2",
     "crate::Vec2",
@@ -88,7 +87,6 @@ const TRUSTED_VEC3_PATHS: &[&str] = &[
     "prgpu::types::maths::Vec3",
 ];
 
-// Built-in GPU-safe struct types always approved as nested fields.
 const BUILTIN_GPU_STRUCTS: &[&str] = &["Transform"];
 
 fn path_to_string(path: &syn::Path) -> String {
@@ -105,8 +103,7 @@ fn is_trusted_path(path_str: &str, trusted: &[&str]) -> bool {
 
 /// Resolve a `syn::Type` to a `GpuType`.
 ///
-/// `is_gpu_nested`: whether the field has a `#[gpu_nested]` attribute,
-/// indicating the user asserts this nested struct type is ABI-safe.
+/// `is_gpu_nested` marks fields the user asserts are ABI-safe via `#[gpu_nested]`.
 pub fn resolve_type(
     ty: &Type,
     config: &GpuStructConfig,
@@ -114,7 +111,6 @@ pub fn resolve_type(
 ) -> Result<GpuType, syn::Error> {
     match ty {
         Type::Path(type_path) => {
-            // Reject generic types (e.g. Vec<u8>, Option<T>)
             if let Some(last_seg) = type_path.path.segments.last() {
                 if !matches!(last_seg.arguments, syn::PathArguments::None) {
                     return Err(syn::Error::new(
@@ -133,7 +129,6 @@ pub fn resolve_type(
                 .map(|s| s.ident.to_string())
                 .unwrap_or_default();
 
-            // Scalar types
             match final_segment.as_str() {
                 "u8" => return Ok(GpuType::U8),
                 "i8" => return Ok(GpuType::I8),
@@ -178,7 +173,6 @@ pub fn resolve_type(
                 _ => {}
             }
 
-            // Trusted Vec2/Vec3 recognition
             if final_segment == "Vec2" {
                 if is_trusted_path(&path_str, TRUSTED_VEC2_PATHS) {
                     return Ok(GpuType::Vec2);
@@ -207,21 +201,18 @@ pub fn resolve_type(
                 ));
             }
 
-            // Built-in GPU-safe structs
             if BUILTIN_GPU_STRUCTS.contains(&final_segment.as_str()) {
                 return Ok(GpuType::GpuStruct {
                     name: final_segment,
                 });
             }
 
-            // User-approved nested struct via #[gpu_nested]
             if is_gpu_nested {
                 return Ok(GpuType::GpuStruct {
                     name: final_segment,
                 });
             }
 
-            // Unknown struct type without approval
             Err(syn::Error::new(
                 ty.span(),
                 format!(
@@ -238,7 +229,7 @@ pub fn resolve_type(
 
             let count = extract_array_len(&type_array)?;
 
-            // Check for vec3 problem: [f32; 3], [u32; 3], [i32; 3]
+            // Reject [_; 3] vec3 layouts unless allow_vec3 is set; std140/Metal pad them to vec4.
             if count == 3 && !config.allow_vec3 {
                 if matches!(gpu_elem, GpuType::F32) {
                     return Err(syn::Error::new(

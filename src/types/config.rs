@@ -30,9 +30,8 @@ pub struct Configuration {
 	pub outgoing_pitch_px: i32,
 	pub incoming_pitch_px: i32,
 	pub dest_pitch_px: i32,
-	// `width`/`height` are DESTINATION dims (drive dispatch grid + dst_desc + frame.width/height).
-	// `*_width`/`*_height` describe the actual size of the source buffers, which may differ from
-	// the destination (e.g. multi-pass blur reading a downsampled intermediate).
+	// `width`/`height` are DESTINATION dims (drive dispatch grid + dst_desc + frame.*).
+	// `*_width`/`*_height` describe the source buffers, which may differ (multi-pass blur).
 	pub width: u32,
 	pub height: u32,
 	pub outgoing_width: u32,
@@ -44,19 +43,17 @@ pub struct Configuration {
 	pub progress: f32,
 	pub render_generation: u64,
 	pub pixel_layout: u32, // 0=RGBA, 1=BGRA, 2=VUYA601, 3=VUYA709
-	/// Number of mip levels to allocate and auto-generate on the outgoing
-	/// (source) buffer, including level 0. `0` or `1` disables mip support
-	/// entirely; `2..=MAX_MIP` requests an N-level pyramid. The effect
-	/// kernel sees the populated `TextureDesc.mip_*` fields and can call
-	/// `SampleLinear(uv, lod)` / `SampleLinearTrilinear(uv, lodF)`.
+	/// Mip levels to allocate and auto-generate on the outgoing buffer (incl. level 0).
+	/// `0`/`1` disables mip support; `2..=MAX_MIP` requests an N-level pyramid the
+	/// kernel can sample via `SampleLinear(uv, lod)` / `SampleLinearTrilinear(uv, lodF)`.
 	pub outgoing_mip_levels: u32,
 }
 
 impl Configuration {
 	/// # Safety
-	/// `out_frame` must be a valid, non-null GPU frame pointer whose memory remains alive and writable.
-	/// `bytes_per_pixel` and `row_bytes` must match the actual pixel format and layout.
-	/// No concurrent access or invalid GPU context usage is allowed.
+	/// `out_frame` must be a valid non-null GPU frame pointer that stays alive and
+	/// writable; `bytes_per_pixel`/`row_bytes` must match the actual pixel format;
+	/// no concurrent access or invalid GPU context.
 	pub unsafe fn effect(render_properties: &GPURenderProperties, out_frame: *mut premiere::sys::PPixHand) -> Result<Self, premiere::Error> {
 		let filter = render_properties.get_filter();
 		let bytes_per_pixel = render_properties.bytes_per_pixel;
@@ -140,9 +137,9 @@ impl Configuration {
 	}
 
 	/// # Safety
-	/// `out_frame` must be a valid, non-null GPU frame pointer whose memory remains alive and writable.
-	/// `bytes_per_pixel` and `row_bytes` must match the actual pixel format and layout.
-	/// No concurrent access or invalid GPU context usage is allowed.
+	/// `out_frame` must be a valid non-null GPU frame pointer that stays alive and
+	/// writable; `bytes_per_pixel`/`row_bytes` must match the actual pixel format;
+	/// no concurrent access or invalid GPU context.
 	pub unsafe fn transition(render_properties: &GPURenderProperties, out_frame: *mut premiere::sys::PPixHand) -> Result<Self, premiere::Error> {
 		let filter = render_properties.get_filter();
 		let bytes_per_pixel = render_properties.bytes_per_pixel;
@@ -191,10 +188,8 @@ impl Configuration {
 	}
 }
 
-/// Upper bound on mip levels tracked by `TextureDesc`. Must match
-/// `vekl::MAX_MIP` or the ConstantBuffer layout will be mismatched.
-/// Five levels cover down to 1/16 per axis — deep enough for any sweep
-/// blur pyramid and keeps the descriptor small.
+/// Cap on mip levels in `TextureDesc`. Must equal `vekl::MAX_MIP` or the
+/// ConstantBuffer layout breaks. Five levels covers down to 1/16 per axis.
 pub const MAX_MIP: u32 = 5;
 
 #[repr(C)]
@@ -208,9 +203,8 @@ pub struct TextureDesc {
 	pub layout: u32,
 	pub address_mode: u32,
 
-	// Mip-chain metadata. `mip_level_count >= 1`; entries beyond that are
-	// undefined. The slang side uses `uint[MAX_MIP]` to match this layout
-	// byte-for-byte.
+	// Mip-chain metadata. `mip_level_count >= 1`; entries past it are undefined.
+	// Slang side uses `uint[MAX_MIP]` to match this layout byte-for-byte.
 	pub mip_level_count: u32,
 	pub mip_offset_bytes: [u32; MAX_MIP as usize],
 	pub mip_width: [u32; MAX_MIP as usize],
@@ -250,26 +244,21 @@ pub fn make_texture_desc(width: u32, height: u32, pitch_px: u32, bpp: u32, pixel
 		bytes_per_pixel: bpp,
 		storage: storage_from_bpp(bpp),
 		layout: pixel_layout,
-		address_mode: 0, // Clamp
+		address_mode: 0, // AddressMode::Clamp
 		mip_level_count: 1,
 		mip_offset_bytes: [0; MAX_MIP as usize],
 		mip_width: [0; MAX_MIP as usize],
 		mip_height: [0; MAX_MIP as usize],
 		mip_pitch_bytes: [0; MAX_MIP as usize],
 	};
-	// Level 0 always mirrors the base dims, so kernels that only touch
-	// `Size(0)`/`Load(px, 0)` see a fully-filled descriptor even when
-	// the host never explicitly requested a mip chain.
+	// Level 0 always mirrors the base dims so `Size(0)`/`Load(px, 0)` see a fully-filled descriptor even when no mip chain was requested.
 	desc.mip_width[0] = width;
 	desc.mip_height[0] = height;
 	desc.mip_pitch_bytes[0] = pitch_px * bpp;
 	desc
 }
 
-/// Total byte size of a tightly packed mip chain (`levels` levels starting
-/// at `width x height`). Each level's pitch is `width * bpp` (no padding);
-/// level 0 matches the host's chosen pitch iff the host passes the same
-/// width. Call [`fill_mip_desc`] to populate `TextureDesc` consistently.
+/// Total byte size of a tightly-packed `levels`-deep mip chain starting at `width × height`. Pair with `fill_mip_desc` for matching layout.
 pub fn mip_buffer_size_bytes(width: u32, height: u32, bpp: u32, levels: u32) -> u32 {
 	let mut total = 0u32;
 	let n = levels.max(1).min(MAX_MIP);
@@ -281,11 +270,7 @@ pub fn mip_buffer_size_bytes(width: u32, height: u32, bpp: u32, levels: u32) -> 
 	total
 }
 
-/// Build the outgoing-side [`TextureDesc`] from a [`Configuration`]. If the
-/// caller requested a mip chain (`outgoing_mip_levels > 1`), the returned
-/// descriptor's mip fields are populated via [`fill_mip_desc`]; otherwise the
-/// descriptor is a plain single-level view. Called from every dispatcher
-/// (Metal / CUDA / CPU) so effects never have to fill mip metadata manually.
+/// Build the outgoing `TextureDesc` from a `Configuration`; populates mip metadata when `outgoing_mip_levels > 1`. Called from every dispatcher.
 pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 	let mut desc = make_texture_desc(
 		config.outgoing_width,
@@ -307,10 +292,9 @@ pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 	desc
 }
 
-/// Populate a [`TextureDesc`] with a tightly packed mip chain of `levels`
-/// levels. Level 0 keeps the caller-provided pitch so it stays byte-compatible
-/// with a plain (non-mip) buffer; levels 1..N use tight pitches so the total
-/// byte budget equals [`mip_buffer_size_bytes`] exactly.
+/// Populate `desc` with a tightly packed `levels`-deep mip chain. Level 0 keeps
+/// the caller's pitch (so it stays byte-compatible with a non-mip buffer); levels
+/// 1..N use tight pitches so the byte budget equals `mip_buffer_size_bytes`.
 pub fn fill_mip_desc(desc: &mut TextureDesc, width: u32, height: u32, pitch_px: u32, bpp: u32, levels: u32) {
 	let n = levels.max(1).min(MAX_MIP);
 	desc.mip_level_count = n;
@@ -319,8 +303,7 @@ pub fn fill_mip_desc(desc: &mut TextureDesc, width: u32, height: u32, pitch_px: 
 	desc.mip_height = [0; MAX_MIP as usize];
 	desc.mip_pitch_bytes = [0; MAX_MIP as usize];
 
-	// Level 0 uses the host pitch; everything below is tightly packed
-	// starting at the byte right after level 0 finishes.
+	// Level 0 uses the host pitch; lower levels are tight, starting right after level 0 ends.
 	desc.mip_width[0] = width;
 	desc.mip_height[0] = height;
 	desc.mip_pitch_bytes[0] = pitch_px * bpp;
@@ -355,7 +338,6 @@ mod tests {
 
 	#[test]
 	fn mip_buffer_size_matches_sum_of_levels() {
-		// 32x32 @ 4 bpp, 3 levels: 32*32 + 16*16 + 8*8 = 1024 + 256 + 64 = 1344
 		let size = mip_buffer_size_bytes(32, 32, 4, 3);
 		assert_eq!(size, (1024 + 256 + 64) * 4);
 	}
@@ -365,15 +347,12 @@ mod tests {
 		let mut d = make_texture_desc(32, 32, 32, 4, 1);
 		fill_mip_desc(&mut d, 32, 32, 32, 4, 3);
 		assert_eq!(d.mip_level_count, 3);
-		// Level 0: 32 rows * 128 B = 4096 B
 		assert_eq!(d.mip_offset_bytes[0], 0);
 		assert_eq!(d.mip_pitch_bytes[0], 128);
-		// Level 1: starts at 4096, 16*16*4 = 1024 B
 		assert_eq!(d.mip_offset_bytes[1], 4096);
 		assert_eq!(d.mip_width[1], 16);
 		assert_eq!(d.mip_height[1], 16);
 		assert_eq!(d.mip_pitch_bytes[1], 64);
-		// Level 2: starts at 4096+1024 = 5120, 8*8*4 = 256 B
 		assert_eq!(d.mip_offset_bytes[2], 5120);
 		assert_eq!(d.mip_width[2], 8);
 		assert_eq!(d.mip_height[2], 8);
@@ -382,10 +361,8 @@ mod tests {
 
 	#[test]
 	fn mip_buffer_size_clamps_levels() {
-		// Asking for 0 levels still returns a non-zero size (min 1 level).
 		let size = mip_buffer_size_bytes(32, 32, 4, 0);
 		assert_eq!(size, 32 * 32 * 4);
-		// Asking past MAX_MIP is clamped to MAX_MIP.
 		let size_large = mip_buffer_size_bytes(64, 64, 4, 999);
 		let expected: u32 = (0..MAX_MIP).map(|l| ((64u32 >> l).max(1)) * ((64u32 >> l).max(1)) * 4).sum();
 		assert_eq!(size_large, expected);

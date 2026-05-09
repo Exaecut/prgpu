@@ -4,38 +4,27 @@ use after_effects as ae;
 
 use crate::types::{Configuration, FrameParams};
 
-/// Per-pixel CPU dispatch: kernel is invoked once per `(x, y)` tuple.
-/// Kept for the AE `iterate_with` path that drives `(x, y)` externally.
+/// Per-pixel CPU dispatch. Used by the AE `iterate_with` path which drives `(x, y)` externally.
 pub type CpuDispatchFn = unsafe extern "C" fn(u32, u32, *const *const c_void, *const c_void, *const c_void);
 
-/// Tile CPU dispatch: kernel is invoked over a `[y0, y1) × [0, width)` range
-/// inside a single C-side loop. Used by the rayon path so a single FFI
-/// boundary amortizes over an entire tile — roughly `rows_per_task × width`
-/// kernel invocations become one extern "C" call.
+/// Tile CPU dispatch. One FFI call per rayon chunk amortizes the boundary across `rows_per_task × width` invocations.
 pub type CpuDispatchTileFn = unsafe extern "C" fn(u32, u32, u32, *const *const c_void, *const c_void, *const c_void);
 
-/// Wrapper to make buffer pointer array `Send + Sync`.
+/// `Send + Sync` wrapper for the buffer pointer array.
 ///
-/// SAFETY: The buffer pointers are valid for the duration of the dispatch call.
-/// They point to Layer-backed or intermediate buffers that outlive the iteration.
+/// SAFETY: pointers are valid for the dispatch and outlive the iteration.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct SafeBuffers(pub(crate) [*const c_void; 3]);
 unsafe impl Send for SafeBuffers {}
 unsafe impl Sync for SafeBuffers {}
 
-/// Maps a Premiere `PixelFormat` to the VEKL layout type code.
+/// Map a Premiere `PixelFormat` to the VEKL layout id.
 ///
-/// - 0 = RGBA (identity)
-/// - 1 = BGRA (channel swap B↔R)
-/// - 2 = VUYA BT.601 (YCbCr→RGB)
-/// - 3 = VUYA BT.709 (YCbCr→RGB)
-///
-/// For After Effects, always returns 1 (BGRA
+/// 0 = RGBA, 1 = BGRA, 2 = VUYA BT.601, 3 = VUYA BT.709. After Effects always returns 1 (BGRA).
 pub fn pixel_layout_from_format(in_data: &ae::InData, layer: &ae::Layer) -> u32 {
 	if in_data.is_premiere() {
 		if let Ok(fmt) = layer.pr_pixel_format() {
 			match fmt {
-				// VUYA BT.709 variants
 				ae::pr::PixelFormat::Vuya4444_8u709
 				| ae::pr::PixelFormat::Vuya4444_32f709
 				| ae::pr::PixelFormat::Vuyx4444_8u709
@@ -43,7 +32,6 @@ pub fn pixel_layout_from_format(in_data: &ae::InData, layer: &ae::Layer) -> u32 
 				| ae::pr::PixelFormat::Vuyp4444_8u709
 				| ae::pr::PixelFormat::Vuyp4444_32f709 => 3,
 
-				// VUYA BT.601 variants
 				ae::pr::PixelFormat::Vuya4444_8u
 				| ae::pr::PixelFormat::Vuya4444_16u
 				| ae::pr::PixelFormat::Vuya4444_32f
@@ -52,26 +40,22 @@ pub fn pixel_layout_from_format(in_data: &ae::InData, layer: &ae::Layer) -> u32 
 				| ae::pr::PixelFormat::Vuyp4444_8u
 				| ae::pr::PixelFormat::Vuyp4444_32f => 2,
 
-				// BGRA / ARGB / other RGB variants → BGRA layout
 				_ => 1,
 			}
 		} else {
-			1 // Default to BGRA for Premiere
+			1 // Premiere default: BGRA
 		}
 	} else {
-		1 // After Effects always uses BGRA
+		1 // AE: always BGRA
 	}
 }
 
-/// Auto-compute bytes-per-pixel from the Layer based on host.
-///
-/// - **After Effects**: uses `world_type()` → U8=4, U15=8, F32=16
-/// - **Premiere**: uses `pr_pixel_format()` to match BGRA/VUYA × 8u/16u/32f
+/// Bytes per pixel from the layer's pixel format.
+/// AE: `world_type()` (U8=4, U15=8, F32=16). Premiere: `pr_pixel_format()`.
 pub fn compute_bpp(in_data: &ae::InData, layer: &ae::Layer) -> Result<u32, ae::Error> {
 	if in_data.is_premiere() {
 		let fmt = layer.pr_pixel_format()?;
 		match fmt {
-			// 8-bit: 4 bytes per pixel (4 channels × 1 byte)
 			ae::pr::PixelFormat::Bgra4444_8u
 			| ae::pr::PixelFormat::Vuya4444_8u
 			| ae::pr::PixelFormat::Vuya4444_8u709
@@ -85,7 +69,6 @@ pub fn compute_bpp(in_data: &ae::InData, layer: &ae::Layer) -> Result<u32, ae::E
 			| ae::pr::PixelFormat::Vuyp4444_8u709
 			| ae::pr::PixelFormat::Prgb4444_8u => Ok(4),
 
-			// 16-bit: 8 bytes per pixel (4 channels × 2 bytes)
 			ae::pr::PixelFormat::Bgra4444_16u
 			| ae::pr::PixelFormat::Vuya4444_16u
 			| ae::pr::PixelFormat::Argb4444_16u
@@ -94,7 +77,6 @@ pub fn compute_bpp(in_data: &ae::InData, layer: &ae::Layer) -> Result<u32, ae::E
 			| ae::pr::PixelFormat::Bgrp4444_16u
 			| ae::pr::PixelFormat::Prgb4444_16u => Ok(8),
 
-			// 32-bit float: 16 bytes per pixel (4 channels × 4 bytes)
 			ae::pr::PixelFormat::Bgra4444_32f
 			| ae::pr::PixelFormat::Vuya4444_32f
 			| ae::pr::PixelFormat::Vuya4444_32f709
@@ -144,9 +126,7 @@ pub fn render_cpu<P: Copy + Sync>(
 		return Ok(());
 	}
 
-	// Start global wall-clock + concurrency tracking as soon as we enter the
-	// dispatcher. `setup_ns` covers everything before the rayon / AE loop
-	// body; `body_ns` is the loop itself.
+	// Wall clock starts here; `setup_ns` covers everything before the rayon / AE body.
 	let guard = diag::DispatchGuard::enter();
 	let wall_start = std::time::Instant::now();
 
@@ -162,9 +142,7 @@ pub fn render_cpu<P: Copy + Sync>(
 		0.0
 	};
 
-	// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
-	// dst_desc + width/height describe the DESTINATION (drives iteration extent).
-	// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
+	// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the destination iteration extent.
 	let tp = FrameParams {
 		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
@@ -181,22 +159,17 @@ pub fn render_cpu<P: Copy + Sync>(
 	let body_start = std::time::Instant::now();
 
 	let (path, chunk_rows, result) = if can_iterate_with {
-		// AE iterate_with drives (x, y) externally, so we must use the
-		// per-pixel entry point.
+		// AE `iterate_with` drives (x, y) externally; use the per-pixel entry.
 		(
 			diag::DispatchPath::AeIterate,
 			1u32,
 			ae_dispatch(in_layer, out_layer, buffers, tp, user_params, dispatch_fn),
 		)
 	} else {
-		// Rayon fallback — use the tile entry point (one FFI call per chunk).
 		let out_stride_bytes = tp.dst_desc.pitch_bytes as usize;
 		let out_buf_size = (h as usize) * out_stride_bytes;
 
-		// SAFETY: dest_ptr points to a buffer of at least out_buf_size bytes,
-		// as guaranteed by the caller via Configuration. The slice is only used
-		// to partition row iteration across rayon threads; actual pixel I/O
-		// goes through the dispatch function's buffer pointer array.
+		// SAFETY: caller's `Configuration` guarantees `dest_ptr` covers `out_buf_size` bytes; the slice is only used to partition rows across rayon workers.
 		let out_buf = if out_buf_size > 0 && !dest_ptr.is_null() {
 			unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, out_buf_size) }
 		} else {
@@ -249,37 +222,27 @@ fn ae_dispatch<P: Copy + Sync>(
 }
 
 
-/// Compute how many rows of work each rayon task should own.
+/// Rows per rayon task.
 ///
-/// The default strategy aims for ~4 tasks per worker thread — enough for good
-/// load balancing but coarse enough to amortize rayon's fork-join overhead
-/// across the per-pixel inner loop. For a 1516-row frame on 16 threads we go
-/// from 1516 tasks (one per row) down to ~64, cutting scheduler work by ~24×.
+/// Targets ~4 tasks per worker thread — coarse enough to amortize fork-join overhead
+/// over the per-pixel inner loop, fine enough for good load balancing.
 #[inline]
 fn compute_rows_per_task(height: u32) -> u32 {
-	// Base chunking on the bounded render pool's worker count, not the global
-	// rayon pool, so task granularity matches the pool we actually dispatch on.
+	// Chunk against the bounded render pool, not the global rayon pool, so granularity matches the pool we actually dispatch on.
 	let threads = crate::cpu::pool::worker_count().max(1) as u32;
 	let target_tasks = threads.saturating_mul(4).max(1);
 	((height + target_tasks - 1) / target_tasks).max(1)
 }
 
-/// AE-free rayon tile dispatcher. Shared by the host-side render path
-/// (Premiere / non-AE AE path) and the `prgpu::bench` harness.
+/// AE-free rayon tile dispatcher. Shared by Premiere render and the bench harness.
 ///
-/// Calls `dispatch_tile_fn` **once per rayon chunk**; the C-side wrapper
-/// loops over the chunk's `[y0, y1) × [0, width)` internally. This
-/// eliminates the per-pixel FFI boundary that, on Windows plugin DLLs with
-/// dynamic-TLS, was costing ~100 ns/pixel (~350 ms per 3.57 Mpx frame).
+/// Calls `dispatch_tile_fn` once per rayon chunk; the C side loops over `[y0, y1) × [0, width)`.
+/// Eliminates the per-pixel FFI boundary that, on Windows DLLs with dynamic-TLS,
+/// was costing ~100 ns/pixel (~350 ms per 3.57 Mpx frame).
 ///
-/// Returns `rows_per_task`, i.e. the chunk granularity used by rayon; the
-/// caller forwards this to the per-dispatch diagnostic.
-///
-/// # Safety considerations
-/// - `buffers.0` must outlive the dispatch and point to memory of the sizes
-///   implied by `tp` and the kernel's buffer slots.
-/// - `out_buf` must be the backing storage of `buffers.0[2]` (the dest buffer);
-///   it is used purely to partition row iteration across rayon workers.
+/// # Safety
+/// - `buffers.0` must outlive the dispatch and match the kernel's slot sizes.
+/// - `out_buf` must back `buffers.0[2]` (the dest).
 /// - `user_params` must live across the call.
 pub(crate) fn rayon_dispatch_tile<P: Copy + Sync>(
 	width: u32,
@@ -319,19 +282,14 @@ pub(crate) fn rayon_dispatch_tile<P: Copy + Sync>(
 	rows_per_task as u32
 }
 
-/// Dispatch a CPU kernel without any After Effects / Premiere plumbing.
+/// Dispatch a CPU kernel from a `Configuration` with no AE/Premiere plumbing.
 ///
-/// Used by the `prgpu::bench` harness and any host-side driver that already has
-/// raw buffer pointers in a [`Configuration`]. This is the same code path as
-/// the Premiere render route (pure rayon), minus the AE fallback.
-///
-/// The output buffer partitioning uses `config.dest_pitch_px * config.bytes_per_pixel`
-/// as row stride and assumes the dest buffer contains `config.height` rows
-/// starting at `config.dest_data`.
+/// Same code path as the Premiere render route minus the AE fallback; output is
+/// partitioned at `dest_pitch_px * bytes_per_pixel` rows starting at `dest_data`.
 ///
 /// # Safety
-/// All pointers in `config` must be valid, non-aliasing where the kernel expects
-/// them to be non-aliasing, and remain alive for the duration of the call.
+/// All pointers in `config` must be valid, non-aliasing where the kernel expects,
+/// and live for the call.
 pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 	kernel_name: &'static str,
 	config: &Configuration,
@@ -355,9 +313,6 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 
 	let buffers = SafeBuffers([outgoing_ptr, incoming_ptr, dest_ptr]);
 
-	// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
-	// dst_desc + width/height describe the DESTINATION (drives iteration extent).
-	// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
 	let tp = FrameParams {
 		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
@@ -376,8 +331,7 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 	let mut chunk_rows = 1u32;
 
 	if out_buf_size > 0 && !dest_ptr.is_null() {
-		// SAFETY: dest_ptr points to `out_buf_size` bytes of writable memory by
-		// caller contract; slice is used only to partition rows across rayon workers.
+		// SAFETY: caller guarantees `dest_ptr` covers `out_buf_size` bytes; the slice is only used to partition rows across rayon workers.
 		let out_buf = unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, out_buf_size) };
 		chunk_rows = rayon_dispatch_tile(w, buffers, tp, user_params, dispatch_tile_fn, out_buf, out_stride_bytes);
 	}

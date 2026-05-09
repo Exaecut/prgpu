@@ -9,9 +9,9 @@ use parking_lot::Mutex;
 
 use super::ns_error;
 
-// libdispatch FFI: newLibraryWithData expects a dispatch_data_t, not an NSData.
-// Toll-free bridging works for genuine NSData but can fail for static read-only buffers
-// wrapped via dataWithBytesNoCopy:freeWhenDone:NO. NULL destructor = copy internally.
+// libdispatch FFI: `newLibraryWithData` expects `dispatch_data_t`, not `NSData`.
+// Toll-free bridging fails for static read-only buffers wrapped by
+// `dataWithBytesNoCopy:freeWhenDone:NO`. NULL destructor = libdispatch copies internally.
 unsafe extern "C" {
     fn dispatch_data_create(
         buffer: *const c_void,

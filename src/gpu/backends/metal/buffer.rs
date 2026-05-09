@@ -21,8 +21,7 @@ impl StorageMode {
 	}
 }
 
-/// Simple ordered LRU cache: most-recently-used at the back, LRU at the front.
-/// With `MAX_GPU_BUFFER_ENTRIES <= 12`, linear scan is negligible.
+/// Ordered LRU: MRU at the back, LRU at the front. `MAX_GPU_BUFFER_ENTRIES <= 12` keeps the linear scan negligible.
 struct OrderedLru {
 	entries: Vec<(BufferKey, BufferObj)>,
 	capacity: usize,
@@ -36,8 +35,7 @@ impl OrderedLru {
 		}
 	}
 
-	/// Promote an existing entry to MRU position (back of the vector).
-	/// Returns the `BufferObj` copy if found, `None` otherwise.
+	/// Promote `key` to MRU; returns the `BufferObj` on hit, `None` otherwise.
 	fn get(&mut self, key: &BufferKey) -> Option<BufferObj> {
 		if let Some(idx) = self.entries.iter().position(|(k, _)| k == key) {
 			let entry = self.entries.remove(idx);
@@ -48,11 +46,9 @@ impl OrderedLru {
 		}
 	}
 
-	/// Insert a new entry, evicting LRU if at capacity.
-	/// Returns the evicted `BufferObj` if an eviction occurred (caller must release it).
+	/// Insert, evicting LRU when at capacity. Returns the evicted `BufferObj` (caller releases it).
 	fn insert(&mut self, key: BufferKey, value: BufferObj) -> Option<BufferObj> {
 		let evicted = if self.entries.len() >= self.capacity {
-			// Evict LRU (front)
 			let (_, v) = self.entries.remove(0);
 			Some(v)
 		} else {
@@ -81,14 +77,13 @@ pub(crate) unsafe fn allocate(device: *mut Object, length_bytes: u64, width: u32
 			height,
 			bpp
 		);
-		// Return a null buffer so the caller can detect failure instead of crashing the driver
+		// Null buffer lets the caller fail gracefully instead of crashing the driver.
 		return std::ptr::null_mut();
 	}
 	let opts = StorageMode::Private.as_resource_options();
 	msg_send![device, newBufferWithLength: length_bytes options: opts]
 }
 
-/// Free a Metal buffer by sending `[release]`.
 unsafe fn free_buffer(buf: BufferObj) {
 	if !buf.raw.is_null() {
 		let _: () = msg_send![buf.raw as *mut Object, release];
@@ -99,14 +94,9 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
 }
 
-/// Same as [`get_or_create`] but allocates a byte budget that fits a
-/// `mip_levels`-deep mip chain. `mip_levels <= 1` behaves exactly like the
-/// legacy form; higher values size the Metal buffer to
-/// [`mip_buffer_size_bytes`] so the prgpu mip-downsample kernel can write
-/// through without a re-alloc.
+/// Like `get_or_create` but sized for an `mip_levels`-deep mip chain via `mip_buffer_size_bytes`.
 ///
-/// # Safety
-/// See [`get_or_create`].
+/// # Safety: see `get_or_create`.
 pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
 	let mips = mip_levels.max(1);
 	let key = match device {
@@ -133,7 +123,6 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 
 	let mut guard = cache().lock();
 
-	// Try cache hit first - promote to MRU
 	if let Some(existing) = guard.get(&key) {
 		return ImageBuffer {
 			buf: existing,
@@ -145,7 +134,6 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 		};
 	}
 
-	// Cache miss
 	let alloc_len = if mips <= 1 {
 		compute_length_bytes(width, height, bytes_per_pixel)
 	} else {
@@ -175,7 +163,6 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	let obj = BufferObj { raw };
 	let evicted = guard.insert(key, obj);
 
-	// Drop the lock before releasing evicted memory
 	drop(guard);
 
 	if let Some(evicted_buf) = evicted {
@@ -203,20 +190,14 @@ pub unsafe fn cleanup() {
 	}
 }
 
-/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Submits
-/// its own `MTLCommandBuffer` to `command_queue` and waits on the GPU-
-/// side fence before returning, so subsequent dispatches on the same
-/// queue see the copied data.
+/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Submits its
+/// own command buffer to `command_queue` and waits before returning.
 ///
-/// Handles mismatched row pitches (src padded by Premiere vs. tight mip
-/// buffer) via row-by-row blits. When both pitches match, a single flat
-/// blit covers the whole region.
+/// Row-by-row blits when pitches mismatch; one flat blit when they match.
 ///
 /// # Safety
-/// - `command_queue`, `src`, `dst` must be a valid `MTLCommandQueue`,
-///   `MTLBuffer`, `MTLBuffer` respectively (non-null).
-/// - `src` must hold at least `src_pitch_bytes * height` bytes starting
-///   at `src_offset`; same for `dst` with `dst_pitch_bytes`.
+/// - `command_queue`, `src`, `dst` must be valid non-null Metal handles.
+/// - Both must hold at least `pitch_bytes * height` bytes from their offsets.
 /// - No outstanding GPU work may read from `dst` concurrently.
 pub unsafe fn copy_buffer(
 	command_queue: *mut Object,
@@ -244,7 +225,7 @@ pub unsafe fn copy_buffer(
 	}
 
 	if src_pitch_bytes == dst_pitch_bytes && src_pitch_bytes == width_bytes {
-		// Tight on both sides and matching pitch: one flat copy.
+		// Tight on both sides + matching pitch: one flat copy.
 		let total = (width_bytes as u64) * (height as u64);
 		unsafe {
 			let _: () = msg_send![enc,
@@ -253,7 +234,7 @@ pub unsafe fn copy_buffer(
 				size: total as usize];
 		}
 	} else {
-		// Different pitches: row-by-row flat copies.
+		// Mismatched pitches: row-by-row copies.
 		for y in 0..(height as u64) {
 			let src_row_off = src_offset + y * (src_pitch_bytes as u64);
 			let dst_row_off = dst_offset + y * (dst_pitch_bytes as u64);

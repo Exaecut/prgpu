@@ -1,7 +1,6 @@
 use crate::parse::GpuStructConfig;
 use syn::ItemStruct;
 
-/// Validate existing repr attributes on the struct for conflicts with #[gpu_struct].
 pub fn validate_repr(item_struct: &ItemStruct, config: &GpuStructConfig) -> Result<(), syn::Error> {
     for attr in &item_struct.attrs {
         if !attr.path().is_ident("repr") {
@@ -19,7 +18,6 @@ pub fn validate_repr(item_struct: &ItemStruct, config: &GpuStructConfig) -> Resu
             continue;
         };
 
-        // Check for repr(packed)
         for tt in &nested {
             if let proc_macro2::TokenTree::Ident(ident) = tt {
                 if ident == "packed" {
@@ -31,14 +29,11 @@ pub fn validate_repr(item_struct: &ItemStruct, config: &GpuStructConfig) -> Resu
                 }
 
                 if ident == "align" {
-                    // Check if existing align conflicts with config.align
                     if let Some(config_align) = config.align {
-                        // Parse the align value from existing repr
                         let tokens_str = nested
                             .iter()
                             .map(|t| t.to_string())
                             .collect::<String>();
-                        // Format: align(N) or align = N
                         if let Some(paren_start) = tokens_str.find('(') {
                             if let Some(paren_end) = tokens_str.find(')') {
                                 let val_str = &tokens_str[paren_start + 1..paren_end];

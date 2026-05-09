@@ -1,11 +1,9 @@
 //! Per-kernel dispatch timing for CPU and GPU backends.
 //!
-//! Enabled via `features = ["timing"]` in Cargo.toml.
-//! When disabled, all public functions are no-op stubs with zero runtime overhead.
+//! Enable via `features = ["timing"]`; otherwise every public function is a no-op.
 
 pub use crate::types::Backend;
 
-/// Statistics for a single kernel accumulated across dispatches.
 #[derive(Debug, Clone)]
 pub struct KernelTiming {
 	pub name: &'static str,
@@ -18,7 +16,6 @@ pub struct KernelTiming {
 }
 
 impl KernelTiming {
-	/// Average time per dispatch in nanoseconds.
 	pub fn avg_ns(&self) -> u64 {
 		if self.dispatch_count == 0 {
 			0
@@ -27,30 +24,23 @@ impl KernelTiming {
 		}
 	}
 
-	/// Average time per dispatch in milliseconds.
 	pub fn avg_ms(&self) -> f64 {
 		self.avg_ns() as f64 / 1_000_000.0
 	}
 
-	/// Minimum dispatch time in milliseconds.
 	pub fn min_ms(&self) -> f64 {
 		self.min_ns as f64 / 1_000_000.0
 	}
 
-	/// Maximum dispatch time in milliseconds.
 	pub fn max_ms(&self) -> f64 {
 		self.max_ns as f64 / 1_000_000.0
 	}
 
-	/// Last dispatch time in milliseconds.
 	pub fn last_ms(&self) -> f64 {
 		self.last_ns as f64 / 1_000_000.0
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Full implementation when the `timing` feature is active
-// ---------------------------------------------------------------------------
 #[cfg(feature = "timing")]
 mod imp {
 	use super::{Backend, KernelTiming};
@@ -61,23 +51,17 @@ mod imp {
 
 	static ENABLED: AtomicBool = AtomicBool::new(true);
 
-	/// How often `log_snapshot()` actually emits a line. With a value of 60
-	/// we get one line per ~1 second at 60 fps instead of one per frame,
-	/// which drastically cuts `OutputDebugStringW` / `DBWinMutex` contention
-	/// that otherwise dominates wall-clock variance in Premiere.
-	///
-	/// `0` disables throttling (emit every call). Default: 60.
+	/// Throttle for `log_snapshot()`. With `60` we emit ~once per second at 60 fps,
+	/// dropping `OutputDebugStringW` / `DBWinMutex` contention that otherwise dominates
+	/// wall-clock variance in Premiere. `0` disables throttling. Default: 60.
 	static LOG_SNAPSHOT_INTERVAL: AtomicU64 = AtomicU64::new(60);
 	static LOG_SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-	/// Set how many `log_snapshot()` calls must happen between emitted lines.
-	/// `0` disables throttling (emit every call). Default: 60.
 	pub fn set_log_snapshot_interval(interval: u64) {
 		LOG_SNAPSHOT_INTERVAL.store(interval, Ordering::Relaxed);
 	}
 
-	/// Emit an aggregated snapshot immediately, ignoring the throttle counter.
-	/// Useful for a one-shot dump at shutdown.
+	/// Emit an aggregated snapshot now, ignoring the throttle counter.
 	pub fn log_snapshot_now() {
 		emit_snapshot();
 	}
@@ -97,18 +81,13 @@ mod imp {
 		TIMINGS.get_or_init(|| Mutex::new(HashMap::new()))
 	}
 
-	/// Log all accumulated timing data, throttled by
-	/// [`set_log_snapshot_interval`] to avoid `OutputDebugStringW` contention
-	/// when called every frame. Call [`log_snapshot_now`] for an unconditional
-	/// emit.
+	/// Emit accumulated timings, throttled by `set_log_snapshot_interval`. Use `log_snapshot_now` for an unconditional emit.
 	pub fn log_snapshot() {
 		let interval = LOG_SNAPSHOT_INTERVAL.load(Ordering::Relaxed);
 		if interval == 0 {
 			emit_snapshot();
 			return;
 		}
-		// fetch_add returns the previous value; emit only on the 1st call and
-		// then every `interval`-th call thereafter.
 		let prev = LOG_SNAPSHOT_COUNTER.fetch_add(1, Ordering::Relaxed);
 		if prev % interval == 0 {
 			emit_snapshot();
@@ -132,7 +111,6 @@ mod imp {
 		}
 	}
 
-	/// Record a timing measurement for a kernel dispatch.
 	pub fn record(name: &'static str, backend: Backend, elapsed_ns: u64) {
 		if !is_enabled() {
 			return;
@@ -153,7 +131,6 @@ mod imp {
 		stats.last_ns = elapsed_ns;
 	}
 
-	/// Get a snapshot of all accumulated kernel timings.
 	pub fn snapshot() -> Vec<KernelTiming> {
 		let guard = timings().lock();
 		guard
@@ -170,30 +147,24 @@ mod imp {
 			.collect()
 	}
 
-	/// Reset all accumulated timing data.
 	pub fn reset() {
 		timings().lock().clear();
 	}
 
-	/// Enable timing collection at runtime (default: enabled when feature is active).
+	/// Enable timing collection (default: enabled when feature is active).
 	pub fn enable() {
 		ENABLED.store(true, Ordering::Relaxed);
 	}
 
-	/// Disable timing collection at runtime.
 	pub fn disable() {
 		ENABLED.store(false, Ordering::Relaxed);
 	}
 
-	/// Check if timing is currently enabled.
 	pub fn is_enabled() -> bool {
 		ENABLED.load(Ordering::Relaxed)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Zero-overhead stubs when the `timing` feature is not active
-// ---------------------------------------------------------------------------
 #[cfg(not(feature = "timing"))]
 mod imp {
 	use super::{Backend, KernelTiming};

@@ -34,7 +34,6 @@ pub fn compute_layout(
 ) -> StructLayout {
     let mut field_layouts = Vec::with_capacity(fields.len());
 
-    // Determine maximum field alignment
     let max_field_align = fields
         .iter()
         .map(|(_, gpu_type)| {

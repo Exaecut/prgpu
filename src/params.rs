@@ -19,12 +19,11 @@ pub trait FromParam: Sized {
 	fn extract(p: pr::Param) -> Option<Self>;
 }
 
-// Implementations for each variant
 impl FromParam for i32 {
 	fn extract(p: pr::Param) -> Option<Self> {
 		match p {
 			pr::Param::Int32(v) => Some(v),
-			// Premiere GPU returns popups as Float32; fall back gracefully
+			// Premiere GPU returns popups as Float32; coerce instead of failing.
 			pr::Param::Float32(v) => Some(v as i32),
 			_ => None,
 		}
@@ -152,50 +151,26 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 	}
 }
 
-/// Declares a `#[repr(C)]` kernel params struct with auto-generated `from_gpu` and `from_cpu`.
+/// Declare a `#[repr(C)]` kernel params struct with auto-generated `from_gpu` and `from_cpu`.
 ///
-/// # Extractors
+/// Extractors: `float`, `angle`, `color_r/g/b/a`, `point_pct_x/y`, `checkbox`, `popup`.
+/// Append `/ expr` or `* expr` after an extractor for a post-transform.
 ///
-/// | Extractor         | GPU (Premiere)                        | CPU (AE / AE-in-Pr)                            |
-/// |-------------------|---------------------------------------|------------------------------------------------|
-/// | `float(V)`        | `get_param::<f32>`                    | `params.float(V)?`                             |
-/// | `angle(V)`        | `get_param::<f32>`                    | `params.angle(V)?`                             |
-/// | `color_r(V)`      | `get_param::<Pixel>.red as f32`       | `params.color(V)?.red as f32`                  |
-/// | `color_g(V)`      | `.green`                              | `.green`                                       |
-/// | `color_b(V)`      | `.blue`                               | `.blue`                                        |
-/// | `color_a(V)`      | `.alpha`                              | `.alpha`                                       |
-/// | `point_pct_x(V)`  | `point.0` (pre-normalized)            | `point.0 / width`                              |
-/// | `point_pct_y(V)`  | `point.1` (pre-normalized)            | `point.1 / height`                             |
-/// | `checkbox(V)`     | `get_param::<bool> as u32`            | `params.checkbox(V)? as u32`                   |
-/// | `popup(V)`        | `get_param::<i32>.max(0) as u32`      | `params.popup(V)?.saturating_sub(1) as u32`   |
+/// # Popup contract
 ///
-/// ## Popup contract
-///
-/// `popup(V)` always hands the kernel a **0-based selected-index**
-/// (`0 = first option`, `N-1 = last`) regardless of host. Author popup-
-/// driven enums as plain 0-based slang enums and compare the `u32` field
-/// directly:
+/// `popup(V)` always hands the kernel a 0-based selected-index (`0` = first option)
+/// regardless of host. Author popup-driven enums as plain 0-based slang enums:
 ///
 /// ```cpp
 /// enum SampleDistribution : uint { Linear = 0, Exponential = 1, Gaussian = 2 };
-/// SampleDistribution dist = SampleDistribution(params.distribution);
 /// ```
 ///
-/// If you find yourself shifting a popup value after `from_cpu` / `from_gpu`
-/// — stop. The macro already did it: AE PF CPU values are 1-based at the
-/// SDK layer and get a `saturating_sub(1)`; Premiere GPU values are
-/// already 0-based and pass through clamped to `≥ 0`. Both paths arrive at
-/// the same number the kernel sees.
+/// AE PF CPU values (1-based) get a `saturating_sub(1)`; Premiere GPU values
+/// (already 0-based) pass through clamped to ≥ 0. Use `prgpu::ui::add_blend_mode_param`
+/// to ship a popup whose 0-based values match the vekl `BLEND_*` constants.
 ///
-/// Use `prgpu::ui::add_blend_mode_param` to ship a popup whose 0-based
-/// values line up with the vekl `BLEND_*` constants byte-for-byte.
-///
-/// Append `/ expr` or `* expr` after the extractor for a post-transform.
-/// Fields without `= ...` are zero-initialized padding (use sparingly —
-/// frame-level state like animation `time` lives in `FrameParams`, not in
-/// per-pass kernel params).
-///
-/// # Example
+/// Fields without `= ...` are zero-initialized padding; frame-level state belongs
+/// in `FrameParams`, not per-pass kernel params.
 ///
 /// ```ignore
 /// prgpu::kernel_params! {
@@ -247,26 +222,20 @@ macro_rules! kernel_params {
         }
     };
 
-    // GPU: transform wrappers
 
-    // With / transform
     (@gpu $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $ext:ident($v:ident) / $($t:tt)+) => {
         $crate::kernel_params!(@gpu_base $ext, $P, $f, $rp, $w, $h, $v) / $($t)+
     };
-    // With * transform
     (@gpu $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $ext:ident($v:ident) * $($t:tt)+) => {
         $crate::kernel_params!(@gpu_base $ext, $P, $f, $rp, $w, $h, $v) * $($t)+
     };
-    // No transform
     (@gpu $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $ext:ident($v:ident)) => {
         $crate::kernel_params!(@gpu_base $ext, $P, $f, $rp, $w, $h, $v)
     };
-    // Padding (no spec)
     (@gpu $P:path, $f:ident, $rp:ident, $w:ident, $h:ident) => {
         Default::default()
     };
 
-    // GPU: base extractors
 
     (@gpu_base float, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {
         $crate::params::get_param::<f32, _>($f, <$P>::$v, $rp)
@@ -277,10 +246,7 @@ macro_rules! kernel_params {
     (@gpu_base checkbox, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {
         $crate::params::get_param::<bool, _>($f, <$P>::$v, $rp) as u32
     };
-    // Premiere GPU's ParamBuffer already returns popups 0-based
-    // (empirically confirmed: Multiply at popup position 2 arrives as 1).
-    // Pass through, clamping negatives to 0 defensively in case the buffer
-    // returns a sentinel.
+    // Premiere GPU's ParamBuffer returns popups already 0-based (Multiply at popup pos 2 arrives as 1); clamp negatives to 0 defensively.
     (@gpu_base popup, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {
         $crate::params::get_param::<i32, _>($f, <$P>::$v, $rp).max(0) as u32
     };
@@ -309,27 +275,21 @@ macro_rules! kernel_params {
         __p.1
     }};
 
-    // CPU: transform wrappers
 
-    // With / transform
     (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident) / $($t:tt)+) => {
         $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v) / $($t)+
     };
-    // With * transform
     (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident) * $($t:tt)+) => {
         $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v) * $($t)+
     };
-    // No transform
     (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident)) => {
         $crate::kernel_params!(@cpu_base $ext, $P, $p, $w, $h, $is_pr, $v)
     };
-    // Padding (no spec)
     (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident) => {
         Default::default()
     };
 
-    // CPU: base extractors
-    // ($w/$h for point normalisation, $is_pr for Premiere R↔B color swap)
+    // CPU base extractors: $w/$h normalize points, $is_pr drives Premiere R↔B color swap.
 
     (@cpu_base float, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.float(<$P>::$v)?
@@ -340,16 +300,13 @@ macro_rules! kernel_params {
     (@cpu_base checkbox, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         $p.checkbox(<$P>::$v)? as u32
     };
-    // AE's PF CPU API (`PopupDef.value()`) returns 1-based values per the
-    // Adobe AE SDK. Subtract 1 to match the Premiere GPU 0-based convention
-    // so the kernel sees a single canonical "selected index" across hosts.
-    // `saturating_sub` guards against a hypothetical `value() == 0` edge case
-    // (shouldn't happen since AE stores 1..num_choices).
+    // AE PF popups are 1-based at the SDK; subtract 1 so the kernel sees the
+    // same 0-based index as Premiere GPU. `saturating_sub` guards `value() == 0`.
     (@cpu_base popup, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {
         ($p.popup(<$P>::$v)? as u32).saturating_sub(1)
     };
-    // Color params: Premiere fills PF_Pixel with BGRA byte order, so .red
-    // actually contains Blue and .blue contains Red.  AE uses ARGB (correct).
+    // Premiere PF_Pixel is BGRA: `.red` actually holds B and `.blue` holds R.
+    // AE uses ARGB (correct).
     (@cpu_base color_r, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __c = $p.color(<$P>::$v)?;
         __c.red as f32
@@ -366,9 +323,8 @@ macro_rules! kernel_params {
         let __c = $p.color(<$P>::$v)?;
         __c.alpha as f32
     }};
-    // Point params: AE/Premiere return pixel coordinates from as_point().value().
-    // Normalise to [0,1] UV space by dividing by actual layer dimensions.
-    // (GPU path receives pre-normalised values from Premiere's GPU param buffer.)
+    // AE/Premiere `as_point().value()` returns pixel coordinates; normalize to UV
+    // by dividing by layer dims. (GPU path receives pre-normalized values.)
     (@cpu_base point_pct_x, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __pt = $p.point(<$P>::$v)?;
         __pt.0 / $w

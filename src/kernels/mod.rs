@@ -1,17 +1,13 @@
 pub mod helpers;
 pub mod mip;
 
-/// Declares a GPU kernel (CUDA & Metal) + CPU fallback dispatch.
+/// Declare a GPU kernel (CUDA + Metal) and its CPU fallback dispatch.
 ///
-/// Usage: `declare_kernel!(vignette, VignetteParams);`
-///
-/// Generates:
-/// - `const VIGNETTE_SHADER_SRC` — the primary shader artifact for the active backend:
-///   - Metal: embedded `.metallib` bytes (`include_shader!(name, metal)`)
-///   - CUDA: embedded `.ptx` source (`include_shader!(name, cuda)`)
-/// - `const VIGNETTE_KERNEL_ENTRY_POINT`
-/// - `pub unsafe fn vignette(config, user_params)` (GPU dispatch)
-/// - `pub fn vignette_cpu(in_data, in_layer, out_layer, config, user_params)` (CPU dispatch)
+/// `declare_kernel!(vignette, VignetteParams);` generates:
+/// - `VIGNETTE_SHADER_SRC` (`.metallib` bytes on Metal, `.ptx` on CUDA)
+/// - `VIGNETTE_KERNEL_ENTRY_POINT`
+/// - `vignette(config, user_params)` (GPU dispatch)
+/// - `vignette_cpu(in_data, in_layer, out_layer, config, user_params)` (CPU dispatch)
 #[macro_export]
 macro_rules! declare_kernel {
 	($name:ident, $user_params_ty:ty) => {
@@ -59,7 +55,7 @@ macro_rules! declare_kernel {
 					user_params: *const std::ffi::c_void,
 				);
 
-				/// Tile entry — loops `y ∈ [y0, y1) × x ∈ [0, width)` in C.
+				/// Tile entry: loops `y ∈ [y0, y1) × x ∈ [0, width)` in C.
 				pub fn [<$name _cpu_dispatch_tile>](
 					y0: u32,
 					y1: u32,
@@ -70,12 +66,10 @@ macro_rules! declare_kernel {
 				);
 			}
 
-			/// Typed pointer to the per-pixel CPU dispatch function.
 			#[allow(non_upper_case_globals)]
 			pub const [<$name:upper _CPU_DISPATCH>]: $crate::cpu::render::CpuDispatchFn =
 				[<$name _cpu_dispatch>];
 
-			/// Typed pointer to the tile CPU dispatch function.
 			#[allow(non_upper_case_globals)]
 			pub const [<$name:upper _CPU_DISPATCH_TILE>]: $crate::cpu::render::CpuDispatchTileFn =
 				[<$name _cpu_dispatch_tile>];

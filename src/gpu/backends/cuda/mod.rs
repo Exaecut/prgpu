@@ -43,11 +43,11 @@ unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static
 	Ok((major, minor))
 }
 
-/// Launches a CUDA kernel on the given stream. Does NOT synchronize.
+/// Launch a CUDA kernel on `stream`. Does NOT synchronize.
 ///
 /// # Safety
 /// - `ctx`, `stream`, `func` must be valid CUDA handles.
-/// - `params` must point to valid device memory matching the kernel signature.
+/// - `params` must point to device memory matching the kernel signature.
 #[allow(clippy::too_many_arguments)]
 unsafe fn dispatch(
 	ctx: *mut c_void,
@@ -127,9 +127,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 	let mut d_incoming = incoming_data as u64;
 	let mut d_dest = config.dest_data as u64;
 
-	// out_desc / in_desc describe the SOURCE buffers (may be downsampled in multi-pass effects).
-	// dst_desc + width/height describe the DESTINATION (drives dispatch grid).
-	// make_outgoing_desc auto-fills mip metadata when `config.outgoing_mip_levels > 1`.
+	// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the dispatch grid.
 	let mut p = FrameParams {
 		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),

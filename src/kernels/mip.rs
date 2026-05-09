@@ -1,70 +1,33 @@
-//! Built-in mip-chain downsampler shared by any effect that opts into the
-//! pyramid via `Configuration::outgoing_mip_levels`. Host API +
-//! full CPU / GPU walkthrough: [`prgpu/docs/mip_chain.md`](../../../docs/mip_chain.md).
-//! Shader-side reference: [`vekl/docs/reference/texture/view.md`](../../../../vekl/docs/reference/texture/view.md).
+//! Built-in mip-chain downsampler.
 //!
-//! The actual shader (`prgpu/shaders/mip_downsample.slang`) is compiled by
-//! prgpu's own `build.rs` into prgpu's `OUT_DIR`; the `declare_kernel!`
-//! invocation below wires the `include_shader!` + CPU FFI + GPU dispatch.
+//! Effects opt in via `Configuration::outgoing_mip_levels`; full host walkthrough
+//! in [`prgpu/docs/mip_chain.md`](../../../docs/mip_chain.md), shader-side reference
+//! in [`vekl/docs/reference/texture/view.md`](../../../../vekl/docs/reference/texture/view.md).
 //!
-//! # Three-step host recipe
+//! `prgpu/shaders/mip_downsample.slang` is compiled by prgpu's `build.rs`; the
+//! `declare_kernel!` below wires `include_shader!` + CPU FFI + GPU dispatch.
 //!
-//! Every effect that wants a mip-chain source does exactly this, same
-//! shape on CPU and GPU paths (the only backend-specific bit is the
-//! allocator + the level-0 copy in step 2):
+//! Host recipe (identical on CPU/Metal/CUDA aside from the level-0 copy):
 //!
 //! ```ignore
-//! // 1. Request a chain.
 //! config.outgoing_mip_levels = 4;
-//!
-//! // 2. Allocate a mip-capable buffer for the chosen backend, copy
-//! //    Premiere's outgoing into level 0, and redirect config.outgoing_data.
-//! let mip_buf = unsafe {
-//!     prgpu::gpu::backends::metal::buffer::get_or_create_with_mips(
-//!         device, w, h, bpp, config.outgoing_mip_levels, MIP_TAG,
-//!     )
-//! };
-//! // (Metal: MTLBlitCommandEncoder copyFromBuffer:...)
-//! // (CUDA:  cuMemcpyDtoD_v2(...))
-//! // (CPU:   std::ptr::copy_nonoverlapping(...))
-//! config.outgoing_data = Some(mip_buf.buf.raw);
-//!
-//! // 3. Fill levels 1..N-1 and run the effect kernel. prgpu's dispatcher
-//! //    calls make_outgoing_desc(&config), which auto-populates the
-//! //    mip metadata in frame.outDesc — no shader-side setup.
-//! unsafe { prgpu::kernels::mip::generate_mips(&config)?; }
-//! unsafe { effect_kernel(&config, user_params)?; }
+//! let _mip = unsafe { prepare_mip_source(&mut config, MY_TAG)? };
+//! unsafe { generate_mips(&config)?; }
+//! unsafe { effect_kernel(&config, params)?; }
 //! ```
 //!
-//! # CPU vs GPU dispatch routing
-//!
-//! `generate_mips` auto-routes based on `config.device_handle`:
-//!
-//! - `device_handle != null`  → GPU path (`mip_downsample(&pass_cfg, params)`)
-//!   which goes through `backends::dispatch_kernel` (Metal or CUDA).
-//! - `device_handle == null`  → CPU path (`render_cpu_direct`) that reuses
-//!   the bench harness's pure-rayon tile loop. Same code path as
-//!   Premiere's CPU failover.
-//!
-//! Effects don't need to fork on backend — one call site works for bench,
-//! GPU render, and CPU failover alike.
-//!
-//! # Cache / allocator
-//!
-//! Use `{cpu,gpu::backends::metal,gpu::backends::cuda}::buffer::get_or_create_with_mips`;
-//! the legacy 4-arg `get_or_create` still works (it delegates with
-//! `mip_levels = 1`). Every allocator is a 12-slot LRU keyed on
-//! `(device, w, h, bpp, mip_levels, tag)` so mip buffers and plain
-//! buffers at the same dims don't share a slot.
+//! `generate_mips` routes on `config.device_handle` — non-null = GPU dispatch,
+//! null = `render_cpu_direct`. Allocators (`{cpu,metal,cuda}::buffer::get_or_create_with_mips`)
+//! key on `(device, w, h, bpp, mip_levels, tag)` so mip and plain buffers at the
+//! same dims don't share a slot.
 
 use crate::declare_kernel;
 use crate::types::{Configuration, ImageBuffer, MAX_MIP};
 
-/// Uniform parameters for the mip-downsample kernel.
+/// Uniforms for the mip-downsample kernel.
 ///
-/// `_pad*` exists purely so slang aligns the ConstantBuffer layout to a
-/// 16-byte vec4 boundary — matches the `uint _pad0; uint _pad1; uint _pad2;`
-/// fields in `prgpu/shaders/mip_downsample.slang`.
+/// `_pad*` aligns the slang ConstantBuffer to a 16-byte vec4 boundary, matching
+/// the `uint _pad0; uint _pad1; uint _pad2;` fields in `prgpu/shaders/mip_downsample.slang`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MipDownsampleParams {
@@ -76,22 +39,16 @@ pub struct MipDownsampleParams {
 
 declare_kernel!(mip_downsample, MipDownsampleParams);
 
-/// Fill levels `1..N` of a mip chain whose level 0 is already populated in
-/// `config.outgoing_data`. `config.outgoing_mip_levels` drives the level
-/// count; values `<= 1` short-circuit to a no-op.
+/// Fill levels `1..N` from level 0 in `config.outgoing_data`.
 ///
-/// The caller is responsible for allocating a large-enough buffer (via
-/// [`crate::cpu::buffer::get_or_create_with_mips`] or the Metal / CUDA
-/// equivalents) and for writing level 0 into it. Phase 3 will add a
-/// convenience helper that also handles the buffer setup + copy.
-///
-/// Re-entrant and cheap when `outgoing_mip_levels <= 1`, so callers can
-/// unconditionally call this before every user-kernel dispatch.
+/// `outgoing_mip_levels <= 1` short-circuits to a no-op so callers can call this
+/// unconditionally before every kernel dispatch. Caller must allocate via
+/// `cpu::buffer::get_or_create_with_mips` or the Metal/CUDA equivalents and
+/// populate level 0 (see `prepare_mip_source` for the convenience helper).
 ///
 /// # Safety
-/// The buffer pointed to by `config.outgoing_data` must be at least
-/// [`crate::types::mip_buffer_size_bytes`] bytes, laid out tightly per
-/// [`crate::types::fill_mip_desc`].
+/// `config.outgoing_data` must hold at least `mip_buffer_size_bytes` bytes laid
+/// out per `fill_mip_desc`.
 pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> {
 	let levels = config.outgoing_mip_levels.max(1).min(MAX_MIP);
 	if levels <= 1 {
@@ -106,11 +63,9 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 		let dst_w = (config.outgoing_width >> (lod + 1)).max(1);
 		let dst_h = (config.outgoing_height >> (lod + 1)).max(1);
 
-		// The downsample kernel reads from and writes to the same buffer; we
-		// point every slot at the mip buffer so the ABI is satisfied. The
-		// shader only reads from `dst` (slot 2) in practice — `outgoing` and
-		// `incoming` are bound for completeness and to keep the 5-buffer
-		// Metal/CUDA calling convention happy.
+		// Downsample reads from and writes to the same buffer; the shader only reads
+		// `dst` (slot 2), but `outgoing` and `incoming` are bound to satisfy the
+		// 5-buffer Metal/CUDA calling convention.
 		let mut pass_cfg = *config;
 		pass_cfg.width = dst_w;
 		pass_cfg.height = dst_h;
@@ -129,7 +84,7 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 		if !pass_cfg.device_handle.is_null() {
 			unsafe { mip_downsample(&pass_cfg, params)? };
 		} else {
-			// CPU dispatch — no AE plumbing, direct rayon tile loop.
+			// CPU dispatch — direct rayon tile loop, no AE plumbing.
 			unsafe {
 				crate::cpu::render::render_cpu_direct(
 					"mip_downsample",
@@ -144,54 +99,25 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 	Ok(())
 }
 
-/// Allocate a mip-capable buffer, copy `config.outgoing_data` into level
-/// 0, and redirect `config.outgoing_data` to the new buffer. Returns the
-/// allocated `ImageBuffer` so the caller can keep it alive for the
-/// remainder of the frame (dropping it has no GPU effect — the buffer is
-/// owned by the prgpu cache).
+/// Allocate a mip-capable buffer, copy `config.outgoing_data` into level 0, and
+/// redirect `config.outgoing_data` to it. Returns the `ImageBuffer` for the
+/// caller to keep alive across the frame (it's owned by the prgpu cache).
 ///
-/// This is the Phase 3 one-call convenience helper that makes mips
-/// "invisible to kernel authors":
+/// Routes on `config.device_handle`: null → CPU (`cpu::buffer` +
+/// `copy_nonoverlapping`), non-null → Metal blit / CUDA `cuMemcpy*`.
 ///
-/// ```ignore
-/// config.outgoing_mip_levels = 4;
-/// let _mip = unsafe { prepare_mip_source(&mut config, MY_MIP_TAG)? };
-/// unsafe { generate_mips(&config)?; }
-/// unsafe { my_effect_kernel(&config, params)?; }
-/// ```
+/// `tag` participates in the cache key with `(w, h, bpp, mip_levels)` so distinct
+/// effect instances don't stomp on each other's mip buffers (convention: upper
+/// half = effect namespace, lower half = role).
 ///
-/// The host pattern is identical on CPU / Metal / CUDA; this function
-/// routes to the correct backend allocator + buffer-to-buffer copy
-/// based on `config.device_handle`:
-///
-/// - `device_handle == null` → CPU: `cpu::buffer::get_or_create_with_mips`
-///   + `std::ptr::copy_nonoverlapping` (row-by-row when the source has
-///   pitch padding, single flat copy otherwise).
-/// - `device_handle != null` on macOS → Metal:
-///   `gpu::backends::metal::buffer::get_or_create_with_mips` +
-///   `copy_buffer` (MTLBlitCommandEncoder).
-/// - `device_handle != null` on Windows with CUDA → CUDA:
-///   `gpu::backends::cuda::buffer::get_or_create_with_mips` +
-///   `copy_buffer` (`cuMemcpy2D_v2` / `cuMemcpyDtoD_v2`).
-///
-/// `tag` participates in the cache key along with `(w, h, bpp, mip_levels)`
-/// so distinct effect instances don't stomp on each other's mip buffers.
-/// Convention: upper half = effect namespace, lower half = role
-/// (e.g. `0x5242_0001` for "RB" / radialblur's primary mip source).
-///
-/// After `prepare_mip_source` returns, `config.outgoing_data` points at
-/// the mip buffer, `config.outgoing_pitch_px = outgoing_width` (tight),
-/// and the caller's original source pointer is no longer referenced by
-/// the config. Call [`generate_mips`] next to fill levels 1..N-1.
+/// On return, `outgoing_data` points at the mip buffer and `outgoing_pitch_px =
+/// outgoing_width` (tight). Call `generate_mips` next.
 ///
 /// # Safety
-/// - `config.outgoing_data` must point to a readable buffer of at least
-///   `config.outgoing_pitch_px * config.outgoing_height * config.bytes_per_pixel`
-///   bytes (GPU buffer on device paths, host memory on CPU path).
-/// - On Metal, `config.command_queue_handle` must be a valid `MTLCommandQueue`
-///   on the same device as `config.device_handle`.
-/// - No other CPU / GPU work may touch the returned buffer until the
-///   caller's effect kernel dispatch completes.
+/// - `config.outgoing_data` must hold at least
+///   `outgoing_pitch_px * outgoing_height * bytes_per_pixel` bytes (GPU buffer or host memory).
+/// - On Metal, `config.command_queue_handle` must match `config.device_handle`.
+/// - No other CPU/GPU work may touch the returned buffer until the effect kernel completes.
 pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result<ImageBuffer, &'static str> {
 	let levels = config.outgoing_mip_levels.max(1).min(MAX_MIP);
 	if levels <= 1 {
@@ -206,7 +132,6 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 	let dst_pitch_bytes = w.saturating_mul(bpp); // mip buffer level 0 is tight-packed
 
 	if config.device_handle.is_null() {
-		// ---- CPU path -------------------------------------------------------
 		let buf = crate::cpu::buffer::get_or_create_with_mips(w, h, bpp, levels, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_mip_source: CPU allocator returned null");
@@ -233,7 +158,6 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 		return Ok(buf);
 	}
 
-	// ---- GPU path -----------------------------------------------------------
 	#[cfg(gpu_backend = "metal")]
 	unsafe {
 		use crate::DeviceHandleInit;
@@ -300,52 +224,23 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 	}
 }
 
-/// Allocate a tight private GPU/CPU buffer, copy `config.outgoing_data`
-/// into it, and redirect `config.outgoing_data` to the new buffer.
-/// Returns the [`ImageBuffer`] so the caller can keep it alive for the
-/// remainder of the frame.
+/// Allocate a tight private GPU/CPU buffer, copy `config.outgoing_data` into it,
+/// and redirect `config.outgoing_data`. Returns the `ImageBuffer` to keep alive.
 ///
-/// This is the **no-mip** companion to [`prepare_mip_source`]. Use it
-/// when an effect's main pass would otherwise read directly from
-/// Premiere's outgoing PPix while writing to its destination PPix.
-/// Premiere can hand the same `MTLBuffer` (or CUDA device pointer) as
-/// both source and destination in some pipeline configurations — for
-/// instance when `gpu_ppix_data(source)` falls back to `*out_frame` in
-/// `GPURenderProperties::new`. A multi-tap kernel reading and writing
-/// the same memory then races on neighbour pixels and produces visible
-/// flicker / corruption in regions where the read offset diverges from
-/// the write coordinate (e.g. the corners of a CRT-curved distortion).
+/// Use when an effect's main pass would otherwise read from Premiere's outgoing
+/// PPix while writing to its destination PPix — Premiere can hand the same buffer
+/// as both source and destination, and a multi-tap kernel reading and writing the
+/// same memory races on neighbour pixels (visible flicker / corruption at corners
+/// of curved distortions).
 ///
-/// Effects that already chain through prgpu LRU buffers (signal_noise →
-/// compress → main, or any pass that uses [`prepare_mip_source`]) get
-/// this protection for free — the first pass writes to a private buffer
-/// and the main pass reads from there. Only the case where every
-/// optional intermediate pass is disabled needs the explicit copy.
+/// Effects already chaining through prgpu LRU buffers get this protection for
+/// free; only the all-intermediate-passes-disabled case needs the explicit copy.
 ///
-/// ```ignore
-/// // Always copy upfront so the main pass never reads while writing
-/// // through Premiere's aliased input/output PPix:
-/// let _src_copy = unsafe { prepare_source_copy(&mut config, MY_SRC_TAG)? };
-/// // ... optional intermediate passes ...
-/// unsafe { my_main_kernel(&main_cfg, params)? };
-/// ```
-///
-/// `tag` participates in the cache key alongside `(w, h, bpp)` so
-/// distinct effect instances don't stomp on each other's source copies.
-/// Convention: upper half = effect namespace, lower half = role
-/// (e.g. `0x5256_0003` for retrovhs's source copy).
-///
-/// After `prepare_source_copy` returns, `config.outgoing_data` points at
-/// the private buffer with `outgoing_pitch_px = outgoing_width` (tight).
+/// `tag` participates in the cache key with `(w, h, bpp)` (convention as in
+/// `prepare_mip_source`).
 ///
 /// # Safety
-/// - `config.outgoing_data` must point to a readable buffer of at least
-///   `config.outgoing_pitch_px * config.outgoing_height * config.bytes_per_pixel`
-///   bytes (GPU buffer on device paths, host memory on CPU path).
-/// - On Metal, `config.command_queue_handle` must be a valid
-///   `MTLCommandQueue` on the same device as `config.device_handle`.
-/// - No other CPU / GPU work may touch the returned buffer until the
-///   caller's effect kernel dispatch completes.
+/// Same preconditions as `prepare_mip_source`.
 pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Result<ImageBuffer, &'static str> {
 	let w = config.outgoing_width;
 	let h = config.outgoing_height;
@@ -355,7 +250,6 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 	let dst_pitch_bytes = w.saturating_mul(bpp); // private buffer is tight-packed
 
 	if config.device_handle.is_null() {
-		// ---- CPU path -------------------------------------------------------
 		let buf = crate::cpu::buffer::get_or_create(w, h, bpp, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_source_copy: CPU allocator returned null");
@@ -382,7 +276,6 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 		return Ok(buf);
 	}
 
-	// ---- GPU path -----------------------------------------------------------
 	#[cfg(gpu_backend = "metal")]
 	unsafe {
 		use crate::DeviceHandleInit;
@@ -453,12 +346,9 @@ mod tests {
 	use crate::cpu::buffer::get_or_create_with_mips;
 	use crate::types::fill_mip_desc;
 
-	/// Generate a 2-level mip chain from a 32x32 Bgra8 source and verify
-	/// that level 1 is a faithful 2x2 box average of level 0.
-	///
-	/// The pattern is a per-pixel gradient (x,y -> packed BGRA bytes) so
-	/// every 2x2 block has four distinct values; rounding-mode errors
-	/// would show up as off-by-one drift on any channel.
+	/// Generate a 2-level chain from a 32x32 Bgra8 pattern and verify level 1
+	/// matches the expected 2x2 box average. Per-pixel x/y gradient gives every
+	/// 2x2 block four distinct values, so rounding-mode drift would show up.
 	#[test]
 	fn box_downsamples_known_32x32_pattern() {
 		const W: u32 = 32;
@@ -468,19 +358,17 @@ mod tests {
 
 		let buf = get_or_create_with_mips(W, H, BPP, LEVELS, 0xBEEF);
 
-		// Compute the expected mip chain on CPU using the same 2x2 box math.
 		let mut expected_l0 = vec![0u8; (W * H * BPP) as usize];
 		for y in 0..H {
 			for x in 0..W {
 				let off = ((y * W + x) * BPP) as usize;
-				expected_l0[off] = x as u8; // B
-				expected_l0[off + 1] = y as u8; // G
-				expected_l0[off + 2] = (x ^ y) as u8; // R
-				expected_l0[off + 3] = 255; // A
+				expected_l0[off] = x as u8; 
+				expected_l0[off + 1] = y as u8; 
+				expected_l0[off + 2] = (x ^ y) as u8; 
+				expected_l0[off + 3] = 255; 
 			}
 		}
 
-		// Write the gradient into the mip buffer's level 0 region.
 		unsafe {
 			std::ptr::copy_nonoverlapping(
 				expected_l0.as_ptr(),
@@ -489,7 +377,6 @@ mod tests {
 			);
 		}
 
-		// Build an AE-free Configuration and dispatch generate_mips via CPU.
 		let mut config = Configuration::cpu(
 			buf.buf.raw,
 			buf.buf.raw,
@@ -498,7 +385,7 @@ mod tests {
 			W,
 			H,
 			BPP,
-			1, // BGRA
+			1, 
 		);
 		config.outgoing_data = Some(buf.buf.raw);
 		config.outgoing_pitch_px = W as i32;
@@ -508,13 +395,10 @@ mod tests {
 
 		unsafe { generate_mips(&config).expect("generate_mips failed"); }
 
-		// Read back levels 1 + 2.
 		let base = buf.buf.raw as *const u8;
-		// Derive mip offsets the exact same way the shader does.
 		let mut desc = crate::types::make_texture_desc(W, H, W, BPP, 1);
 		fill_mip_desc(&mut desc, W, H, W, BPP, LEVELS);
 
-		// Expected level 1: 16x16 box-averaged from level 0.
 		let l1_off = desc.mip_offset_bytes[1] as usize;
 		let l1_w = desc.mip_width[1];
 		let l1_h = desc.mip_height[1];
@@ -526,8 +410,7 @@ mod tests {
 				let actual_r = unsafe { *base.add(off + 2) };
 				let actual_a = unsafe { *base.add(off + 3) };
 
-				// Expected box average from 4 source pixels (cast to f32 for
-				// division parity with the shader's `* 0.25`).
+				// Box average of 4 source px (f32 for parity with the shader's `* 0.25`).
 				let p = |sx: u32, sy: u32| {
 					let o = ((sy * W + sx) * BPP) as usize;
 					(expected_l0[o] as f32, expected_l0[o + 1] as f32, expected_l0[o + 2] as f32, expected_l0[o + 3] as f32)
@@ -538,8 +421,8 @@ mod tests {
 				let (b1, g1, r1, a1) = p(sx + 1, sy);
 				let (b2, g2, r2, a2) = p(sx, sy + 1);
 				let (b3, g3, r3, a3) = p(sx + 1, sy + 1);
-				// Shader does sRGB byte -> normalized float -> average -> saturate -> byte.
-				// So:  byte_out = round(saturate(avg_float) * 255) where avg_float = (b0+b1+b2+b3)/(4*255).
+				// Shader normalises bytes, averages, saturates, then re-quantises:
+				//   byte_out = round(saturate(avg_float) * 255), avg_float = (b0+b1+b2+b3)/(4*255).
 				let expect = |v0: f32, v1: f32, v2: f32, v3: f32| -> u8 {
 					let avg = (v0 + v1 + v2 + v3) / 4.0 / 255.0;
 					(avg.clamp(0.0, 1.0) * 255.0) as u8
@@ -556,28 +439,22 @@ mod tests {
 			}
 		}
 
-		// Spot-check level 2 (8x8) by its corner pixel only — level-of-level
-		// deltas compound rounding errors, so an epsilon of ~2 is acceptable.
+		// Spot-check L2 corner only: level-of-level deltas compound rounding, ε ≈ 2 is acceptable.
 		let l2_off = desc.mip_offset_bytes[2] as usize;
 		let corner_b = unsafe { *base.add(l2_off) };
-		// 4 source px from L1 (0..2, 0..2) averaged -> expected B ≈ 1.5
-		// (gradient averages). Acceptable range [0, 3].
 		assert!(corner_b <= 3, "L2 corner B drift: {}", corner_b);
 	}
 
-	/// End-to-end coverage of the three-step Phase 3 host recipe on the CPU
-	/// path: `prepare_mip_source` copies a padded source into a tight mip
-	/// buffer, swaps the config, and `generate_mips` fills subsequent lods.
-	/// Validates that the copy handles padded-row sources correctly (source
-	/// pitch > width * bpp is the common Premiere case).
+	/// End-to-end check on the CPU path: padded source → tight mip buffer copy +
+	/// generate_mips. Validates the row-copy when source pitch > width * bpp
+	/// (the common Premiere case).
 	#[test]
 	fn prepare_mip_source_copies_and_swaps_config() {
 		const W: u32 = 16;
 		const H: u32 = 16;
 		const BPP: u32 = 4;
 		const LEVELS: u32 = 3;
-		// Simulate a source with padded rows: pitch_px = 20 (80 bytes) vs
-		// tight = 16 (64 bytes). The helper must row-copy correctly.
+		// Padded source: pitch_px = 20 (80 bytes), tight = 16 (64 bytes); the helper must row-copy correctly.
 		const SRC_PITCH_PX: u32 = 20;
 
 		let mut src = vec![0u8; (SRC_PITCH_PX * H * BPP) as usize];
@@ -609,13 +486,11 @@ mod tests {
 
 		let _mip = unsafe { prepare_mip_source(&mut config, 0xF00D).expect("prepare_mip_source failed") };
 
-		// After the swap the config points at the mip buffer with a tight pitch.
 		assert_eq!(config.outgoing_pitch_px, W as i32);
 		let mip_ptr = config.outgoing_data.expect("outgoing_data lost");
 		assert_ne!(mip_ptr as *const _, src.as_ptr() as *const _);
 
-		// Level 0 inside the mip buffer must match the source, row-stripped
-		// of the trailing pitch pixels.
+		// Mip buffer level 0 must match the source minus the trailing pitch pixels.
 		let mip_base = mip_ptr as *const u8;
 		for y in 0..H {
 			for x in 0..W {
@@ -629,12 +504,10 @@ mod tests {
 			}
 		}
 
-		// generate_mips fills level 1 with a 2x2 box average of level 0.
 		unsafe { generate_mips(&config).expect("generate_mips failed"); }
 		let mut desc = crate::types::make_texture_desc(W, H, W, BPP, 1);
 		crate::types::fill_mip_desc(&mut desc, W, H, W, BPP, LEVELS);
 		let l1_off = desc.mip_offset_bytes[1] as usize;
-		// Spot-check (0, 0) at level 1: average of src[(0..2, 0..2)].
 		let p = |sx: u32, sy: u32| {
 			let o = ((sy * SRC_PITCH_PX + sx) * BPP) as usize;
 			(src[o] as u32, src[o + 1] as u32, src[o + 2] as u32, src[o + 3] as u32)

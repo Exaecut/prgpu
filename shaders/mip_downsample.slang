@@ -1,20 +1,9 @@
 import vekl;
 
-// prgpu built-in: generate mip level `srcLod + 1` from mip level `srcLod`
-// using a 2x2 box average. Source and dest live in the SAME buffer; their
-// regions never overlap because `TextureDesc.mipOffsetBytes[]` keeps them
-// disjoint. The host dispatches this kernel N-1 times to fill lods 1..N.
-//
-// Each thread writes one destination pixel (at `srcLod + 1`). Reading 4
-// source pixels (clamped at the boundary) is cheap enough that a single
-// pass stays memory-bound even on laptop GPUs.
-//
-// Binding convention: this kernel follows the prgpu 5-buffer layout
-// (`outgoing`, `incoming`, `dst`, `frame`, `params`) so it dispatches
-// through the exact same Metal/CUDA `setBuffer` path as every other effect
-// kernel. `outgoing` and `incoming` are unused here — `generate_mips`
-// points all three pointers at the same mip buffer and writes land through
-// `dst` at the level-indexed offset carried by `frame.outDesc`.
+// Generates mip level srcLod+1 from srcLod via a 2x2 box average. Source and
+// dest share the buffer; mipOffsetBytes keeps the regions disjoint. Bound to
+// the prgpu 5-buffer convention (outgoing/incoming/dst/frame/params); only
+// `dst` is used here, but the slot layout matches every other effect kernel.
 
 struct MipDownsampleParams
 {

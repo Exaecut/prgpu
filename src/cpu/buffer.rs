@@ -15,8 +15,7 @@ struct Key {
 	mip_levels: u32,
 }
 
-/// Simple ordered LRU cache: most-recently-used at the back, LRU at the front.
-/// With `MAX_CPU_BUFFER_ENTRIES <= 12`, linear scan is negligible.
+/// Ordered LRU: MRU at the back, LRU at the front. `MAX_CPU_BUFFER_ENTRIES <= 12` keeps the linear scan negligible.
 struct OrderedLru {
 	entries: Vec<(Key, Vec<u8>)>,
 	capacity: usize,
@@ -30,8 +29,7 @@ impl OrderedLru {
 		}
 	}
 
-	/// Promote an existing entry to MRU position (back of the vector).
-	/// Returns `true` if the key was found and promoted.
+	/// Promote `key` to MRU; returns true on hit.
 	fn promote(&mut self, key: &Key) -> bool {
 		if let Some(idx) = self.entries.iter().position(|(k, _)| k == key) {
 			let entry = self.entries.remove(idx);
@@ -42,17 +40,14 @@ impl OrderedLru {
 		}
 	}
 
-	/// Get a mutable pointer to the data of the MRU entry (last in vector).
-	/// Only valid to call after `promote` returned `true` or immediately after `insert`.
+	/// Mutable pointer to the MRU entry. Only valid right after `promote` returned true or after `insert`.
 	fn last_data_ptr(&mut self) -> *mut c_void {
 		self.entries.last_mut().unwrap().1.as_mut_ptr() as *mut c_void
 	}
 
-	/// Insert a new entry, evicting LRU if at capacity.
-	/// Returns evicted entry info if an eviction occurred.
+	/// Insert, evicting LRU when at capacity. Returns the evicted (key, len).
 	fn insert(&mut self, key: Key, value: Vec<u8>) -> Option<(Key, usize)> {
 		let evicted = if self.entries.len() >= self.capacity {
-			// Evict LRU (front)
 			let (k, v) = self.entries.remove(0);
 			Some((k, v.len()))
 		} else {
@@ -75,12 +70,9 @@ pub fn get_or_create(width: u32, height: u32, bytes_per_pixel: u32, tag: u32) ->
 	get_or_create_with_mips(width, height, bytes_per_pixel, 1, tag)
 }
 
-/// Same as [`get_or_create`] but allocates a byte budget that fits a
-/// `mip_levels`-deep mip chain (level 0 pitch-packed at `width * bpp`,
-/// every level below tightly packed). `mip_levels <= 1` behaves exactly
-/// like [`get_or_create`]; the extra byte budget is rounded up to the
-/// `mip_buffer_size_bytes` formula so a prgpu-dispatched downsample pass
-/// can write through without re-allocation.
+/// Like `get_or_create` but sizes the buffer for an `mip_levels`-deep mip chain.
+/// `mip_levels <= 1` behaves identically; otherwise the byte budget follows
+/// `mip_buffer_size_bytes` so the prgpu downsample pass writes through without re-alloc.
 pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
 	let key = Key {
 		width,
@@ -93,7 +85,6 @@ pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mi
 	CPU_CACHE.with(|cache| {
 		let mut guard = cache.borrow_mut();
 
-		// Try cache hit first — promote to MRU
 		if guard.promote(&key) {
 			let raw = guard.last_data_ptr();
 			return ImageBuffer {
@@ -106,7 +97,6 @@ pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mi
 			};
 		}
 
-		// Cache miss — allocate new buffer
 		let len = if mip_levels <= 1 {
 			compute_length_bytes(width, height, bytes_per_pixel) as usize
 		} else {

@@ -9,8 +9,7 @@ use after_effects::log;
 
 const MAX_GPU_BUFFER_ENTRIES: usize = 12;
 
-/// Simple ordered LRU cache: most-recently-used at the back, LRU at the front.
-/// With `MAX_GPU_BUFFER_ENTRIES <= 12`, linear scan is negligible.
+/// Ordered LRU: MRU at the back, LRU at the front. `MAX_GPU_BUFFER_ENTRIES <= 12` keeps the linear scan negligible.
 struct OrderedLru {
 	entries: Vec<(BufferKey, BufferObj)>,
 	capacity: usize,
@@ -24,8 +23,7 @@ impl OrderedLru {
 		}
 	}
 
-	/// Promote an existing entry to MRU position (back of the vector).
-	/// Returns the `BufferObj` copy if found, `None` otherwise.
+	/// Promote `key` to MRU; returns the `BufferObj` on hit, `None` otherwise.
 	fn get(&mut self, key: &BufferKey) -> Option<BufferObj> {
 		if let Some(idx) = self.entries.iter().position(|(k, _)| k == key) {
 			let entry = self.entries.remove(idx);
@@ -36,11 +34,9 @@ impl OrderedLru {
 		}
 	}
 
-	/// Insert a new entry, evicting LRU if at capacity.
-	/// Returns the evicted `BufferObj` if an eviction occurred (caller must free it).
+	/// Insert, evicting LRU when at capacity. Returns the evicted `BufferObj` (caller frees it).
 	fn insert(&mut self, key: BufferKey, value: BufferObj) -> Option<BufferObj> {
 		let evicted = if self.entries.len() >= self.capacity {
-			// Evict LRU (front)
 			let (_, v) = self.entries.remove(0);
 			Some(v)
 		} else {
@@ -58,8 +54,7 @@ fn cache() -> &'static Mutex<OrderedLru> {
 	CACHE.get_or_init(|| Mutex::new(OrderedLru::new(MAX_GPU_BUFFER_ENTRIES)))
 }
 
-/// # Safety
-/// `device` must be a valid CUcontext pointer.
+/// # Safety: `device` must be a valid CUcontext.
 pub(crate) unsafe fn allocate(device: *mut c_void, length_bytes: u64) -> *mut c_void {
 	let ctx = device as CUcontext;
 	unsafe { cuCtxSetCurrent(ctx) };
@@ -76,7 +71,6 @@ pub(crate) unsafe fn allocate(device: *mut c_void, length_bytes: u64) -> *mut c_
 	}
 }
 
-/// Free a GPU buffer and log the result.
 unsafe fn free_buffer(buf: BufferObj) {
 	if !buf.raw.is_null() {
 		let devptr = buf.raw as CUdeviceptr;
@@ -87,17 +81,14 @@ unsafe fn free_buffer(buf: BufferObj) {
 	}
 }
 
-/// # Safety
-/// `device` must be a valid CUcontext pointer (FromPtr) or valid suite handle (FromSuite).
+/// # Safety: `device` must be a valid CUcontext (FromPtr) or suite handle (FromSuite).
 pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> ImageBuffer {
 	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
 }
 
-/// Same as [`get_or_create`] but allocates a byte budget that fits a
-/// `mip_levels`-deep mip chain.
+/// Like `get_or_create` but sized for an `mip_levels`-deep mip chain.
 ///
-/// # Safety
-/// See [`get_or_create`].
+/// # Safety: see `get_or_create`.
 pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
 	let mips = mip_levels.max(1);
 	let key = match device {
@@ -124,7 +115,6 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 
 	let mut guard = cache().lock();
 
-	// Try cache hit first - promote to MRU
 	if let Some(existing) = guard.get(&key) {
 		return ImageBuffer {
 			buf: existing,
@@ -136,7 +126,6 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 		};
 	}
 
-	// Cache miss - allocate new buffer
 	let length = if mips <= 1 {
 		compute_length_bytes(width, height, bytes_per_pixel)
 	} else {
@@ -159,7 +148,7 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	let obj = BufferObj { raw };
 	let evicted = guard.insert(key, obj);
 
-	// Drop the lock before freeing evicted memory (no need to hold it during GPU free)
+	// Drop the lock before freeing evicted memory; no need to hold it across the GPU free.
 	drop(guard);
 
 	if let Some(evicted_buf) = evicted {
@@ -176,20 +165,16 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	}
 }
 
-/// Buffer-to-buffer device-side copy. Handles mismatched row pitches
-/// (Premiere's padded source vs. tight mip buffer) via `cuMemcpy2D_v2`;
-/// when pitches match exactly, falls back to the flat `cuMemcpyDtoD_v2`
-/// which is marginally faster on older drivers.
+/// Buffer-to-buffer device copy. `cuMemcpy2D_v2` for mismatched pitches
+/// (Premiere's padded source vs. tight mip buffer); falls back to flat
+/// `cuMemcpyDtoD_v2` when pitches match.
 ///
-/// Synchronous — uses the default stream and returns after the copy
-/// completes, so subsequent kernel dispatches see the copied data.
+/// Synchronous on the default stream so subsequent dispatches see the copied data.
 ///
 /// # Safety
-/// - `device` must be a valid `CUcontext` that currently owns both `src`
-///   and `dst` allocations.
-/// - Both `src` and `dst` must hold at least `pitch_bytes * height`
-///   bytes starting at their respective offsets.
-/// - No other GPU work may read/write `dst` concurrently.
+/// - `device` must currently own both `src` and `dst`.
+/// - Both must hold at least `pitch_bytes * height` bytes from their offsets.
+/// - No other GPU work may touch `dst` concurrently.
 pub unsafe fn copy_buffer(
 	device: *mut c_void,
 	src: *mut c_void,
@@ -245,8 +230,7 @@ pub unsafe fn copy_buffer(
 	Ok(())
 }
 
-/// # Safety
-/// No GPU work may reference these buffers.
+/// # Safety: no GPU work may reference these buffers.
 pub unsafe fn cleanup() {
 	if let Some(cache) = CACHE.get() {
 		let mut guard = cache.lock();

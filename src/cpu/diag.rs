@@ -1,32 +1,23 @@
 //! Per-dispatch diagnostics for the CPU render path.
 //!
-//! Emits a single structured log line at the end of each `render_cpu` /
-//! `render_cpu_direct` call so we can attribute latency to setup, rayon body,
-//! and concurrency — independently from the `timing` aggregate.
-//!
-//! The log line is **throttled** (default: every 60th dispatch) so emitting
-//! the diagnostic does not itself become a source of `OutputDebugStringW`
-//! contention. Peak-case numbers (`max`, `min`) continue to be captured by
-//! the `timing` aggregate regardless of the throttle.
+//! Emits one structured `[dispatch]` line per `render_cpu` / `render_cpu_direct`
+//! call, attributing latency to setup, rayon body, and host concurrency. Throttled
+//! (default: every 60th dispatch) so the diagnostic itself doesn't become a
+//! source of `OutputDebugStringW` contention.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 static CONCURRENT_RENDERS: AtomicUsize = AtomicUsize::new(0);
 
-/// How many dispatches occur between emitted `[dispatch]` log lines.
-/// `0` disables throttling. Default: 60.
+/// Emit one line every Nth dispatch. `0` disables throttling. Default: 60.
 static LOG_INTERVAL: AtomicU64 = AtomicU64::new(60);
 static LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Configure how often dispatch lines are emitted. `0` = every call,
-/// `N` = roughly 1 line every N calls. Default: 60.
 pub fn set_log_interval(interval: u64) {
 	LOG_INTERVAL.store(interval, Ordering::Relaxed);
 }
 
-/// RAII guard tracking in-flight CPU render dispatches. Increments a global
-/// atomic on construction and decrements on drop so we can observe how many
-/// frames Premiere is rendering in parallel at the moment our dispatch runs.
+/// RAII guard tracking in-flight CPU dispatches; bumps a global atomic so we can observe how many frames Premiere renders concurrently.
 pub struct DispatchGuard {
 	snapshot_at_entry: usize,
 }
@@ -34,7 +25,7 @@ pub struct DispatchGuard {
 impl DispatchGuard {
 	#[inline]
 	pub fn enter() -> Self {
-		// fetch_add returns the *previous* value; +1 is our own entry.
+		// fetch_add returns the previous value; +1 is our own entry.
 		let previous = CONCURRENT_RENDERS.fetch_add(1, Ordering::Relaxed);
 		Self {
 			snapshot_at_entry: previous + 1,
@@ -54,15 +45,12 @@ impl Drop for DispatchGuard {
 	}
 }
 
-/// Peek the current number of in-flight CPU dispatches without entering one.
 #[inline]
 pub fn concurrent_renders() -> usize {
 	CONCURRENT_RENDERS.load(Ordering::Relaxed)
 }
 
-/// Emit one diagnostic line summarizing a single CPU dispatch, throttled by
-/// [`set_log_interval`]. The atomic counter increments unconditionally so
-/// even silent dispatches contribute to the rotation.
+/// Emit one diagnostic line, throttled by `set_log_interval`. The counter increments on every call so silent dispatches still rotate.
 #[inline]
 pub fn log_dispatch(
 	kernel: &str,
@@ -94,15 +82,13 @@ pub fn log_dispatch(
 	);
 }
 
-/// Which dispatcher variant produced this line.
 #[derive(Debug, Clone, Copy)]
 pub enum DispatchPath {
-	/// Pure rayon (`render_cpu_direct`) — used by Premiere render and benches.
+	/// Pure rayon path (`render_cpu_direct`). Premiere render and benches.
 	Direct,
-	/// AE `iterate_with` fallback path (After Effects only).
+	/// AE `iterate_with` fallback path.
 	AeIterate,
-	/// Rayon path under `render_cpu` (host has AE shape but falls through
-	/// to rayon because sizes mismatch or host is Premiere).
+	/// Rayon under `render_cpu` (host has AE shape but sizes mismatch, or host is Premiere).
 	Rayon,
 }
 

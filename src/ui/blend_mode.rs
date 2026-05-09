@@ -1,14 +1,16 @@
 //! Reusable blend-mode popup parameter.
 //!
-//! Matches the discriminants in `vekl/color/blend/dispatch.slang`. To use:
+//! Matches the `BLEND_*` constants in `vekl/color/blend/dispatch.slang`.
+//!
+//! # Usage
 //!
 //! ```ignore
 //! use prgpu::ui::{add_blend_mode_param, BlendMode};
 //!
-//! // In your `SetupParams::setup`:
+//! // In `SetupParams::setup`:
 //! add_blend_mode_param(params, Params::TintBlendMode, "Tint Blend Mode", BlendMode::Multiply)?;
 //!
-//! // In your kernel_params! struct:
+//! // In your `kernel_params!` struct:
 //! kernel_params! {
 //!     MyParams for crate::params::Params {
 //!         ...
@@ -16,51 +18,81 @@
 //!     }
 //! }
 //!
-//! // In your shader:
+//! // In your shader (`mode` arrives 0-based, matching BLEND_* constants):
 //! float3 tinted = BlendApply(params.tintBlendMode, base.rgb, tint.rgb);
 //! ```
 //!
-//! The popup is 1-indexed (Premiere/AE convention) so the discriminant of each
-//! blend mode is its popup option index. `BlendMode::Normal = 0` is reserved
-//! for "no blend / pass-through" and is **not** exposed in the popup list — use
-//! a separate strength slider if you want to fade between source and blended.
+//! # Popup-indexing contract
+//!
+//! The `popup(V)` extractor in `prgpu::kernel_params!` normalizes AE CPU
+//! (documented 1-based per Adobe PF SDK) and Premiere GPU (empirically
+//! 0-based) so the kernel **always** receives a 0-based selected-index
+//! (`0 = first option`, `N-1 = last`). This means:
+//!
+//! - `BlendMode` variant values are the same number the kernel sees.
+//! - Popup option index `BLEND_MODE_OPTIONS[k]` corresponds to `BlendMode` =
+//!   `k` and kernel value `k`.
+//! - The vekl `BLEND_*` constants are 0-based and match exactly.
+//!
+//! | Popup option (`BLEND_MODE_OPTIONS[k]`) | `BlendMode` variant | `u32` kernel value |
+//! |----------------------------------------|---------------------|--------------------|
+//! | `"Add"` (k = 0)                        | `Add`               | 0                  |
+//! | `"Multiply"` (k = 1)                   | `Multiply`          | 1                  |
+//! | `"Screen"` (k = 2)                     | `Screen`            | 2                  |
+//! | …                                      | …                   | …                  |
+//! | `"Luminosity"` (k = 13)                | `Luminosity`        | 13                 |
+//!
+//! There is **no `Normal` sentinel**. To implement "no blend / pass-through",
+//! pair the popup with a strength slider and skip `BlendApply` when the
+//! strength is zero (see `TintStrength` in vignette / retrovhs).
+//!
+//! **Never apply `saturating_sub(1)` or `+ 1` to the value returned by
+//! `VignetteParams::from_cpu / from_gpu` / etc. — the macro already produces
+//! a host-agnostic 0-based value.**
 
 use after_effects::{self as ae, ParamFlag, Parameters};
 
 use crate::params::SetupParams;
 
-/// Blend-mode discriminant. Matches `BLEND_*` constants in
-/// `vekl/color/blend/dispatch.slang`.
+/// Blend-mode discriminant. The integer value equals the 0-based popup
+/// selected-index delivered to the kernel, and mirrors the `BLEND_*`
+/// constants in `vekl/color/blend/dispatch.slang` byte-for-byte.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlendMode {
-	Normal = 0,
-	Add = 1,
-	Multiply = 2,
-	Screen = 3,
-	ColorBurn = 4,
-	ColorDodge = 5,
-	DarkerColor = 6,
-	Overlay = 7,
-	Difference = 8,
-	Subtract = 9,
-	Divide = 10,
-	Hue = 11,
-	Saturation = 12,
-	Color = 13,
-	Luminosity = 14,
+	Add = 0,
+	Multiply = 1,
+	Screen = 2,
+	ColorBurn = 3,
+	ColorDodge = 4,
+	DarkerColor = 5,
+	Overlay = 6,
+	Difference = 7,
+	Subtract = 8,
+	Divide = 9,
+	Hue = 10,
+	Saturation = 11,
+	Color = 12,
+	Luminosity = 13,
 }
 
 impl BlendMode {
-	/// Number of modes exposed in the popup (excluding `Normal`).
+	/// Number of modes exposed in the popup.
 	pub const COUNT: usize = 14;
 
+	/// Kernel-side value (0-based selected-index).
 	pub fn as_u32(self) -> u32 {
 		self as u32
 	}
 
-	/// Decode an AE/Premiere popup `value()` (1-indexed) into a `BlendMode`.
-	/// Out-of-range values clamp to `Normal`.
+	/// Popup value to pass to `PopupDef::set_default` / `set_value`. AE's
+	/// PF popup API is 1-based at storage time, so we add 1.
+	pub fn to_popup_value(self) -> i32 {
+		(self as i32) + 1
+	}
+
+	/// Decode an AE 1-based `PopupDef.value()` into a `BlendMode`.
+	/// Out-of-range values clamp to `Add` (first option).
 	pub fn from_popup_value(v: i32) -> Self {
 		match v {
 			1 => Self::Add,
@@ -77,23 +109,13 @@ impl BlendMode {
 			12 => Self::Saturation,
 			13 => Self::Color,
 			14 => Self::Luminosity,
-			_ => Self::Normal,
-		}
-	}
-
-	/// Inverse of `from_popup_value`. `Normal` maps to `1` (Add) since the popup
-	/// has no Normal entry — callers should pick a meaningful default explicitly.
-	pub fn to_popup_value(self) -> i32 {
-		match self {
-			Self::Normal => 1,
-			other => other as i32,
+			_ => Self::Add,
 		}
 	}
 }
 
-/// Canonical popup option list. The order **must** match `BlendMode`
-/// discriminants 1..=14 because Premiere/AE return the 1-indexed popup
-/// position as the parameter value, and slang reads it as the mode discriminant.
+/// Canonical popup option list. Order matches `BlendMode` discriminants
+/// (0-based); `BLEND_MODE_OPTIONS[BlendMode::Multiply as usize] == "Multiply"`.
 pub const BLEND_MODE_OPTIONS: &[&str] = &[
 	"Add",
 	"Multiply",
@@ -112,24 +134,21 @@ pub const BLEND_MODE_OPTIONS: &[&str] = &[
 ];
 
 /// Add a blend-mode popup to a `Parameters<P>`. `default` controls the initial
-/// selection; `Normal` is treated as `Multiply` since the popup has no Normal.
+/// selection.
 pub fn add_blend_mode_param<P: SetupParams>(
 	params: &mut Parameters<'_, P>,
 	id: P,
 	label: &str,
 	default: BlendMode,
 ) -> Result<(), ae::Error> {
-	let default_idx = match default {
-		BlendMode::Normal => BlendMode::Multiply.to_popup_value(),
-		other => other.to_popup_value(),
-	};
+	let default_popup = default.to_popup_value();
 
 	params.add_customized(
 		id,
 		label,
 		ae::PopupDef::setup(|f| {
-			f.set_default(default_idx);
-			f.set_value(default_idx);
+			f.set_default(default_popup);
+			f.set_value(default_popup);
 			f.set_options(BLEND_MODE_OPTIONS);
 		}),
 		|p| {

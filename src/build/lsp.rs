@@ -29,19 +29,39 @@ use super::DynError;
 
 /// Return the absolute path to the vekl shader module, if it can be found.
 ///
-/// Checks `CARGO_MANIFEST_DIR/vekl` (vendored copy inside prgpu's published
-/// tarball) first, then `CARGO_MANIFEST_DIR/../vekl` (workspace sibling used
-/// during Exaecut development). Returns `None` if neither is present.
+/// Probed in the same order as [`super::compile_shaders`]: consumer workspace
+/// sibling (via `std::env::var("CARGO_MANIFEST_DIR")` at runtime), then
+/// prgpu's own workspace sibling (via `env!` at compile time), then the
+/// vendored copy inside prgpu's directory. Returns `None` if nothing matches.
 pub fn vekl_include_path() -> Option<PathBuf> {
-	let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-	let vendored = manifest_dir.join("vekl");
+	// Consumer workspace sibling (runtime) — highest priority so hot-fixes
+	// to a locally-checked-out vekl propagate even when prgpu is pulled from
+	// crates.io.
+	if let Ok(consumer_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+		if let Some(parent) = PathBuf::from(&consumer_dir).parent() {
+			let candidate = parent.join("vekl");
+			if candidate.is_dir() {
+				return Some(candidate);
+			}
+		}
+	}
+
+	// prgpu workspace sibling (compile time).
+	let prgpu_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	if let Some(parent) = prgpu_dir.parent() {
+		let candidate = parent.join("vekl");
+		if candidate.is_dir() {
+			return Some(candidate);
+		}
+	}
+
+	// Vendored copy inside prgpu's directory.
+	let vendored = prgpu_dir.join("vekl");
 	if vendored.is_dir() {
 		return Some(vendored);
 	}
-	manifest_dir
-		.parent()
-		.map(|p| p.join("vekl"))
-		.filter(|p| p.is_dir())
+
+	None
 }
 
 /// Wire slang-lsp (the Slang VSCode extension) so editing `.slang` files in

@@ -12,31 +12,64 @@ pub type DynError = Box<dyn Error + Send + Sync>;
 pub use lsp::{vekl_include_path, write_slang_lsp_config};
 
 /// Compile all `.slang` shaders in `shader_dir` with vekl auto-discovered as
-/// an include path. Two locations are checked, in order:
+/// an include path. Lookups are probed in this order — first hit wins:
 ///
-/// 1. `CARGO_MANIFEST_DIR/vekl` — the **vendored** copy that ships inside the
-///    published `prgpu` crate tarball. This is how crates.io users get vekl
-///    for free when they consume `prgpu = "0.1"`.
-/// 2. `CARGO_MANIFEST_DIR/../vekl` — the **workspace sibling**. This is what
-///    the Exaecut internal workspace uses so vekl development stays hot-linked
-///    (no copy step during dev).
+/// 1. **Consumer workspace sibling** — `../vekl` relative to the crate that
+///    called `compile_shaders` (resolved at runtime from the build script's
+///    `CARGO_MANIFEST_DIR`). This is the path that lets a crate consuming
+///    `prgpu` from crates.io still pick up a locally-checked-out vekl sitting
+///    next to it in the user's workspace, so hot-fixes to vekl don't require
+///    a republish of prgpu.
+/// 2. **prgpu workspace sibling** — `../vekl` relative to prgpu's own manifest
+///    (resolved at compile time via `env!`). Matches the in-tree dev layout
+///    where `/prgpu/` and `/vekl/` live side-by-side.
+/// 3. **Vendored copy** — `CARGO_MANIFEST_DIR/vekl` baked into prgpu's
+///    published tarball. Used when prgpu is consumed from crates.io without
+///    a local vekl checkout anywhere in sight.
 ///
-/// If neither exists, the shader directory is the only include path — no
-/// error is raised. That lets users who ship their own shader library skip
-/// vekl entirely via [`compile_shaders_with`].
+/// If none of the above resolve, the shader directory is the only include
+/// path — no error is raised. That lets users who ship their own shader
+/// library skip vekl entirely via [`compile_shaders_with`].
 ///
 /// Slang is always required. vekl is optional.
 pub fn compile_shaders(shader_dir: &str) -> Result<(), DynError> {
 	let mut include_dirs = Vec::new();
 
-	let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-	let vendored = manifest_dir.join("vekl");
-	let sibling = manifest_dir.parent().map(|p| p.join("vekl"));
+	// 1. Consumer workspace sibling: `CARGO_MANIFEST_DIR` at build-script
+	//    runtime is the *consuming* crate's manifest dir (e.g. `effects/vignette/`),
+	//    so its parent is the workspace root. This is the lookup that matters
+	//    for local vekl dev while prgpu itself is still pinned to a release.
+	if let Ok(consumer_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+		if let Some(parent) = PathBuf::from(&consumer_dir).parent() {
+			let candidate = parent.join("vekl");
+			if candidate.is_dir() {
+				include_dirs.push(candidate);
+			}
+		}
+	}
 
-	if vendored.is_dir() {
-		include_dirs.push(vendored);
-	} else if let Some(sibling) = sibling.filter(|p| p.is_dir()) {
-		include_dirs.push(sibling);
+	// 2. prgpu workspace sibling: `env!` captures prgpu's own manifest dir at
+	//    the time prgpu was compiled. Useful when prgpu itself builds inside
+	//    the dev workspace (e.g. `cargo build -p prgpu` for its own shaders).
+	if include_dirs.is_empty() {
+		let prgpu_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+		if let Some(parent) = prgpu_dir.parent() {
+			let candidate = parent.join("vekl");
+			if candidate.is_dir() {
+				include_dirs.push(candidate);
+			}
+		}
+	}
+
+	// 3. Vendored copy inside prgpu's own directory (always present in the
+	//    published tarball, see `include = ["vekl/**/*.slang", ...]` in
+	//    prgpu/Cargo.toml).
+	if include_dirs.is_empty() {
+		let prgpu_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+		let vendored = prgpu_dir.join("vekl");
+		if vendored.is_dir() {
+			include_dirs.push(vendored);
+		}
 	}
 
 	compile_shaders_with(shader_dir, &include_dirs)

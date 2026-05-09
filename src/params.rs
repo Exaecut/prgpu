@@ -169,27 +169,31 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 /// | `checkbox(V)`     | `get_param::<bool> as u32`            | `params.checkbox(V)? as u32`                   |
 /// | `popup(V)`        | `get_param::<i32>.max(0) as u32`      | `params.popup(V)?.saturating_sub(1) as u32`   |
 ///
-/// ## Popup-indexing contract
+/// ## Popup contract
 ///
-/// Adobe's two hosts disagree on what integer a popup parameter returns at
-/// render time: **AE's PF CPU API returns `PopupDef.value()` 1-based** (first
-/// option = 1), while **Premiere's GPU `ParamBuffer` returns the same popup
-/// 0-based** (first option = 0). This inconsistency is an Adobe SDK quirk,
-/// not a choice we control.
+/// `popup(V)` always hands the kernel a **0-based selected-index**
+/// (`0 = first option`, `N-1 = last`) regardless of host. Author popup-
+/// driven enums as plain 0-based slang enums and compare the `u32` field
+/// directly:
 ///
-/// The `popup(V)` extractor hides it. The macro applies the correct shift
-/// per path so **the kernel always receives a 0-based selected-index**
-/// (`0 = first option`, `N-1 = last option`). Kernel authors never need to
-/// think about the host convention — author popup-driven enums as plain
-/// 0-based slang enums (`Linear = 0, Exponential = 1, …`) and compare the
-/// `u32` field directly.
+/// ```cpp
+/// enum SampleDistribution : uint { Linear = 0, Exponential = 1, Gaussian = 2 };
+/// SampleDistribution dist = SampleDistribution(params.distribution);
+/// ```
 ///
-/// **Never apply `saturating_sub(1)` / `+ 1` in the host `lib.rs` after
-/// calling `from_cpu` / `from_gpu` — the macro already normalizes both paths
-/// symmetrically.**
+/// If you find yourself shifting a popup value after `from_cpu` / `from_gpu`
+/// — stop. The macro already did it: AE PF CPU values are 1-based at the
+/// SDK layer and get a `saturating_sub(1)`; Premiere GPU values are
+/// already 0-based and pass through clamped to `≥ 0`. Both paths arrive at
+/// the same number the kernel sees.
+///
+/// Use `prgpu::ui::add_blend_mode_param` to ship a popup whose 0-based
+/// values line up with the vekl `BLEND_*` constants byte-for-byte.
 ///
 /// Append `/ expr` or `* expr` after the extractor for a post-transform.
-/// Fields without `= ...` are zero-initialized padding.
+/// Fields without `= ...` are zero-initialized padding (use sparingly —
+/// frame-level state like animation `time` lives in `FrameParams`, not in
+/// per-pass kernel params).
 ///
 /// # Example
 ///

@@ -22,33 +22,31 @@
 //! float3 tinted = BlendApply(params.tintBlendMode, base.rgb, tint.rgb);
 //! ```
 //!
-//! # Popup-indexing contract
+//! # The four numbers that line up
 //!
-//! The `popup(V)` extractor in `prgpu::kernel_params!` normalizes AE CPU
-//! (documented 1-based per Adobe PF SDK) and Premiere GPU (empirically
-//! 0-based) so the kernel **always** receives a 0-based selected-index
-//! (`0 = first option`, `N-1 = last`). This means:
+//! For any `BlendMode` variant, four representations are byte-for-byte
+//! equal — pick whichever reads best at the call site:
 //!
-//! - `BlendMode` variant values are the same number the kernel sees.
-//! - Popup option index `BLEND_MODE_OPTIONS[k]` corresponds to `BlendMode` =
-//!   `k` and kernel value `k`.
-//! - The vekl `BLEND_*` constants are 0-based and match exactly.
+//! | Where it lives                             | Example for Multiply       |
+//! |--------------------------------------------|----------------------------|
+//! | Rust enum value (`BlendMode as u32`)       | `1`                        |
+//! | Popup option index (`BLEND_MODE_OPTIONS[k]`) | `BLEND_MODE_OPTIONS[1]` = `"Multiply"` |
+//! | vekl shader constant                       | `BLEND_MULTIPLY` = `1`     |
+//! | `u32` your kernel reads via `popup(V)`     | `1`                        |
 //!
-//! | Popup option (`BLEND_MODE_OPTIONS[k]`) | `BlendMode` variant | `u32` kernel value |
-//! |----------------------------------------|---------------------|--------------------|
-//! | `"Add"` (k = 0)                        | `Add`               | 0                  |
-//! | `"Multiply"` (k = 1)                   | `Multiply`          | 1                  |
-//! | `"Screen"` (k = 2)                     | `Screen`            | 2                  |
-//! | …                                      | …                   | …                  |
-//! | `"Luminosity"` (k = 13)                | `Luminosity`        | 13                 |
+//! The `popup(V)` extractor in [`prgpu::kernel_params!`] handles the
+//! AE-vs-Premiere host conversion internally so you never call
+//! [`BlendMode::to_popup_value`] / [`BlendMode::from_popup_value`] outside
+//! of [`add_blend_mode_param`]. See the macro's "Popup contract" section
+//! for the full rule.
 //!
-//! There is **no `Normal` sentinel**. To implement "no blend / pass-through",
-//! pair the popup with a strength slider and skip `BlendApply` when the
-//! strength is zero (see `TintStrength` in vignette / retrovhs).
+//! # No `Normal` sentinel
 //!
-//! **Never apply `saturating_sub(1)` or `+ 1` to the value returned by
-//! `VignetteParams::from_cpu / from_gpu` / etc. — the macro already produces
-//! a host-agnostic 0-based value.**
+//! "No blend / pass-through" is expressed by a separate strength slider,
+//! not a dedicated mode. Skip `BlendApply` when the strength is zero, or
+//! `lerp(base, BlendApply(...), strength)` to fade between source and
+//! blended. See `TintStrength` in vignette / retrovhs for the canonical
+//! shape.
 
 use after_effects::{self as ae, ParamFlag, Parameters};
 

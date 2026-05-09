@@ -8,6 +8,13 @@ import vekl;
 // Each thread writes one destination pixel (at `srcLod + 1`). Reading 4
 // source pixels (clamped at the boundary) is cheap enough that a single
 // pass stays memory-bound even on laptop GPUs.
+//
+// Binding convention: this kernel follows the prgpu 5-buffer layout
+// (`outgoing`, `incoming`, `dst`, `frame`, `params`) so it dispatches
+// through the exact same Metal/CUDA `setBuffer` path as every other effect
+// kernel. `outgoing` and `incoming` are unused here — `generate_mips`
+// points all three pointers at the same mip buffer and writes land through
+// `dst` at the level-indexed offset carried by `frame.outDesc`.
 
 struct MipDownsampleParams
 {
@@ -21,11 +28,13 @@ struct MipDownsampleParams
 [numthreads(16, 16, 1)]
 void mip_downsample(
     uint3 threadId : SV_DispatchThreadID,
-    RWStructuredBuffer<uint> buffer,
+    StructuredBuffer<uint> outgoing,
+    StructuredBuffer<uint> incoming,
+    RWStructuredBuffer<uint> dst,
     ConstantBuffer<FrameParams> frame,
     ConstantBuffer<MipDownsampleParams> params)
 {
-    RWTextureView mip = RWTextureView(buffer, frame.outDesc);
+    RWTextureView mip = RWTextureView(dst, frame.outDesc);
 
     uint2 dstSize = mip.Size(params.srcLod + 1u);
     if (threadId.x >= dstSize.x || threadId.y >= dstSize.y)

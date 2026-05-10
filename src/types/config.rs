@@ -189,8 +189,8 @@ impl Configuration {
 }
 
 /// Cap on mip levels in `TextureDesc`. Must equal `vekl::MAX_MIP` or the
-/// ConstantBuffer layout breaks. Five levels covers down to 1/16 per axis.
-pub const MAX_MIP: u32 = 5;
+/// ConstantBuffer layout breaks. Seven levels covers down to 1/64 per axis.
+pub const MAX_MIP: u32 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -370,7 +370,7 @@ mod tests {
 
 	#[test]
 	fn rust_texture_desc_size_matches_slang_layout() {
-		// 7 scalar u32 + 1 level count + 4 * [u32; 5] = (7 + 1 + 20) * 4 = 112 bytes.
-		assert_eq!(std::mem::size_of::<TextureDesc>(), (7 + 1 + 20) * 4);
+		// 7 scalar u32 + 1 level count + 4 * [u32; MAX_MIP] = (7 + 1 + 4 * MAX_MIP) * 4.
+		assert_eq!(std::mem::size_of::<TextureDesc>(), (7 + 1 + 4 * MAX_MIP as usize) * 4);
 	}
 }

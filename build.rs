@@ -59,16 +59,17 @@ fn main() {
 fn compile_builtin_shaders(shader_dir: &Path) {
 	let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
 
-	// Vendored vekl ships in the prgpu crate tarball for crates.io consumers; fall back to the workspace sibling during local dev.
+	// Prefer the workspace sibling vekl during local dev (mirrors `compile_shaders`'s
+	// priority order); fall back to the vendored copy that ships in the crates.io tarball.
 	let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 	let vendored = manifest_dir.join("vekl");
 	let sibling = manifest_dir.parent().map(|p| p.join("vekl"));
 
 	let mut include_dirs: Vec<PathBuf> = vec![shader_dir.to_path_buf()];
-	if vendored.is_dir() {
-		include_dirs.push(vendored);
-	} else if let Some(sibling) = sibling.filter(|p| p.is_dir()) {
+	if let Some(sibling) = sibling.filter(|p| p.is_dir()) {
 		include_dirs.push(sibling);
+	} else if vendored.is_dir() {
+		include_dirs.push(vendored);
 	}
 
 	let slang_files: Vec<PathBuf> = std::fs::read_dir(shader_dir)

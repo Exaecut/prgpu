@@ -191,8 +191,8 @@ pub unsafe fn copy_buffer(
 	let ctx = device as cudarc::driver::sys::CUcontext;
 	unsafe { cuCtxSetCurrent(ctx) };
 
-	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset as usize);
-	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset as usize);
+	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);
+	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset);
 
 	if src_pitch_bytes == dst_pitch_bytes && src_pitch_bytes == width_bytes {
 		let total = (width_bytes as usize).saturating_mul(height as usize);

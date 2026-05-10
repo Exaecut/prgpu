@@ -4,8 +4,9 @@ pub mod mip;
 /// Declare a GPU kernel (CUDA + Metal) and its CPU fallback dispatch.
 ///
 /// `declare_kernel!(vignette, VignetteParams);` generates:
-/// - `VIGNETTE_SHADER_SRC` (`.metallib` bytes on Metal, `.ptx` on CUDA)
-/// - `VIGNETTE_KERNEL_ENTRY_POINT`
+/// - `VIGNETTE_SHADER_SRC` (`.metallib` bytes on Metal, `.ptx` bytes on CUDA)
+/// - `VIGNETTE_KERNEL_ENTRY_POINT: &'static str` (`stringify!($name)` — required
+///   to be `'static` because the CUDA pipeline cache stores it as a key)
 /// - `vignette(config, user_params)` (GPU dispatch)
 /// - `vignette_cpu(in_data, in_layer, out_layer, config, user_params)` (CPU dispatch)
 #[macro_export]

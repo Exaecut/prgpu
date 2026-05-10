@@ -22,10 +22,17 @@ fn cache() -> &'static Mutex<HashMap<(usize, &'static str), KernelEntry>> {
 unsafe fn load_module_and_func(ptx_src: &[u8], fname: &str) -> Result<(cu::CUmodule, cu::CUfunction), String> {
 	let mut module: cu::CUmodule = core::ptr::null_mut();
 
-	let ptx_cstr = match std::ffi::CString::new(ptx_src.to_vec()) {
+	// slangc emits a trailing NUL into the .ptx; CString::new rejects any embedded NUL,
+	// so strip trailing zeros before re-wrapping (CString::new appends its own terminator).
+	let ptx_trimmed: &[u8] = match ptx_src.iter().rposition(|&b| b != 0) {
+		Some(end) => &ptx_src[..=end],
+		None => &[],
+	};
+
+	let ptx_cstr = match std::ffi::CString::new(ptx_trimmed.to_vec()) {
 		Ok(s) => s,
 		Err(e) => {
-			return Err(format!("NulError in kernel code. len: {}, nul_pos: {}", ptx_src.len(), e.nul_position()));
+			return Err(format!("NulError in kernel code. len: {}, nul_pos: {}", ptx_trimmed.len(), e.nul_position()));
 		}
 	};
 
@@ -69,10 +76,20 @@ unsafe fn load_module_and_func(ptx_src: &[u8], fname: &str) -> Result<(cu::CUmod
 	Ok((module, func))
 }
 
+/// Compile + cache a CUDA kernel function from PTX bytes.
+///
+/// `fname` must be `&'static str`: the kernel cache stores the name as part of
+/// its key, so the reference has to outlive every dispatch. `declare_kernel!`
+/// satisfies this via `stringify!`, which always yields a static literal.
+/// Callers that need a runtime-built name should `Box::leak` it.
+///
+/// # Safety
+/// `ctx` must be a live CUDA context. `ptx_bytes` must be valid PTX (slangc
+/// output is fine; trailing NULs are stripped before submission).
 pub unsafe fn load_kernel(
 	ctx: cu::CUcontext,
 	ptx_bytes: &[u8],
-	fname: &str,
+	fname: &'static str,
 ) -> Result<cu::CUfunction, String> {
 	if ctx.is_null() {
 		log::error!("[CUDA] null context");

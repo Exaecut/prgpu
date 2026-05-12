@@ -9,6 +9,7 @@ pub mod timing;
 pub mod types;
 pub use types::*;
 
+pub mod effect;
 pub mod params;
 pub mod ui;
 

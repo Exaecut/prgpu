@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::ffi::c_void;
 
 use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferKey, BufferObj, ImageBuffer};
-use crate::DeviceHandleInit;
+use crate::{Configuration, DeviceHandleInit};
 use after_effects::log;
 
 const MAX_GPU_BUFFER_ENTRIES: usize = 12;
@@ -171,12 +171,16 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 ///
 /// Synchronous on the default stream so subsequent dispatches see the copied data.
 ///
+/// Signature mirrors the Metal backend so callers stay backend-agnostic; both
+/// backends pull whichever Configuration field they need (Metal: command queue,
+/// CUDA: CUcontext via `device_handle`).
+///
 /// # Safety
-/// - `device` must currently own both `src` and `dst`.
+/// - `config.device_handle` must currently own both `src` and `dst`.
 /// - Both must hold at least `pitch_bytes * height` bytes from their offsets.
 /// - No other GPU work may touch `dst` concurrently.
 pub unsafe fn copy_buffer(
-	device: *mut c_void,
+	config: &Configuration,
 	src: *mut c_void,
 	src_offset: u64,
 	src_pitch_bytes: u32,
@@ -188,7 +192,7 @@ pub unsafe fn copy_buffer(
 ) -> Result<(), &'static str> {
 	use cudarc::driver::sys::{cuMemcpy2D_v2, cuMemcpyDtoD_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
 
-	let ctx = device as cudarc::driver::sys::CUcontext;
+	let ctx = config.device_handle as cudarc::driver::sys::CUcontext;
 	unsafe { cuCtxSetCurrent(ctx) };
 
 	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);

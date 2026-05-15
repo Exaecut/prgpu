@@ -4,7 +4,7 @@ use objc::{msg_send, runtime::Object, sel, sel_impl};
 use parking_lot::Mutex;
 
 use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferKey, BufferObj, ImageBuffer};
-use crate::DeviceHandleInit;
+use crate::{Configuration, DeviceHandleInit};
 
 const MAX_GPU_BUFFER_ENTRIES: usize = 12;
 
@@ -190,26 +190,35 @@ pub unsafe fn cleanup() {
 	}
 }
 
-/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Submits its
-/// own command buffer to `command_queue` and waits before returning.
+/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Pulls the
+/// MTLCommandQueue from `config.command_queue_handle`; submits its own command
+/// buffer and waits before returning.
 ///
 /// Row-by-row blits when pitches mismatch; one flat blit when they match.
 ///
+/// Signature mirrors the CUDA backend so callers stay backend-agnostic; both
+/// backends pull whichever Configuration field they need (Metal: command queue,
+/// CUDA: CUcontext).
+///
 /// # Safety
-/// - `command_queue`, `src`, `dst` must be valid non-null Metal handles.
+/// - `config.command_queue_handle`, `src`, `dst` must be valid non-null Metal handles.
 /// - Both must hold at least `pitch_bytes * height` bytes from their offsets.
 /// - No outstanding GPU work may read from `dst` concurrently.
 pub unsafe fn copy_buffer(
-	command_queue: *mut Object,
-	src: *mut Object,
+	config: &Configuration,
+	src: *mut std::ffi::c_void,
 	src_offset: u64,
 	src_pitch_bytes: u32,
-	dst: *mut Object,
+	dst: *mut std::ffi::c_void,
 	dst_offset: u64,
 	dst_pitch_bytes: u32,
 	width_bytes: u32,
 	height: u32,
 ) -> Result<(), &'static str> {
+	let command_queue = config.command_queue_handle as *mut Object;
+	let src = src as *mut Object;
+	let dst = dst as *mut Object;
+
 	if command_queue.is_null() || src.is_null() || dst.is_null() {
 		return Err("copy_buffer: null handle");
 	}

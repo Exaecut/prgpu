@@ -173,11 +173,11 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 			return Err("prepare_mip_source: Metal allocator returned null");
 		}
 		crate::gpu::backends::metal::buffer::copy_buffer(
-			config.command_queue_handle as *mut objc::runtime::Object,
-			src_ptr as *mut objc::runtime::Object,
+			config,
+			src_ptr,
 			0,
 			src_pitch_bytes,
-			buf.buf.raw as *mut objc::runtime::Object,
+			buf.buf.raw,
 			0,
 			dst_pitch_bytes,
 			dst_pitch_bytes,
@@ -203,7 +203,7 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 			return Err("prepare_mip_source: CUDA allocator returned null");
 		}
 		crate::gpu::backends::cuda::buffer::copy_buffer(
-			config.device_handle,
+			config,
 			src_ptr,
 			0,
 			src_pitch_bytes,
@@ -290,11 +290,11 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 			return Err("prepare_source_copy: Metal allocator returned null");
 		}
 		crate::gpu::backends::metal::buffer::copy_buffer(
-			config.command_queue_handle as *mut objc::runtime::Object,
-			src_ptr as *mut objc::runtime::Object,
+			config,
+			src_ptr,
 			0,
 			src_pitch_bytes,
-			buf.buf.raw as *mut objc::runtime::Object,
+			buf.buf.raw,
 			0,
 			dst_pitch_bytes,
 			dst_pitch_bytes,
@@ -319,7 +319,7 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 			return Err("prepare_source_copy: CUDA allocator returned null");
 		}
 		crate::gpu::backends::cuda::buffer::copy_buffer(
-			config.device_handle,
+			config,
 			src_ptr,
 			0,
 			src_pitch_bytes,

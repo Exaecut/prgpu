@@ -11,13 +11,17 @@ use crate::testing::GpuContext;
 use crate::types::Configuration;
 use crate::kernels::diff::{DiffParams, diff};
 
-/// Per-channel absolute tolerance in [0, 1].
+/// Per-channel absolute tolerance in [0, 1] plus heatmap smoothstep bounds.
 #[derive(Clone, Copy, Debug)]
 pub struct DiffConfig {
     pub tolerance_r: f32,
     pub tolerance_g: f32,
     pub tolerance_b: f32,
     pub tolerance_a: f32,
+    /// Normalised error below this value → black (cold).
+    pub smooth_a: f32,
+    /// Normalised error above this value → white (hot).
+    pub smooth_b: f32,
 }
 
 impl Default for DiffConfig {
@@ -27,6 +31,8 @@ impl Default for DiffConfig {
             tolerance_g: 0.01,
             tolerance_b: 0.01,
             tolerance_a: 0.01,
+            smooth_a: 0.0,
+            smooth_b: 1.0,
         }
     }
 }
@@ -103,9 +109,10 @@ pub fn diff_heatmap_gpu(
         tol_g: config.tolerance_g,
         tol_b: config.tolerance_b,
         tol_a: config.tolerance_a,
+        smooth_a: config.smooth_a,
+        smooth_b: config.smooth_b,
         _pad0: 0,
         _pad1: 0,
-        _pad2: 0,
     };
 
     unsafe { diff(&cfg, params).map_err(|e| format!("diff kernel: {e}"))? };
@@ -274,9 +281,8 @@ fn serde_report(r: &DiffReport) -> SerdeReport {
     }
 }
 
-/// Generate a CPU-side heatmap PNG from the diff data.
-///
-/// Green = within tolerance, Red = above tolerance (intensity ∝ max channel error).
+/// Blackbody heatmap: black→dark blue→bright blue→orange→white.
+/// smooth_a / smooth_b control the smoothstep ramp.
 pub fn write_heatmap_png(
     path: impl AsRef<Path>,
     rendered: &[u8],
@@ -290,7 +296,8 @@ pub fn write_heatmap_png(
         return Err("size mismatch".into());
     }
 
-    let tol = [config.tolerance_r, config.tolerance_g, config.tolerance_b, config.tolerance_a];
+    let smooth_a = config.smooth_a;
+    let smooth_b = config.smooth_b;
     let mut heatmap = vec![0u8; expected];
 
     for i in (0..expected).step_by(4) {
@@ -299,22 +306,32 @@ pub fn write_heatmap_png(
         let d2 = (rendered[i + 2] as f32 - reference[i + 2] as f32).abs() / 255.0;
         let d3 = (rendered[i + 3] as f32 - reference[i + 3] as f32).abs() / 255.0;
 
-        let over = d0 > tol[0] || d1 > tol[1] || d2 > tol[2] || d3 > tol[3];
         let max_err = d0.max(d1).max(d2).max(d3);
 
-        if over {
-            let intensity = (max_err / tol.iter().cloned().fold(0.01f32, f32::max).max(0.01) * 10.0).clamp(0.0, 1.0);
-            let r = (intensity * 255.0) as u8;
-            heatmap[i] = 0;       // B
-            heatmap[i + 1] = 0;   // G
-            heatmap[i + 2] = r;   // R
-            heatmap[i + 3] = 255; // A
+        // Smoothstep: map max_err through sigmoid controlled by smooth_a/smooth_b.
+        let x = (max_err - smooth_a) / (smooth_b - smooth_a).max(1e-6);
+        let x = x.clamp(0.0, 1.0);
+        let t = x * x * (3.0 - 2.0 * x); // smoothstep
+
+        // Blackbody piecewise ramp (matches diff.slang).
+        let (r, g, b) = if t < 0.25 {
+            let s = t * 4.0;
+            (0.0, 0.0, 0.4 * s)
+        } else if t < 0.5 {
+            let s = (t - 0.25) * 4.0;
+            (0.1 * s, 0.2 * s, 0.4 + 0.6 * s)
+        } else if t < 0.75 {
+            let s = (t - 0.5) * 4.0;
+            (0.1 + 0.9 * s, 0.2 + 0.3 * s, 1.0 - 1.0 * s)
         } else {
-            heatmap[i] = 0;
-            heatmap[i + 1] = 64;
-            heatmap[i + 2] = 0;
-            heatmap[i + 3] = 255;
-        }
+            let s = (t - 0.75) * 4.0;
+            (1.0, 0.5 + 0.5 * s, s)
+        };
+
+        heatmap[i] = (b * 255.0) as u8;
+        heatmap[i + 1] = (g * 255.0) as u8;
+        heatmap[i + 2] = (r * 255.0) as u8;
+        heatmap[i + 3] = 255;
     }
 
     crate::testing::output::write_png(path, &heatmap, width, height, 4)

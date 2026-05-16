@@ -1,10 +1,15 @@
 import vekl;
 
-// Pixel-difference heatmap kernel. Compares `outgoing` (rendered) against
-// `incoming` (reference) and writes a colour-coded diff to `dst`.
+// Blackbody-inspired heatmap: encodes per-pixel max channel error as a
+// thermal gradient controlled by a smoothstep.
 //
-// Green  → within tolerance
-// Red    → above tolerance, intensity = max channel error
+//   black  → dark blue → bright blue → orange → white
+//   (cold)                                        (hot)
+//
+// `smoothA` / `smoothB` let the user pick where the sigmoid ramp lives:
+// below smoothA is black, above smoothB is white, between is the gradient.
+//
+// Tolerance fields still gate the pass/fail count used by metrics.
 
 struct DiffParams
 {
@@ -12,10 +17,44 @@ struct DiffParams
     float tolG;
     float tolB;
     float tolA;
+    float smoothA;
+    float smoothB;
     uint _pad0;
     uint _pad1;
-    uint _pad2;
 };
+
+float3 error_to_color(float maxErr, float a, float b)
+{
+    float t = smoothstep(a, b, maxErr);
+
+    // Blackbody-inspired piecewise ramp:
+    //   0.00 → 0.25 : black → dark blue
+    //   0.25 → 0.50 : dark blue → bright blue
+    //   0.50 → 0.75 : bright blue → orange
+    //   0.75 → 1.00 : orange → white
+    float3 c;
+    if (t < 0.25)
+    {
+        float s = t * 4.0;
+        c = lerp(float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.4), s);
+    }
+    else if (t < 0.5)
+    {
+        float s = (t - 0.25) * 4.0;
+        c = lerp(float3(0.0, 0.0, 0.4), float3(0.1, 0.2, 1.0), s);
+    }
+    else if (t < 0.75)
+    {
+        float s = (t - 0.5) * 4.0;
+        c = lerp(float3(0.1, 0.2, 1.0), float3(1.0, 0.5, 0.0), s);
+    }
+    else
+    {
+        float s = (t - 0.75) * 4.0;
+        c = lerp(float3(1.0, 0.5, 0.0), float3(1.0, 1.0, 1.0), s);
+    }
+    return c;
+}
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -39,20 +78,7 @@ void diff(
     float4 b = reference.Load(threadId.xy, 0u);
 
     float4 diff = abs(a - b);
-    float4 tol  = float4(params.tolR, params.tolG, params.tolB, params.tolA);
-    bool4  over = diff > tol;
-
     float maxErr = max(max(diff.r, diff.g), max(diff.b, diff.a));
 
-    if (any(over))
-    {
-        // Red: intensity = max error, clamped to visible range
-        float intensity = saturate(maxErr / max(0.01, max(max(tol.r, tol.g), max(tol.b, tol.a)) * 10.0));
-        output.Store(threadId.xy, float4(intensity, 0.0, 0.0, 1.0));
-    }
-    else
-    {
-        // Dim green
-        output.Store(threadId.xy, float4(0.0, 0.25, 0.0, 1.0));
-    }
+    output.Store(threadId.xy, float4(error_to_color(maxErr, params.smoothA, params.smoothB), 1.0));
 }

@@ -38,6 +38,7 @@ shader_hotreload = ["cudarc/nvrtc"]
 build = ["dep:cc", "dep:serde", "dep:serde_json", "dep:ureq", "dep:tar", "dep:flate2", "dep:fs2"]
 timing = []
 bench = ["dep:criterion"]
+testing = ["dep:image"]
 
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_trace", "max_level_trace"] }
@@ -56,6 +57,7 @@ tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
 fs2 = { version = "0.4", optional = true }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"

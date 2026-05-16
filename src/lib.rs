@@ -19,5 +19,8 @@ pub mod build;
 #[cfg(feature = "bench")]
 pub mod bench;
 
+#[cfg(feature = "testing")]
+pub mod testing;
+
 pub use paste;
 pub use prgpu_macro::gpu_struct;

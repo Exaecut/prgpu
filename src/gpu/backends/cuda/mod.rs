@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::time::Duration;
 
-use cudarc::driver::sys as cuda;
+use cudarc::driver::sys::{self as cuda, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, CUdeviceptr, CUresult};
 
 pub mod buffer;
 pub mod fence;
@@ -101,6 +101,42 @@ pub unsafe fn log_device_ptr_info(tag: &str, ptr: *mut c_void) {
 	log::info!("[cuda] {tag}: CUdeviceptr={ptr:?}, memory_type={mem_type}");
 }
 
+/// Allocate device memory and synchronously upload `bytes` into it.
+/// Caller owns the returned device pointer and must free it with `cuMemFree_v2`.
+unsafe fn upload_to_device(bytes: &[u8]) -> Result<CUdeviceptr, &'static str> {
+	let mut devptr: CUdeviceptr = 0;
+	let alloc = unsafe { cuMemAlloc_v2(&mut devptr, bytes.len()) };
+	if alloc != CUresult::CUDA_SUCCESS {
+		log::error!("[CUDA] cuMemAlloc_v2 ({} bytes) failed: {:?}", bytes.len(), alloc);
+		return Err("cuMemAlloc_v2 failed");
+	}
+	let copy = unsafe { cuMemcpyHtoD_v2(devptr, bytes.as_ptr() as *const c_void, bytes.len()) };
+	if copy != CUresult::CUDA_SUCCESS {
+		unsafe { cuMemFree_v2(devptr) };
+		log::error!("[CUDA] cuMemcpyHtoD_v2 ({} bytes) failed: {:?}", bytes.len(), copy);
+		return Err("cuMemcpyHtoD_v2 failed");
+	}
+	Ok(devptr)
+}
+
+/// RAII guard that frees device buffers on drop. Used to keep cleanup correct
+/// across early returns (kernel launch errors, stream-query errors).
+struct DeviceParamScratch {
+	frame: CUdeviceptr,
+	user: CUdeviceptr,
+}
+
+impl Drop for DeviceParamScratch {
+	fn drop(&mut self) {
+		if self.frame != 0 {
+			unsafe { cuMemFree_v2(self.frame) };
+		}
+		if self.user != 0 {
+			unsafe { cuMemFree_v2(self.user) };
+		}
+	}
+}
+
 pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry: &'static str) -> Result<(), &'static str> {
 	use crate::gpu;
 
@@ -115,6 +151,10 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 	let ctx = config.context_handle.unwrap();
 
+	// Slang's CUDA codegen for `ConstantBuffer<T>` produces a `.u64` kernel arg
+	// that the kernel dereferences via `ld.global` to read field bytes.
+	check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
+
 	let func = unsafe { gpu::pipeline::load_kernel(ctx as _, shader_src, entry) }.map_err(|e| {
 		log::error!("[CUDA] {e}");
 		"kernel load failed"
@@ -127,8 +167,7 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 	let mut d_incoming = incoming_data as u64;
 	let mut d_dest = config.dest_data as u64;
 
-	// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the dispatch grid.
-	let mut p = FrameParams {
+	let frame = FrameParams {
 		out_desc: crate::types::make_outgoing_desc(config),
 		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
 		dst_desc: crate::types::make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
@@ -137,14 +176,24 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 		time: config.time,
 		progress: config.progress,
 	};
-	let mut u = user_params;
+
+	let frame_bytes = unsafe { std::slice::from_raw_parts((&frame as *const FrameParams) as *const u8, std::mem::size_of::<FrameParams>()) };
+	let user_bytes = unsafe { std::slice::from_raw_parts((&user_params as *const UP) as *const u8, std::mem::size_of::<UP>()) };
+
+	let scratch = DeviceParamScratch {
+		frame: unsafe { upload_to_device(frame_bytes)? },
+		user: unsafe { upload_to_device(user_bytes)? },
+	};
+
+	let mut d_frame = scratch.frame;
+	let mut d_user = scratch.user;
 
 	let mut params: [*mut c_void; 5] = [
 		&mut d_outgoing as *mut _ as *mut c_void,
 		&mut d_incoming as *mut _ as *mut c_void,
 		&mut d_dest as *mut _ as *mut c_void,
-		&mut p as *mut _ as *mut c_void,
-		&mut u as *mut _ as *mut c_void,
+		&mut d_frame as *mut _ as *mut c_void,
+		&mut d_user as *mut _ as *mut c_void,
 	];
 
 	let block_x: u32 = 16;
@@ -158,18 +207,8 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 		dispatch(ctx, config.command_queue_handle, func, grid_x, grid_y, block_x, block_y, &mut params)?;
 	}
 
-	loop {
-		let query = unsafe { cuda::cuStreamQuery(stream) };
-		if query == cuda::CUresult::CUDA_SUCCESS {
-			break;
-		}
-		if query != cuda::CUresult::CUDA_ERROR_NOT_READY {
-			log::error!("[CUDA] cuStreamQuery failed: {query:?}");
-			return Err("cuStreamQuery failed");
-		}
+	check(unsafe { cuda::cuStreamSynchronize(stream) }, "cuStreamSynchronize")?;
 
-		std::thread::sleep(Duration::from_millis(1));
-	}
-
+	drop(scratch);
 	Ok(())
 }

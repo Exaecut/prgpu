@@ -172,11 +172,15 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 /// Synchronous on the default stream so subsequent dispatches see the copied data.
 ///
 /// Signature mirrors the Metal backend so callers stay backend-agnostic; both
-/// backends pull whichever Configuration field they need (Metal: command queue,
-/// CUDA: CUcontext via `device_handle`).
+/// backends pull whichever Configuration field they need (Metal: command queue
+/// from `command_queue_handle`; CUDA: CUcontext from `context_handle`).
+///
+/// On CUDA Premiere `device_handle` is a CUdevice ordinal — NOT a CUcontext;
+/// `cuCtxSetCurrent(device_handle)` returns `CUDA_ERROR_INVALID_CONTEXT` and
+/// the subsequent memcpy fails. Always pull the context from `context_handle`.
 ///
 /// # Safety
-/// - `config.device_handle` must currently own both `src` and `dst`.
+/// - `config.context_handle` must hold the CUcontext that owns both `src` and `dst`.
 /// - Both must hold at least `pitch_bytes * height` bytes from their offsets.
 /// - No other GPU work may touch `dst` concurrently.
 pub unsafe fn copy_buffer(
@@ -192,8 +196,20 @@ pub unsafe fn copy_buffer(
 ) -> Result<(), &'static str> {
 	use cudarc::driver::sys::{cuMemcpy2D_v2, cuMemcpyDtoD_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
 
-	let ctx = config.device_handle as cudarc::driver::sys::CUcontext;
-	unsafe { cuCtxSetCurrent(ctx) };
+	let Some(ctx_ptr) = config.context_handle else {
+		log::error!("[CUDA/buffer] copy_buffer: config.context_handle is None");
+		return Err("copy_buffer: missing CUcontext");
+	};
+	if ctx_ptr.is_null() {
+		log::error!("[CUDA/buffer] copy_buffer: config.context_handle is null");
+		return Err("copy_buffer: null CUcontext");
+	}
+	let ctx = ctx_ptr as CUcontext;
+	let set = unsafe { cuCtxSetCurrent(ctx) };
+	if set != CUresult::CUDA_SUCCESS {
+		log::error!("[CUDA/buffer] copy_buffer: cuCtxSetCurrent failed: {:?}", set);
+		return Err("copy_buffer: cuCtxSetCurrent failed");
+	}
 
 	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);
 	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset);

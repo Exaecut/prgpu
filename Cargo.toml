@@ -38,7 +38,7 @@ shader_hotreload = ["cudarc/nvrtc"]
 build = ["dep:cc", "dep:serde", "dep:serde_json", "dep:ureq", "dep:tar", "dep:flate2", "dep:fs2"]
 timing = []
 bench = ["dep:criterion"]
-testing = ["dep:image"]
+testing = ["dep:image", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_trace", "max_level_trace"] }

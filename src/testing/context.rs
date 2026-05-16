@@ -23,7 +23,7 @@ pub struct GpuContext {
     pub device: *mut c_void,
     pub command_queue: *mut c_void,
     #[allow(dead_code)]
-    context: Option<*mut c_void>,
+    pub context: Option<*mut c_void>,
 }
 
 impl GpuContext {

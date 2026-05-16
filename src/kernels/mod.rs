@@ -1,3 +1,4 @@
+pub mod diff;
 pub mod helpers;
 pub mod mip;
 

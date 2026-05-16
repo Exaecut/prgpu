@@ -386,7 +386,10 @@ fn download_metal(
 
 #[cfg(gpu_backend = "cuda")]
 fn create_cuda_context() -> Result<GpuContext, String> {
-    use cudarc::driver::CudaContext;
+    use cudarc::driver::sys::{
+        cuCtxSetCurrent, cuDeviceGet, cuDevicePrimaryCtxRetain, cuInit, cuStreamCreate,
+        CUcontext, CUdevice, CUresult, CUstream,
+    };
 
     // Bail early if the CUDA driver DLL is missing — cudarc's fallback
     // dynamic loading can segfault when the DLL is absent.
@@ -399,17 +402,35 @@ fn create_cuda_context() -> Result<GpuContext, String> {
         }
     }
 
-    let ctx = CudaContext::new(0).map_err(|e| format!("CudaContext::new(0): {e:?}"))?;
-    let cu_ctx = ctx.cu_ctx();
+    let result = unsafe { cuInit(0) };
+    if result != CUresult::CUDA_SUCCESS {
+        return Err(format!("cuInit failed: {:?}", result));
+    }
 
-    // Leak the Arc so the context outlives this function.
-    let leaked: &'static CudaContext = Box::leak(Box::new(ctx));
-    let ctx_ptr: *const CudaContext = leaked;
+    let mut device: CUdevice = 0;
+    let result = unsafe { cuDeviceGet(&mut device, 0) };
+    if result != CUresult::CUDA_SUCCESS {
+        return Err(format!("cuDeviceGet(0) failed: {:?} — no CUDA GPU", result));
+    }
+
+    let mut cu_ctx: CUcontext = std::ptr::null_mut();
+    let result = unsafe { cuDevicePrimaryCtxRetain(&mut cu_ctx, device) };
+    if result != CUresult::CUDA_SUCCESS {
+        return Err(format!("cuDevicePrimaryCtxRetain failed: {:?}", result));
+    }
+
+    unsafe { cuCtxSetCurrent(cu_ctx) };
+
+    let mut stream: CUstream = std::ptr::null_mut();
+    let result = unsafe { cuStreamCreate(&mut stream, 0) };
+    if result != CUresult::CUDA_SUCCESS {
+        return Err(format!("cuStreamCreate failed: {:?}", result));
+    }
 
     Ok(GpuContext {
         device: cu_ctx as *mut c_void,
-        command_queue: cu_ctx as *mut c_void,
-        context: Some(ctx_ptr as *mut c_void),
+        command_queue: stream as *mut c_void,
+        context: Some(cu_ctx as *mut c_void),
     })
 }
 

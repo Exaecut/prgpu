@@ -85,7 +85,11 @@ impl<F: pr::GpuFilter, P: Into<usize> + Copy> HostBuilder<F, P> {
     }
 
     pub fn param(mut self, index: P, value: ParamValue) -> Self {
-        self.params.push((index.into(), value.into()));
+        // GpuFilterData::param() subtracts 1 (GPU filters skip the input frame
+        // as first parameter). Store one lower so the subtraction brings us
+        // back to the enum discriminant.
+        let adjusted: usize = index.into().saturating_sub(1);
+        self.params.push((adjusted, value.into()));
         self
     }
 
@@ -575,6 +579,10 @@ impl<F: pr::GpuFilter> HostContext<F> {
         }));
 
         Ok(HostContext { gpu, gpu_filter, mock, width, height, bpp: gpu_bpp, render_params_heap })
+    }
+
+    pub fn gpu_filter_data(&self) -> Result<pr::GpuFilterData, String> {
+        self.mock.filter_data()
     }
 
     pub fn start(&self) -> Result<Vec<u8>, String> {

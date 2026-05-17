@@ -108,11 +108,13 @@ impl FromParam for Pixel {
 }
 
 pub fn get_param<T: FromParam + Default, Params: SetupParams>(filter: &pr::GpuFilterData, param: Params, render_params: &pr::RenderParams) -> T {
-	filter
-		.param(param.to_index(), render_params.clip_time())
-		.ok()
-		.and_then(T::extract)
-		.unwrap_or_default()
+    let idx = param.to_index();
+    let clip = render_params.clip_time();
+    filter
+        .param(idx, clip)
+        .ok()
+        .and_then(T::extract)
+        .unwrap_or_default()
 }
 
 pub trait CpuParams<P: SetupParams> {

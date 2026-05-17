@@ -20,9 +20,11 @@ against it — if anything changes, the test fails.
 
 ```rust
 use prgpu::testing::{
-    GpuContext, builtin_checkerboard, DiffConfig,
+    HostBuilder, ParamValue, DiffConfig, builtin_checkerboard,
     compute_metrics, write_heatmap_png, write_report_json, write_report_txt, write_png,
 };
+use my_effect::gpu::PremiereGPU;
+use my_effect::params::Params;
 
 fn load_bgra(path: &str) -> (Vec<u8>, u32, u32) {
     let img = image::open(path).unwrap().to_rgba8();
@@ -36,17 +38,18 @@ fn load_bgra(path: &str) -> (Vec<u8>, u32, u32) {
 
 #[test]
 fn render_against_reference() {
-    let gpu = GpuContext::create().expect("GPU");
     let (w, h) = (512, 512);
     let input = builtin_checkerboard(w, h);
+    let input_copy = input.clone();
 
-    let (in_buf, out_buf) = gpu.create_io_buffers(w, h, 4).expect("buffers");
-    gpu.upload_to_buffer(&in_buf, &input, w, h, 4).expect("upload");
+    let ctx = HostBuilder::<PremiereGPU, Params>::new(PremiereGPU, input, w, h)
+        .param(Params::Strength, ParamValue::float(50.0))
+        .param(Params::Tint, ParamValue::color(0, 0, 255, 255))
+        .param(Params::ExpandFrame, ParamValue::bool(false))
+        .build()
+        .expect("HostContext");
 
-    let config = gpu.build_config(&in_buf, &out_buf, w, h, 4);
-    unsafe { my_kernel(&config, MyParams::default()).expect("kernel") };
-
-    let output = gpu.download_from_buffer(&out_buf, w, h, 4).expect("download");
+    let output = ctx.start().expect("render chain");
     write_png("tests/output/actual.png", &output, w, h, 4).unwrap();
 
     let (reference, rw, rh) = load_bgra("tests/assets/reference.png");
@@ -75,6 +78,10 @@ fn render_against_reference() {
     write_report_json("tests/output/report.json", &report).unwrap();
 }
 ```
+
+Note: `input_copy` lets you compare `output` against the original input after
+`HostBuilder` takes ownership of `input`. Clone before passing to the builder
+if you need the original data afterwards.
 
 ## Step 3 — Interpret the heatmap
 
@@ -114,8 +121,12 @@ the effect is a no-op. Cross-tint testing verifies the effect *does* change
 pixels:
 
 ```rust
-// Render with blue tint via GPU kernel
-let blue_output = render_tint(&gpu, &input, w, h, /* tint=blue */);
+// Render with blue tint via HostBuilder
+let ctx = HostBuilder::<PremiereGPU, Params>::new(PremiereGPU, input, w, h)
+    .param(Params::Strength, ParamValue::float(50.0))
+    .param(Params::Tint, ParamValue::color(0, 0, 255, 255))
+    .build()?;
+let blue_output = ctx.start()?;
 
 // Generate a red-tinted reference (Python/Pillow, or a separate effect pass)
 let (red_ref, rw, rh) = load_bgra("tests/assets/hill_red_tint.png");

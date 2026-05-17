@@ -5,6 +5,10 @@ produces. You'll learn what they mean, how they interact, and how to read them
 to diagnose rendering problems. All numbers come from a real test: a 256×256
 checkerboard passed through a 50% blue tint.
 
+The metrics work identically whether you render through `HostBuilder` (full
+Premiere path) or direct kernel dispatch — both produce the same pixel output
+that `compute_metrics()` compares.
+
 ## What tolerance actually does
 
 Tolerance is a **per-channel threshold** that decides whether a pixel is counted

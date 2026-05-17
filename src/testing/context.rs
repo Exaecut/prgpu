@@ -165,17 +165,59 @@ impl GpuContext {
         height: u32,
         bytes_per_pixel: u32,
     ) -> Result<Vec<u8>, String> {
+        self.download_raw(src.data, src.pitch_px, width, height, bytes_per_pixel)
+    }
+
+    /// Download from a raw GPU pointer without a `GpuBuffer` wrapper.
+    pub fn download_raw(
+        &self,
+        data: *mut c_void,
+        pitch_px: u32,
+        width: u32,
+        height: u32,
+        bytes_per_pixel: u32,
+    ) -> Result<Vec<u8>, String> {
         #[cfg(gpu_backend = "metal")]
         {
-            download_metal(self, src, width, height, bytes_per_pixel)
+            let tmp = GpuBuffer {
+                data,
+                pitch_px,
+                width,
+                height,
+                bytes_per_pixel,
+                _img: crate::types::ImageBuffer {
+                    buf: crate::types::BufferObj { raw: data },
+                    pitch_px,
+                    width,
+                    height,
+                    bytes_per_pixel,
+                    row_bytes: pitch_px * bytes_per_pixel,
+                },
+            };
+            download_metal(self, &tmp, width, height, bytes_per_pixel)
         }
         #[cfg(gpu_backend = "cuda")]
         {
-            download_cuda(self, src, width, height, bytes_per_pixel)
+            let tmp = GpuBuffer {
+                data,
+                pitch_px,
+                width,
+                height,
+                bytes_per_pixel,
+                _img: crate::types::ImageBuffer {
+                    buf: crate::types::BufferObj { raw: data },
+                    pitch_px,
+                    width,
+                    height,
+                    bytes_per_pixel,
+                    row_bytes: pitch_px * bytes_per_pixel,
+                },
+            };
+            download_cuda(self, &tmp, width, height, bytes_per_pixel)
         }
         #[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
         {
-            let _ = (self, src, width, height, bytes_per_pixel);
+            let _ = (self, data, pitch_px, width, height, bytes_per_pixel);
             Err("no GPU backend".into())
         }
     }

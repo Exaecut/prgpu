@@ -39,6 +39,7 @@ fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
 	match pixel_format {
 		pr::PixelFormat::GpuBgra4444_32f => 16,
 		pr::PixelFormat::GpuBgra4444_16f => 8,
+		pr::PixelFormat::Bgra4444_32f => 16, // same layout as GpuBgra4444_32f
 		_ => panic!("Unsupported pixel format"),
 	}
 }

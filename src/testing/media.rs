@@ -76,3 +76,15 @@ pub fn builtin_gradient_h(width: u32, height: u32, left: Rgba8, right: Rgba8) ->
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
 }
+
+/// Loads a PNG from disk and converts RGBA → BGRA. Returns `(data, width, height)`.
+pub fn load_png_bgra8(path: &str) -> Result<(BgraData, u32, u32), String> {
+    let img = image::open(path).map_err(|e| format!("open {path}: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let mut bgra = rgba.into_raw();
+    for chunk in bgra.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+    Ok((bgra, w, h))
+}

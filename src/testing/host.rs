@@ -11,6 +11,12 @@ use crate::testing::context::GpuContext;
 use premiere as pr;
 use premiere::sys as pr_sys;
 
+#[cfg(target_os = "windows")]
+use cudarc::driver::sys::{CUdeviceptr, CUresult, cuMemAlloc_v2, cuMemFree_v2};
+
+#[cfg(target_os = "macos")]
+use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+
 // ── Public ergonomic API ──────────────────────────────────────────────────
 
 /// Pixel format constants matching Adobe `PrPixelFormat` values.
@@ -33,12 +39,19 @@ pub enum ParamValue {
     /// RGBA colour. Premiere stores PF_Pixel as a big-endian-packed u64:
     /// `x[0]=A, x[2]=R, x[4]=G, x[6]=B`.
     Color { r: u8, g: u8, b: u8, a: u8 },
+    /// GPU path receives pre-normalized (0..1) coordinates.
+    /// `point(0.5, 0.5)` places the origin at the layer centre.
+    Point { x: f64, y: f64 },
 }
 
 impl ParamValue {
     pub fn float(v: f32) -> Self { Self::Float(v) }
     pub fn bool(v: bool) -> Self { Self::Bool(v) }
+    pub fn int32(v: i32) -> Self { Self::Int32(v) }
+    pub fn popup(v: i32) -> Self { Self::Int32(v) }
+    pub fn checkbox(v: bool) -> Self { Self::Bool(v) }
     pub fn color(r: u8, g: u8, b: u8, a: u8) -> Self { Self::Color { r, g, b, a } }
+    pub fn point(x: f64, y: f64) -> Self { Self::Point { x, y } }
 }
 
 impl From<ParamValue> for pr_sys::PrParam {
@@ -50,6 +63,9 @@ impl From<ParamValue> for pr_sys::PrParam {
             ParamValue::Color { r, g, b, a } => {
                 let u = ((a as u64) << 56) | ((r as u64) << 40) | ((g as u64) << 24) | ((b as u64) << 8);
                 pr::Param::Int64(u as i64).into()
+            }
+            ParamValue::Point { x, y } => {
+                pr::Param::Point(pr_sys::prFPoint64 { x, y }).into()
             }
         }
     }
@@ -233,12 +249,102 @@ unsafe extern "C" fn mock_get_device_info(
     0
 }
 
+#[cfg(target_os = "windows")]
+unsafe extern "C" fn mock_allocate_device_memory(
+    _device_index: u32,
+    size_in_bytes: usize,
+    out_memory: *mut *mut c_void,
+) -> i32 {
+    if size_in_bytes == 0 {
+        unsafe { *out_memory = ptr::null_mut() };
+        return 0;
+    }
+    let mut devptr: CUdeviceptr = 0;
+    let res = unsafe { cuMemAlloc_v2(&mut devptr, size_in_bytes) };
+    if res == CUresult::CUDA_SUCCESS {
+        unsafe { *out_memory = devptr as *mut c_void };
+        0
+    } else {
+        unsafe { *out_memory = ptr::null_mut() };
+        -1
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn mock_allocate_device_memory(
+    _device_index: u32,
+    size_in_bytes: usize,
+    out_memory: *mut *mut c_void,
+) -> i32 {
+    if size_in_bytes == 0 {
+        unsafe { *out_memory = ptr::null_mut() };
+        return 0;
+    }
+    let state_ptr = MOCK_STATE_PTR.with(|cell| *cell.borrow());
+    if state_ptr.is_null() {
+        unsafe { *out_memory = ptr::null_mut() };
+        return -1;
+    }
+    let state = unsafe { &*state_ptr };
+    let device = state.gpu_device as *mut Object;
+    let buffer: *mut Object = unsafe {
+        msg_send![device, newBufferWithLength: size_in_bytes
+                                   options: 0u64]
+    };
+    if buffer.is_null() {
+        unsafe { *out_memory = ptr::null_mut() };
+        return -1;
+    }
+    unsafe { *out_memory = buffer as *mut c_void };
+    0
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+unsafe extern "C" fn mock_allocate_device_memory(
+    _device_index: u32,
+    _size_in_bytes: usize,
+    out_memory: *mut *mut c_void,
+) -> i32 {
+    unsafe { *out_memory = ptr::null_mut() };
+    -1
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "C" fn mock_free_device_memory(
+    _device_index: u32,
+    memory: *mut c_void,
+) -> i32 {
+    if memory.is_null() { return 0; }
+    let res = unsafe { cuMemFree_v2(memory as CUdeviceptr) };
+    if res == CUresult::CUDA_SUCCESS { 0 } else { -1 }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn mock_free_device_memory(
+    _device_index: u32,
+    memory: *mut c_void,
+) -> i32 {
+    if memory.is_null() { return 0; }
+    unsafe { let _: () = msg_send![memory as *mut Object, release]; }
+    0
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+unsafe extern "C" fn mock_free_device_memory(
+    _device_index: u32,
+    _memory: *mut c_void,
+) -> i32 {
+    -1
+}
+
 fn make_gpu_device_vtable() -> Box<pr_sys::PrSDKGPUDeviceSuite> {
     let mut v = unsafe { Box::<pr_sys::PrSDKGPUDeviceSuite>::new_zeroed().assume_init() };
     v.GetGPUPPixData = Some(mock_get_gpu_ppix_data);
     v.GetGPUPPixDeviceIndex = Some(mock_gpu_ppix_device_index);
     v.CreateGPUPPix = Some(mock_create_gpu_ppix);
     v.GetDeviceInfo = Some(mock_get_device_info);
+    v.AllocateDeviceMemory = Some(mock_allocate_device_memory);
+    v.FreeDeviceMemory = Some(mock_free_device_memory);
     v
 }
 
@@ -310,9 +416,22 @@ unsafe extern "C" fn mock_field_order(
     0
 }
 
+unsafe extern "C" fn mock_ppix2_size(
+    ppix_handle: pr_sys::PPixHand,
+    out_size: *mut usize,
+) -> i32 {
+    if ppix_handle.is_null() || unsafe { *ppix_handle }.is_null() { return -1; }
+    let ppix = unsafe { &**ppix_handle };
+    let row_bytes = ppix.rowbytes.unsigned_abs() as usize;
+    let height = (ppix.bounds.bottom - ppix.bounds.top).unsigned_abs() as usize;
+    unsafe { *out_size = row_bytes * height };
+    0
+}
+
 fn make_ppix2_vtable() -> Box<pr_sys::PrSDKPPix2Suite> {
     let mut v = unsafe { Box::<pr_sys::PrSDKPPix2Suite>::new_zeroed().assume_init() };
     v.GetFieldOrder = Some(mock_field_order);
+    v.GetSize = Some(mock_ppix2_size);
     v
 }
 

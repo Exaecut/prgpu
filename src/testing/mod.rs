@@ -14,7 +14,7 @@ pub mod runner;
 pub use compare::{DiffConfig, DiffReport, compute_metrics, diff_heatmap_gpu, write_heatmap_png, write_report_json, write_report_txt};
 pub use context::GpuContext;
 pub use host::{HostContext, HostBuilder, ParamValue, pixel_format};
-pub use media::{builtin_checkerboard, builtin_solid_color, builtin_gradient_h};
+pub use media::{builtin_checkerboard, builtin_solid_color, builtin_gradient_h, load_png_bgra8};
 pub use output::write_png;
 pub use scene::{Media, Scene, Layer, Transform, Timeline, Background};
 pub use runner::{RenderTest, OutputSpec, ExecutionTarget, RenderResult, DiffPolicy, ComparisonSpec};

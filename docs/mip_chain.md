@@ -151,7 +151,7 @@ routes automatically:
 
 ```rust
 // From prgpu/src/kernels/mip.rs (simplified):
-if !pass_cfg.device_handle.is_null() {
+if pass_cfg.context_handle.is_some() {
     // GPU path: Metal / CUDA via dispatch_kernel
     unsafe { mip_downsample(&pass_cfg, params)? };
 } else {
@@ -164,6 +164,12 @@ if !pass_cfg.device_handle.is_null() {
     }
 }
 ```
+
+> Use `context_handle.is_some()` rather than `device_handle.is_null()`:
+> on CUDA Premiere, `device_handle` holds a `CUdevice` ordinal (the
+> first/only GPU has ordinal `0`), so it's indistinguishable from a
+> null pointer. `Configuration::cpu(...)` is the only path that leaves
+> `context_handle` as `None`.
 
 - **GPU (Metal / CUDA)**: each level transition (`srcLod → srcLod+1`)
   is one `dispatchThreadgroups` / `cuLaunchKernel` call. Grid size is

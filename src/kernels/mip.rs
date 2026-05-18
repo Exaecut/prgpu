@@ -16,10 +16,13 @@
 //! unsafe { effect_kernel(&config, params)?; }
 //! ```
 //!
-//! `generate_mips` routes on `config.device_handle` — non-null = GPU dispatch,
-//! null = `render_cpu_direct`. Allocators (`{cpu,metal,cuda}::buffer::get_or_create_with_mips`)
-//! key on `(device, w, h, bpp, mip_levels, tag)` so mip and plain buffers at the
-//! same dims don't share a slot.
+//! `generate_mips` routes on `config.context_handle` — `Some(_)` = GPU dispatch,
+//! `None` = `render_cpu_direct`. `device_handle` can't be the sentinel: CUDA
+//! Premiere stores a `CUdevice` *ordinal* there, and ordinal `0` (single-GPU
+//! host) is indistinguishable from a null pointer. Allocators
+//! (`{cpu,metal,cuda}::buffer::get_or_create_with_mips`) key on
+//! `(device, w, h, bpp, mip_levels, tag)` so mip and plain buffers at the same
+//! dims don't share a slot.
 
 use crate::declare_kernel;
 use crate::types::{Configuration, ImageBuffer, MAX_MIP};
@@ -81,7 +84,7 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 			_pad2: 0,
 		};
 
-		if !pass_cfg.device_handle.is_null() {
+		if pass_cfg.context_handle.is_some() {
 			unsafe { mip_downsample(&pass_cfg, params)? };
 		} else {
 			// CPU dispatch — direct rayon tile loop, no AE plumbing.
@@ -103,8 +106,10 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 /// redirect `config.outgoing_data` to it. Returns the `ImageBuffer` for the
 /// caller to keep alive across the frame (it's owned by the prgpu cache).
 ///
-/// Routes on `config.device_handle`: null → CPU (`cpu::buffer` +
-/// `copy_nonoverlapping`), non-null → Metal blit / CUDA `cuMemcpy*`.
+/// Routes on `config.context_handle`: `None` → CPU (`cpu::buffer` +
+/// `copy_nonoverlapping`), `Some(_)` → Metal blit / CUDA `cuMemcpy*`.
+/// (CUDA `device_handle` is a `CUdevice` ordinal, so `0` is a valid GPU
+/// and can't be used as the CPU sentinel.)
 ///
 /// `tag` participates in the cache key with `(w, h, bpp, mip_levels)` so distinct
 /// effect instances don't stomp on each other's mip buffers (convention: upper
@@ -131,7 +136,7 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 	let src_pitch_bytes = (config.outgoing_pitch_px as u32).saturating_mul(bpp);
 	let dst_pitch_bytes = w.saturating_mul(bpp); // mip buffer level 0 is tight-packed
 
-	if config.device_handle.is_null() {
+	if config.context_handle.is_none() {
 		let buf = crate::cpu::buffer::get_or_create_with_mips(w, h, bpp, levels, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_mip_source: CPU allocator returned null");
@@ -191,8 +196,12 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 	#[cfg(gpu_backend = "cuda")]
 	unsafe {
 		use crate::DeviceHandleInit;
+		// CUDA `allocate` calls `cuCtxSetCurrent` on whatever pointer it gets, so it
+		// needs the CUcontext (`context_handle`) — `device_handle` is a CUdevice
+		// ordinal here. Routing above guarantees `context_handle.is_some()`.
+		let ctx = config.context_handle.expect("CUDA path requires context_handle");
 		let buf = crate::gpu::backends::cuda::buffer::get_or_create_with_mips(
-			DeviceHandleInit::FromPtr(config.device_handle),
+			DeviceHandleInit::FromPtr(ctx),
 			w,
 			h,
 			bpp,
@@ -249,7 +258,7 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 	let src_pitch_bytes = (config.outgoing_pitch_px as u32).saturating_mul(bpp);
 	let dst_pitch_bytes = w.saturating_mul(bpp); // private buffer is tight-packed
 
-	if config.device_handle.is_null() {
+	if config.context_handle.is_none() {
 		let buf = crate::cpu::buffer::get_or_create(w, h, bpp, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_source_copy: CPU allocator returned null");
@@ -308,8 +317,12 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 	#[cfg(gpu_backend = "cuda")]
 	unsafe {
 		use crate::DeviceHandleInit;
+		// `device_handle` here is a CUdevice ordinal; `cuda::buffer::allocate`
+		// passes its pointer to `cuCtxSetCurrent`, so it needs the CUcontext.
+		// Routing above guarantees `context_handle.is_some()`.
+		let ctx = config.context_handle.expect("CUDA path requires context_handle");
 		let buf = crate::gpu::backends::cuda::buffer::get_or_create(
-			DeviceHandleInit::FromPtr(config.device_handle),
+			DeviceHandleInit::FromPtr(ctx),
 			w,
 			h,
 			bpp,

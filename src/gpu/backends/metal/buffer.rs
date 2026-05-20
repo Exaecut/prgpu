@@ -94,10 +94,23 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
 }
 
+/// Cache-aware variant: returns `(buffer, was_hit)`. Callers that need to
+/// populate the buffer only on first allocation (e.g. source snapshot) use
+/// `was_hit` to skip the upload on cache hit. See `prepare_source_snapshot`.
+///
+/// # Safety: see `get_or_create`.
+pub unsafe fn get_or_create_returning_hit(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> (ImageBuffer, bool) {
+	unsafe { get_or_create_with_mips_inner(device, width, height, bytes_per_pixel, 1, tag) }
+}
+
 /// Like `get_or_create` but sized for an `mip_levels`-deep mip chain via `mip_buffer_size_bytes`.
 ///
 /// # Safety: see `get_or_create`.
 pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
+	unsafe { get_or_create_with_mips_inner(device, width, height, bytes_per_pixel, mip_levels, tag) }.0
+}
+
+unsafe fn get_or_create_with_mips_inner(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> (ImageBuffer, bool) {
 	let mips = mip_levels.max(1);
 	let key = match device {
 		DeviceHandleInit::FromPtr(device) => BufferKey {
@@ -124,14 +137,17 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	let mut guard = cache().lock();
 
 	if let Some(existing) = guard.get(&key) {
-		return ImageBuffer {
-			buf: existing,
-			width,
-			height,
-			bytes_per_pixel,
-			row_bytes: compute_row_bytes(width, bytes_per_pixel),
-			pitch_px: width,
-		};
+		return (
+			ImageBuffer {
+				buf: existing,
+				width,
+				height,
+				bytes_per_pixel,
+				row_bytes: compute_row_bytes(width, bytes_per_pixel),
+				pitch_px: width,
+			},
+			true,
+		);
 	}
 
 	let alloc_len = if mips <= 1 {
@@ -169,14 +185,17 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 		unsafe { free_buffer(evicted_buf) };
 	}
 
-	ImageBuffer {
-		buf: BufferObj { raw },
-		width,
-		height,
-		bytes_per_pixel,
-		row_bytes: compute_row_bytes(width, bytes_per_pixel),
-		pitch_px: width,
-	}
+	(
+		ImageBuffer {
+			buf: BufferObj { raw },
+			width,
+			height,
+			bytes_per_pixel,
+			row_bytes: compute_row_bytes(width, bytes_per_pixel),
+			pitch_px: width,
+		},
+		false,
+	)
 }
 
 pub unsafe fn cleanup() {

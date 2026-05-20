@@ -353,6 +353,142 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 	}
 }
 
+/// Allocate a private source buffer keyed on the **host source pointer** and
+/// take a one-shot snapshot of `config.outgoing_data` into it. On subsequent
+/// calls with the same host pointer, returns the cached snapshot **without
+/// re-copying** — preserving the original pixels even if the host buffer was
+/// since overwritten in-place.
+///
+/// This is the fix for the Premiere PPix-aliasing burn-in: when Premiere hands
+/// the same `CUdeviceptr` as both `frames[0]` and `*out_frame` (common for
+/// image clips with cached decoded bitmaps), an effect that writes a composited
+/// result to `dst` corrupts its own next-frame source. `prepare_source_copy`
+/// re-copies every frame and so just snapshots the corrupted pixels;
+/// `prepare_source_snapshot` snapshots once on miss, then reuses.
+///
+/// The cache key folds the host pointer (low 32 bits) into `tag` so distinct
+/// logical sources resolve to distinct slots. The shared LRU evicts stale
+/// snapshots when the user moves to a different clip.
+///
+/// On return, `config.outgoing_data` points at the snapshot and
+/// `outgoing_pitch_px = outgoing_width` (tight). Caller must hold the returned
+/// `ImageBuffer` alive for the duration of the render.
+///
+/// # Safety
+/// Same preconditions as `prepare_mip_source`.
+pub unsafe fn prepare_source_snapshot(config: &mut Configuration, tag: u32) -> Result<ImageBuffer, &'static str> {
+	let w = config.outgoing_width;
+	let h = config.outgoing_height;
+	let bpp = config.bytes_per_pixel;
+	let src_ptr = config.outgoing_data.ok_or("prepare_source_snapshot: outgoing_data is None")?;
+	let src_pitch_bytes = (config.outgoing_pitch_px as u32).saturating_mul(bpp);
+	let dst_pitch_bytes = w.saturating_mul(bpp); // private buffer is tight-packed
+
+	// Fold the host source pointer into the cache tag so the snapshot is
+	// keyed on the logical source, not just the dims. Low 32 bits are
+	// sufficient to disambiguate concurrent clips on a single GPU; collisions
+	// just refresh the snapshot (correct behaviour, never wrong pixels).
+	let src_ptr_bits = (src_ptr as usize) as u32;
+	let snapshot_tag = tag.wrapping_add(src_ptr_bits);
+
+	if config.context_handle.is_none() {
+		let (buf, was_hit) = crate::cpu::buffer::get_or_create_returning_hit(w, h, bpp, snapshot_tag);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_snapshot: CPU allocator returned null");
+		}
+		if !was_hit {
+			unsafe {
+				if src_pitch_bytes == dst_pitch_bytes {
+					std::ptr::copy_nonoverlapping(
+						src_ptr as *const u8,
+						buf.buf.raw as *mut u8,
+						(dst_pitch_bytes as usize) * (h as usize),
+					);
+				} else {
+					for y in 0..(h as usize) {
+						std::ptr::copy_nonoverlapping(
+							(src_ptr as *const u8).add(y * src_pitch_bytes as usize),
+							(buf.buf.raw as *mut u8).add(y * dst_pitch_bytes as usize),
+							dst_pitch_bytes as usize,
+						);
+					}
+				}
+			}
+		}
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	#[cfg(gpu_backend = "metal")]
+	unsafe {
+		use crate::DeviceHandleInit;
+		let (buf, was_hit) = crate::gpu::backends::metal::buffer::get_or_create_returning_hit(
+			DeviceHandleInit::FromPtr(config.device_handle),
+			w,
+			h,
+			bpp,
+			snapshot_tag,
+		);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_snapshot: Metal allocator returned null");
+		}
+		if !was_hit {
+			crate::gpu::backends::metal::buffer::copy_buffer(
+				config,
+				src_ptr,
+				0,
+				src_pitch_bytes,
+				buf.buf.raw,
+				0,
+				dst_pitch_bytes,
+				dst_pitch_bytes,
+				h,
+			)?;
+		}
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	#[cfg(gpu_backend = "cuda")]
+	unsafe {
+		use crate::DeviceHandleInit;
+		let ctx = config.context_handle.expect("CUDA path requires context_handle");
+		let (buf, was_hit) = crate::gpu::backends::cuda::buffer::get_or_create_returning_hit(
+			DeviceHandleInit::FromPtr(ctx),
+			w,
+			h,
+			bpp,
+			snapshot_tag,
+		);
+		if buf.buf.raw.is_null() {
+			return Err("prepare_source_snapshot: CUDA allocator returned null");
+		}
+		if !was_hit {
+			crate::gpu::backends::cuda::buffer::copy_buffer(
+				config,
+				src_ptr,
+				0,
+				src_pitch_bytes,
+				buf.buf.raw,
+				0,
+				dst_pitch_bytes,
+				dst_pitch_bytes,
+				h,
+			)?;
+		}
+		config.outgoing_data = Some(buf.buf.raw);
+		config.outgoing_pitch_px = w as i32;
+		return Ok(buf);
+	}
+
+	#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+	{
+		Err("prepare_source_snapshot: no GPU backend enabled")
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

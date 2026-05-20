@@ -70,10 +70,21 @@ pub fn get_or_create(width: u32, height: u32, bytes_per_pixel: u32, tag: u32) ->
 	get_or_create_with_mips(width, height, bytes_per_pixel, 1, tag)
 }
 
+/// Cache-aware variant: returns `(buffer, was_hit)`. Callers that need to
+/// populate the buffer only on first allocation (e.g. source snapshot) use
+/// `was_hit` to skip the upload on cache hit. See `prepare_source_snapshot`.
+pub fn get_or_create_returning_hit(width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> (ImageBuffer, bool) {
+	get_or_create_with_mips_inner(width, height, bytes_per_pixel, 1, tag)
+}
+
 /// Like `get_or_create` but sizes the buffer for an `mip_levels`-deep mip chain.
 /// `mip_levels <= 1` behaves identically; otherwise the byte budget follows
 /// `mip_buffer_size_bytes` so the prgpu downsample pass writes through without re-alloc.
 pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
+	get_or_create_with_mips_inner(width, height, bytes_per_pixel, mip_levels, tag).0
+}
+
+fn get_or_create_with_mips_inner(width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> (ImageBuffer, bool) {
 	let key = Key {
 		width,
 		height,
@@ -87,14 +98,17 @@ pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mi
 
 		if guard.promote(&key) {
 			let raw = guard.last_data_ptr();
-			return ImageBuffer {
-				buf: BufferObj { raw },
-				width,
-				height,
-				bytes_per_pixel,
-				row_bytes: compute_row_bytes(width, bytes_per_pixel),
-				pitch_px: width,
-			};
+			return (
+				ImageBuffer {
+					buf: BufferObj { raw },
+					width,
+					height,
+					bytes_per_pixel,
+					row_bytes: compute_row_bytes(width, bytes_per_pixel),
+					pitch_px: width,
+				},
+				true,
+			);
 		}
 
 		let len = if mip_levels <= 1 {
@@ -107,14 +121,17 @@ pub fn get_or_create_with_mips(width: u32, height: u32, bytes_per_pixel: u32, mi
 		guard.insert(key, data);
 		let raw = guard.last_data_ptr();
 
-		ImageBuffer {
-			buf: BufferObj { raw },
-			width,
-			height,
-			bytes_per_pixel,
-			row_bytes: compute_row_bytes(width, bytes_per_pixel),
-			pitch_px: width,
-		}
+		(
+			ImageBuffer {
+				buf: BufferObj { raw },
+				width,
+				height,
+				bytes_per_pixel,
+				row_bytes: compute_row_bytes(width, bytes_per_pixel),
+				pitch_px: width,
+			},
+			false,
+		)
 	})
 }
 

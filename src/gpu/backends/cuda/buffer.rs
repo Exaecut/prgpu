@@ -86,10 +86,23 @@ pub unsafe fn get_or_create(device: DeviceHandleInit, width: u32, height: u32, b
 	unsafe { get_or_create_with_mips(device, width, height, bytes_per_pixel, 1, tag) }
 }
 
+/// Cache-aware variant: returns `(buffer, was_hit)`. Callers that need to
+/// populate the buffer only on first allocation (e.g. source snapshot) use
+/// `was_hit` to skip the upload on cache hit. See `prepare_source_snapshot`.
+///
+/// # Safety: see `get_or_create`.
+pub unsafe fn get_or_create_returning_hit(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, tag: u32) -> (ImageBuffer, bool) {
+	unsafe { get_or_create_with_mips_inner(device, width, height, bytes_per_pixel, 1, tag) }
+}
+
 /// Like `get_or_create` but sized for an `mip_levels`-deep mip chain.
 ///
 /// # Safety: see `get_or_create`.
 pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> ImageBuffer {
+	unsafe { get_or_create_with_mips_inner(device, width, height, bytes_per_pixel, mip_levels, tag) }.0
+}
+
+unsafe fn get_or_create_with_mips_inner(device: DeviceHandleInit, width: u32, height: u32, bytes_per_pixel: u32, mip_levels: u32, tag: u32) -> (ImageBuffer, bool) {
 	let mips = mip_levels.max(1);
 	let key = match device {
 		DeviceHandleInit::FromPtr(device) => BufferKey {
@@ -116,14 +129,28 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	let mut guard = cache().lock();
 
 	if let Some(existing) = guard.get(&key) {
-		return ImageBuffer {
-			buf: existing,
-			width,
-			height,
-			bytes_per_pixel,
-			row_bytes: compute_row_bytes(width, bytes_per_pixel),
-			pitch_px: width,
-		};
+		let ptr = existing.raw;
+		drop(guard);
+		// [DEBUG-mg7a] race detector: if multiple threads see HIT on the same
+		// key with the same ptr in the same render burst, the global LRU is
+		// handing out a shared buffer to concurrent kernel chains.
+		log::info!(
+			"[DEBUG-mg7a] cuda buffer HIT thread={:?} key=(dev=0x{:x}, {}x{}, bpp={}, tag=0x{:08x}, mips={}) ptr={:p}",
+			std::thread::current().id(),
+			key.device, width, height, bytes_per_pixel, tag, mips,
+			ptr
+		);
+		return (
+			ImageBuffer {
+				buf: BufferObj { raw: ptr },
+				width,
+				height,
+				bytes_per_pixel,
+				row_bytes: compute_row_bytes(width, bytes_per_pixel),
+				pitch_px: width,
+			},
+			true,
+		);
 	}
 
 	let length = if mips <= 1 {
@@ -151,18 +178,30 @@ pub unsafe fn get_or_create_with_mips(device: DeviceHandleInit, width: u32, heig
 	// Drop the lock before freeing evicted memory; no need to hold it across the GPU free.
 	drop(guard);
 
+	// [DEBUG-mg7a] same probe on the miss path so we can correlate alloc-then-share patterns.
+	log::info!(
+		"[DEBUG-mg7a] cuda buffer MISS thread={:?} key=(dev=0x{:x}, {}x{}, bpp={}, tag=0x{:08x}, mips={}) ptr={:p} alloc_bytes={}",
+		std::thread::current().id(),
+		key.device, width, height, bytes_per_pixel, tag, mips,
+		raw,
+		length
+	);
+
 	if let Some(evicted_buf) = evicted {
 		unsafe { free_buffer(evicted_buf) };
 	}
 
-	ImageBuffer {
-		buf: BufferObj { raw },
-		width,
-		height,
-		bytes_per_pixel,
-		row_bytes: compute_row_bytes(width, bytes_per_pixel),
-		pitch_px: width,
-	}
+	(
+		ImageBuffer {
+			buf: BufferObj { raw },
+			width,
+			height,
+			bytes_per_pixel,
+			row_bytes: compute_row_bytes(width, bytes_per_pixel),
+			pitch_px: width,
+		},
+		false,
+	)
 }
 
 /// Buffer-to-buffer device copy. `cuMemcpy2D_v2` for mismatched pitches
@@ -194,7 +233,7 @@ pub unsafe fn copy_buffer(
 	width_bytes: u32,
 	height: u32,
 ) -> Result<(), &'static str> {
-	use cudarc::driver::sys::{cuMemcpy2D_v2, cuMemcpyDtoD_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
+	use cudarc::driver::sys::{cuMemcpy2D_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
 
 	let Some(ctx_ptr) = config.context_handle else {
 		log::error!("[CUDA/buffer] copy_buffer: config.context_handle is None");
@@ -214,37 +253,67 @@ pub unsafe fn copy_buffer(
 	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);
 	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset);
 
-	if src_pitch_bytes == dst_pitch_bytes && src_pitch_bytes == width_bytes {
-		let total = (width_bytes as usize).saturating_mul(height as usize);
-		let res = unsafe { cuMemcpyDtoD_v2(dst_dev, src_dev, total) };
-		if res != CUresult::CUDA_SUCCESS {
-			log::error!("[CUDA/buffer] cuMemcpyDtoD_v2 failed: {:?}", res);
-			return Err("cuMemcpyDtoD_v2 failed");
-		}
-	} else {
-		let cp = CUDA_MEMCPY2D_v2 {
-			srcXInBytes: 0,
-			srcY: 0,
-			srcMemoryType: CUmemorytype::CU_MEMORYTYPE_DEVICE,
-			srcHost: std::ptr::null(),
-			srcDevice: src_dev,
-			srcArray: std::ptr::null_mut(),
-			srcPitch: src_pitch_bytes as usize,
-			dstXInBytes: 0,
-			dstY: 0,
-			dstMemoryType: CUmemorytype::CU_MEMORYTYPE_DEVICE,
-			dstHost: std::ptr::null_mut(),
-			dstDevice: dst_dev,
-			dstArray: std::ptr::null_mut(),
-			dstPitch: dst_pitch_bytes as usize,
-			WidthInBytes: width_bytes as usize,
-			Height: height as usize,
+	// [DEBUG-mg7a] log the actual memory type CUDA reports for each pointer.
+	// Premiere's GPUFoundation routes frames through `PendingHostMemoryCopyManager`
+	// and may expose pinned-host (UVA-mapped) memory via `gpu_ppix_data` rather
+	// than pure device memory. Confirmed by RE of `RendererGPU.dll`:
+	// `cuMemHostRegister` / `cuMemHostAlloc` / `cuMemAllocHost_v2` all loaded
+	// alongside `cuMemAlloc_v2`. CU_POINTER_ATTRIBUTE_MEMORY_TYPE values:
+	// 1=HOST, 2=DEVICE, 3=ARRAY, 4=UNIFIED.
+	{
+		use cudarc::driver::sys::{cuPointerGetAttribute, CUpointer_attribute_enum};
+		let mut src_ty: i32 = 0;
+		let mut dst_ty: i32 = 0;
+		let _ = unsafe {
+			cuPointerGetAttribute(
+				&mut src_ty as *mut _ as *mut c_void,
+				CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+				src_dev,
+			)
 		};
-		let res = unsafe { cuMemcpy2D_v2(&cp) };
-		if res != CUresult::CUDA_SUCCESS {
-			log::error!("[CUDA/buffer] cuMemcpy2D_v2 failed: {:?}", res);
-			return Err("cuMemcpy2D_v2 failed");
-		}
+		let _ = unsafe {
+			cuPointerGetAttribute(
+				&mut dst_ty as *mut _ as *mut c_void,
+				CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+				dst_dev,
+			)
+		};
+		log::info!(
+			"[DEBUG-mg7a] copy_buffer src={:#x} ty={} (1=HOST,2=DEVICE,4=UNIFIED)  dst={:#x} ty={}  src_pitch={} dst_pitch={} width={} height={}",
+			src_dev, src_ty, dst_dev, dst_ty, src_pitch_bytes, dst_pitch_bytes, width_bytes, height
+		);
+	}
+
+	// Always go through the 2D copy with `CU_MEMORYTYPE_UNIFIED` so CUDA can
+	// auto-detect the actual memory type via UVA. The Premiere RE shows source
+	// PPix may be `cuMemHostRegister`-wrapped pages or `cuMemHostAlloc`-pinned
+	// memory (visible as `HostMemory` pool in `<GF.CUDAError>` JSON). Declaring
+	// `srcMemoryType = CU_MEMORYTYPE_DEVICE` against a host-origin UVA pointer
+	// makes CUDA reject with `CUDA_ERROR_INVALID_VALUE`. UNIFIED works for both
+	// pure-device and host-UVA pointers, and the prior `cuMemcpyDtoD_v2`
+	// fast-path inherits the same constraint, so we drop it.
+	let cp = CUDA_MEMCPY2D_v2 {
+		srcXInBytes: 0,
+		srcY: 0,
+		srcMemoryType: CUmemorytype::CU_MEMORYTYPE_UNIFIED,
+		srcHost: std::ptr::null(),
+		srcDevice: src_dev,
+		srcArray: std::ptr::null_mut(),
+		srcPitch: src_pitch_bytes as usize,
+		dstXInBytes: 0,
+		dstY: 0,
+		dstMemoryType: CUmemorytype::CU_MEMORYTYPE_UNIFIED,
+		dstHost: std::ptr::null_mut(),
+		dstDevice: dst_dev,
+		dstArray: std::ptr::null_mut(),
+		dstPitch: dst_pitch_bytes as usize,
+		WidthInBytes: width_bytes as usize,
+		Height: height as usize,
+	};
+	let res = unsafe { cuMemcpy2D_v2(&cp) };
+	if res != CUresult::CUDA_SUCCESS {
+		log::error!("[CUDA/buffer] cuMemcpy2D_v2 failed: {:?}", res);
+		return Err("cuMemcpy2D_v2 failed");
 	}
 
 	Ok(())

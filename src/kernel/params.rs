@@ -7,10 +7,12 @@
 //! - byte-stable size and alignment (via the `gpu_struct` machinery),
 //! - `Copy + 'static` so the host can move the struct into a constant buffer
 //!   without lifetime gymnastics,
+//! - `Sync` so rayon worker threads can share a raw pointer to the params,
 //! - no implicit padding that the GPU side cannot account for.
 //!
 //! `kernel_params! { ... }` auto-implements this trait. Manually-written
-//! constant-buffer structs should derive `#[prgpu::gpu_struct]` and then
+//! constant-buffer structs should annotate the type with
+//! `#[prgpu::gpu_struct]` and then
 //! `impl KernelParams for MyParams { const SIZE = Self::SIZE; const ALIGN = Self::ALIGN; }`.
 
 /// Marker for a `#[repr(C)]` / `gpu_struct`-laid-out struct safe to upload

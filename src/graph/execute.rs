@@ -15,7 +15,7 @@ use crate::graph::context::{MipPyramidCtx, PassContext};
 use crate::graph::pass::{MipChainPassDecl, MipDirection, PassDecl, SinglePassDecl, Slot};
 use crate::graph::resource::{MipPyramidDesc, ResourceId};
 use crate::graph::source::SourcePolicy;
-use crate::kernels::mip;
+use crate::pipeline::mip;
 use crate::types::{Backend, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
 
 struct AllocatedResource {

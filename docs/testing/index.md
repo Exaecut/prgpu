@@ -59,7 +59,7 @@ also available. Both paths run the same Slang kernel on the same GPU hardware.
 | `prgpu::testing::scene` | `Scene`, `Layer`, `Transform`, `Timeline` — compositing model |
 | `prgpu::testing::runner` | `RenderTest` — multi-frame render loop with PNG output |
 | `prgpu::testing::compare` | `compute_metrics()`, `diff_heatmap_gpu()`, `write_heatmap_png()`, JSON/txt reports |
-| `prgpu::kernels::diff` | Built-in GPU diff kernel — blackbody heatmap with configurable smoothstep |
+| `prgpu::kernel::builtin::diff` | Built-in GPU diff kernel — blackbody heatmap with configurable smoothstep |
 
 ## Two rendering paths
 

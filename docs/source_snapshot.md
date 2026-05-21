@@ -72,7 +72,7 @@ actually needs it.
 
 The snapshot allocator is keyed by `(host pointer, tag)` (via
 `prepare_source_snapshot`) when an effect needs once-per-clip semantics
-(see `kernels::mip::prepare_source_snapshot` source for the host-pointer
+(see `pipeline::mip::prepare_source_snapshot` source for the host-pointer
 folding). The current executor uses the simpler `prepare_source_copy`,
 which re-copies every frame — fine for the standard alias case where the
 source PPix is freshly populated each frame anyway. Effects that need the

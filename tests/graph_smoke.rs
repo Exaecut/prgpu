@@ -136,10 +136,10 @@ fn mip_chain_iterates_levels_minus_one_steps() {
 	let down_clone = Arc::clone(&down_calls);
 	let up_clone = Arc::clone(&up_calls);
 
-	graph.add_mip_chain("downsample", bloom, MipDirection::Down, prgpu::kernels::diff::diff::kernel(), move |level, _ctx| {
+	graph.add_mip_chain("downsample", bloom, MipDirection::Down, prgpu::kernel::builtin::diff::kernel(), move |level, _ctx| {
 		down_clone.fetch_add(1, Ordering::SeqCst);
 		// Real diff params are irrelevant; the chain exercises slot/level wiring.
-		prgpu::kernels::diff::DiffParams {
+		prgpu::kernel::builtin::DiffParams {
 			tol_r: 0.0,
 			tol_g: 0.0,
 			tol_b: 0.0,
@@ -151,9 +151,9 @@ fn mip_chain_iterates_levels_minus_one_steps() {
 		}
 	});
 
-	graph.add_mip_chain("upsample", bloom, MipDirection::Up, prgpu::kernels::diff::diff::kernel(), move |level, _ctx| {
+	graph.add_mip_chain("upsample", bloom, MipDirection::Up, prgpu::kernel::builtin::diff::kernel(), move |level, _ctx| {
 		up_clone.fetch_add(1, Ordering::SeqCst);
-		prgpu::kernels::diff::DiffParams {
+		prgpu::kernel::builtin::DiffParams {
 			tol_r: 0.0,
 			tol_g: 0.0,
 			tol_b: 0.0,
@@ -188,7 +188,7 @@ fn slot_inline_can_be_used_directly() {
 		pixel_layout: PixelLayout::Bgra,
 	};
 	let _ = inline_target;
-	graph.add_pass("noop_pass", prgpu::kernels::diff::diff::kernel(), Slot::MainSource, Slot::Output, |_ctx| prgpu::kernels::diff::DiffParams {
+	graph.add_pass("noop_pass", prgpu::kernel::builtin::diff::kernel(), Slot::MainSource, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
 		tol_r: 0.0,
 		tol_g: 0.0,
 		tol_b: 0.0,

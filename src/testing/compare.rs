@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::testing::context::GpuBuffer;
 use crate::testing::GpuContext;
 use crate::types::Configuration;
-use crate::kernels::diff::{DiffParams, diff};
+use crate::kernel::builtin::{diff, DiffParams};
 
 /// Per-channel absolute tolerance in [0, 1] plus heatmap smoothstep bounds.
 #[derive(Clone, Copy, Debug)]
@@ -115,7 +115,7 @@ pub fn diff_heatmap_gpu(
         _pad1: 0,
     };
 
-    unsafe { diff(&cfg, params).map_err(|e| format!("diff kernel: {e}"))? };
+    unsafe { diff::gpu(&cfg, params).map_err(|e| format!("diff kernel: {e}"))? };
 
     gpu.download_from_buffer(&out_buf, width, height, bpp)
 }

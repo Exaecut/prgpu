@@ -19,7 +19,8 @@ use crate::graph::pass::{MipChainPassDecl, MipDirection, MipDispatcher, PassDecl
 use crate::graph::resource::{MipPyramid, MipPyramidDesc, ResourceHandle, ResourceId};
 use crate::graph::source::SourcePolicy;
 use crate::kernel::Kernel;
-use crate::types::{ConfigBuildError, KernelParams};
+use crate::kernel::KernelParams;
+use crate::types::ConfigBuildError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphError {

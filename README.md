@@ -20,7 +20,7 @@ Rust/rayon-based CPU fallback.
   across frames via a keyed buffer cache. Real production effects
   (radialblur, vignette, etc.) hit realtime-preview budgets at 1080p on the
   CPU path.
-- **Mip-chain pyramids built in.** `kernels::mip::prepare_mip_source` +
+- **Mip-chain pyramids built in.** `pipeline::mip::prepare_mip_source` +
   `generate_mips` turn a flat input buffer into a multi-lod source in a couple
   of lines of host code. Effects whose sample radius grows with a parameter
   (radial blur, bokeh, glow, motion blur) can sample from downsampled levels

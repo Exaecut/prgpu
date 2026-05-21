@@ -71,9 +71,9 @@ Every effect that opts into mips does exactly this:
 ```rust
 config.outgoing_mip_levels = 4;
 let _mip_buf = unsafe {
-    prgpu::kernels::mip::prepare_mip_source(&mut config, MY_MIP_TAG)?
+    prgpu::pipeline::mip::prepare_mip_source(&mut config, MY_MIP_TAG)?
 };
-unsafe { prgpu::kernels::mip::generate_mips(&config)?; }
+unsafe { prgpu::pipeline::mip::generate_mips(&config)?; }
 unsafe { effect_kernel(&config, user_params)?; }
 ```
 
@@ -145,12 +145,12 @@ Otherwise `prepare_mip_source` is all you need.
 
 ### 3. `generate_mips` dispatch routing
 
-`prgpu::kernels::mip::generate_mips(&config)` is a thin wrapper around
+`prgpu::pipeline::mip::generate_mips(&config)` is a thin wrapper around
 N-1 dispatches of the built-in `mip_downsample` compute kernel. It
 routes automatically:
 
 ```rust
-// From prgpu/src/kernels/mip.rs (simplified):
+// From prgpu/src/pipeline/mip.rs (simplified):
 if pass_cfg.context_handle.is_some() {
     // GPU path: Metal / CUDA via dispatch_kernel
     unsafe { mip_downsample(&pass_cfg, params)? };
@@ -190,12 +190,12 @@ from Premiere's CPU-failover path, and from the `prgpu::bench` harness.
 
 ## Minimal CPU example
 
-Straight from the prgpu unit test (`prgpu/src/kernels/mip.rs::tests`),
+Straight from the prgpu unit test (`prgpu/src/pipeline/mip.rs::tests`),
 this is the complete CPU-side recipe with no AE plumbing:
 
 ```rust
 use prgpu::cpu::buffer::get_or_create_with_mips;
-use prgpu::kernels::mip::generate_mips;
+use prgpu::pipeline::mip::generate_mips;
 use prgpu::types::Configuration;
 
 const W: u32 = 32;
@@ -247,7 +247,7 @@ Host side inside an effect's `gpu.rs::render`:
 
 ```rust
 use prgpu::gpu::backends::metal::buffer as metal_buf;
-use prgpu::kernels::mip::generate_mips;
+use prgpu::pipeline::mip::generate_mips;
 use prgpu::{Configuration, DeviceHandleInit};
 
 // Start with the Configuration prgpu gave you (wraps Premiere's

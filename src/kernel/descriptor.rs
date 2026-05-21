@@ -1,7 +1,8 @@
 use after_effects as ae;
 
 use crate::cpu::render::{CpuDispatchFn, CpuDispatchTileFn};
-use crate::types::{Configuration, KernelParams};
+use crate::kernel::params::KernelParams;
+use crate::types::Configuration;
 
 /// GPU dispatch entry: hands `(config, user_params)` to the active backend
 /// (`backends::dispatch_kernel`) using the shader bytes the kernel was built with.

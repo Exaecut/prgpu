@@ -16,8 +16,5 @@ pub use backend::*;
 pub mod render;
 pub use render::*;
 
-pub mod kernel_params;
-pub use kernel_params::KernelParams;
-
 pub mod config_builder;
 pub use config_builder::{ConfigBuildError, ConfigBuilder, PassBinding};

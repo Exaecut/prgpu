@@ -216,7 +216,7 @@ pub fn render_cpu<P: Copy + Sync>(
 
 ### 5.3 `declare_kernel!` macro change
 
-**File**: `prgpu/src/kernels/mod.rs`
+**File**: `prgpu/src/kernel/macros.rs`
 
 The CPU dispatch section changes to pass the kernel name:
 
@@ -420,7 +420,7 @@ prgpu::timing::reset();
 | `prgpu/src/timing.rs` | **Create** | Timing module with types, storage, API |
 | `prgpu/src/lib.rs` | Modify | Add `pub mod timing;` |
 | `prgpu/src/cpu/render.rs` | Modify | Add `kernel_name` param + `Instant` timing |
-| `prgpu/src/kernels/mod.rs` | Modify | Pass `stringify!($name)` in CPU dispatch |
+| `prgpu/src/kernel/macros.rs` | Modify | Pass `stringify!($name)` in CPU dispatch |
 | `prgpu/src/gpu/backends/cuda/mod.rs` | Modify | Add CUDA event timing in `run()` |
 | `prgpu/src/gpu/backends/cuda/pipeline.rs` | Modify | Destroy cached events in `cleanup()` |
 | `prgpu/src/gpu/backends/metal/mod.rs` | Modify | Add `timing::record()` in `run()` |
@@ -434,7 +434,7 @@ prgpu::timing::reset();
 2. **`prgpu/src/timing.rs`** — create module with types + stubs + impl
 3. **`prgpu/src/lib.rs`** — register module
 4. **`prgpu/src/cpu/render.rs`** — add `kernel_name` + `Instant` timing
-5. **`prgpu/src/kernels/mod.rs`** — pass kernel name in macro
+5. **`prgpu/src/kernel/macros.rs`** — pass kernel name in macro
 6. **`prgpu/src/gpu/backends/metal/mod.rs`** — add Metal timing record
 7. **`prgpu/src/gpu/backends/cuda/mod.rs`** — add CUDA event timing
 8. **`prgpu/src/gpu/backends/cuda/pipeline.rs`** — event cleanup

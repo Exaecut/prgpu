@@ -1,6 +1,7 @@
-pub mod kernels;
 pub mod kernel;
-pub use kernel::Kernel;
+pub use kernel::{Kernel, KernelParams};
+
+pub mod pipeline;
 
 pub mod graph;
 pub mod adobe;

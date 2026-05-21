@@ -9,11 +9,13 @@
 //! the active backend.
 
 use crate::cpu::buffer as cpu_buffer;
-use crate::effect::{FrameBinding, InvocationBase, PixelLayout};
+use crate::effect::{Capability, FrameBinding, InvocationBase, PixelLayout};
 use crate::graph::builder::{GraphError, RenderGraph};
 use crate::graph::context::{MipPyramidCtx, PassContext};
 use crate::graph::pass::{MipChainPassDecl, MipDirection, PassDecl, SinglePassDecl, Slot};
 use crate::graph::resource::{MipPyramidDesc, ResourceId};
+use crate::graph::source::SourcePolicy;
+use crate::kernels::mip;
 use crate::types::{Backend, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
 
 struct AllocatedResource {
@@ -46,17 +48,27 @@ impl AllocatedResource {
 /// otherwise. Errors short-circuit: a failure mid-graph aborts the whole
 /// render to surface as an effect-level error rather than producing a
 /// partial output.
+///
+/// Source-snapshot policy is evaluated up front: if the graph declares
+/// `SnapshotIfAliased { tag }` and the host signals
+/// `Capability::SourceOutputMayAlias`, the executor copies `main_source`
+/// into a private buffer keyed by `tag` and rebinds `base.main_source` to
+/// that snapshot for the rest of the graph. `AlwaysSnapshot` skips the
+/// capability check.
 pub fn execute<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
 where
 	F: Copy + Send + Sync + 'static,
 {
+	let mut local_base = clone_base(base);
+	let _snapshot_buf = apply_source_policy(&mut local_base, graph.source_policy)?;
+
 	let mut resources: Vec<AllocatedResource> = Vec::with_capacity(graph.resources.len());
 	for decl in &graph.resources {
-		let ctx = MipPyramidCtx::new(frame_data, base);
+		let ctx = MipPyramidCtx::new(frame_data, &local_base);
 		let desc = (decl.desc_fn)(&ctx);
-		let buffer = match base.backend {
-			Backend::Cpu => cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, base.bytes_per_pixel, desc.levels.max(1), desc.tag),
-			Backend::Cuda | Backend::Metal | Backend::OpenCL => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(base.device_handle), desc.base_width, desc.base_height, base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
+		let buffer = match local_base.backend {
+			Backend::Cpu => cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag),
+			Backend::Cuda | Backend::Metal | Backend::OpenCL => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(local_base.device_handle), desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
 		};
 		if buffer.buf.raw.is_null() {
 			return Err(GraphError::ResourceAllocFailed { name: decl.name });
@@ -66,12 +78,87 @@ where
 
 	for pass in &graph.passes {
 		match pass {
-			PassDecl::Single(p) => execute_single(p, frame_data, base, &resources)?,
-			PassDecl::MipChain(p) => execute_mip_chain(p, frame_data, base, &resources)?,
+			PassDecl::Single(p) => execute_single(p, frame_data, &local_base, &resources)?,
+			PassDecl::MipChain(p) => execute_mip_chain(p, frame_data, &local_base, &resources)?,
 		}
 	}
 
 	Ok(())
+}
+
+fn clone_base(base: &InvocationBase) -> InvocationBase {
+	InvocationBase {
+		host: base.host,
+		backend: base.backend,
+		render_kind: base.render_kind,
+		device_handle: base.device_handle,
+		context_handle: base.context_handle,
+		command_queue_handle: base.command_queue_handle,
+		bytes_per_pixel: base.bytes_per_pixel,
+		pixel_layout: base.pixel_layout,
+		time: base.time,
+		progress: base.progress,
+		render_generation: base.render_generation,
+		main_source: base.main_source,
+		incoming_source: base.incoming_source,
+		outgoing_source: base.outgoing_source,
+		output: base.output,
+	}
+}
+
+fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy) -> Result<Option<ImageBuffer>, GraphError> {
+	let tag = match policy {
+		SourcePolicy::Direct => return Ok(None),
+		SourcePolicy::SnapshotIfAliased { tag } => {
+			if !base.capabilities().supports(Capability::SourceOutputMayAlias) {
+				return Ok(None);
+			}
+			tag
+		}
+		SourcePolicy::AlwaysSnapshot { tag } => tag,
+	};
+
+	if base.main_source.is_null() {
+		return Ok(None);
+	}
+
+	let mut tmp_cfg = Configuration {
+		device_handle: base.device_handle,
+		context_handle: base.context_handle,
+		command_queue_handle: base.command_queue_handle,
+		outgoing_data: Some(base.main_source.data),
+		incoming_data: Some(base.main_source.data),
+		dest_data: base.output.data,
+		outgoing_pitch_px: base.main_source.pitch_px,
+		incoming_pitch_px: base.main_source.pitch_px,
+		dest_pitch_px: base.output.pitch_px,
+		width: base.main_source.width,
+		height: base.main_source.height,
+		outgoing_width: base.main_source.width,
+		outgoing_height: base.main_source.height,
+		incoming_width: base.main_source.width,
+		incoming_height: base.main_source.height,
+		bytes_per_pixel: base.bytes_per_pixel,
+		time: base.time,
+		progress: base.progress,
+		render_generation: base.render_generation,
+		pixel_layout: base.pixel_layout.as_u32(),
+		outgoing_mip_levels: 0,
+	};
+
+	let snapshot = unsafe { mip::prepare_source_copy(&mut tmp_cfg, tag) }.map_err(|m| GraphError::KernelDispatch { pass: "source_snapshot", message: m })?;
+
+	base.main_source = FrameBinding {
+		data: snapshot.buf.raw,
+		pitch_px: snapshot.pitch_px as i32,
+		width: snapshot.width,
+		height: snapshot.height,
+		mip_levels: 0,
+		bytes_per_pixel: snapshot.bytes_per_pixel,
+		pixel_layout: base.pixel_layout,
+	};
+
+	Ok(Some(snapshot))
 }
 
 /// Backwards-compat alias kept for tests written before the unified executor.

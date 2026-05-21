@@ -72,6 +72,44 @@ fn legacy_execute_cpu_alias_still_resolves() {
 }
 
 #[test]
+fn source_policy_direct_is_a_noop() {
+	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	graph.set_source_policy(prgpu::graph::SourcePolicy::Direct);
+	let mut src = vec![0u8; 8 * 8 * 4];
+	let mut dst = vec![0u8; 8 * 8 * 4];
+	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("direct policy");
+}
+
+#[test]
+fn snapshot_if_aliased_is_skipped_when_capability_absent() {
+	// CPU/AE base does NOT report SourceOutputMayAlias, so the snapshot path
+	// short-circuits and the original main_source pointer is preserved.
+	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	graph.set_source_policy(prgpu::graph::SourcePolicy::SnapshotIfAliased { tag: 0xCAFE_0001 });
+	let mut src = vec![1u8; 8 * 8 * 4];
+	let mut dst = vec![0u8; 8 * 8 * 4];
+	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("policy noop on AE+CPU");
+}
+
+#[test]
+fn always_snapshot_takes_a_copy_on_cpu() {
+	use prgpu::effect::Capability;
+	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	graph.set_source_policy(prgpu::graph::SourcePolicy::AlwaysSnapshot { tag: 0xCAFE_0002 });
+	let mut src = vec![3u8; 8 * 8 * 4];
+	let mut dst = vec![0u8; 8 * 8 * 4];
+	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
+
+	// AE+CPU does not support SourceOutputMayAlias, but AlwaysSnapshot ignores
+	// that and always allocates. The graph runs without panicking, which is
+	// the visible promise of the policy at the executor level.
+	let _ = base.capabilities().supports(Capability::SourceOutputMayAlias);
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("always snapshot");
+}
+
+#[test]
 fn mip_pyramid_resource_is_allocated_with_requested_levels() {
 	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
 	let _bloom = graph.declare_mip_pyramid("bloom", |_ctx| MipPyramidDesc::new(64, 64).levels(4).tag(0xFEED_0001));

@@ -92,4 +92,19 @@ impl<P: KernelParams> Kernel<P> {
 	) -> Result<(), ae::Error> {
 		(self.cpu_render)(in_data, in_layer, out_layer, config, params)
 	}
+
+	/// AE-host-free CPU dispatch for resource→resource passes (mip chain
+	/// downsample / upsample). Skips the `iterate_with` fast path; partitions
+	/// the destination buffer directly via the rayon tile dispatcher.
+	///
+	/// # Safety
+	/// `config.dest_data` must be non-null and back at least
+	/// `dest_pitch_px * height * bytes_per_pixel` bytes; source pointers must
+	/// be valid for the dispatch and follow the kernel's slot expectations.
+	#[inline]
+	pub unsafe fn dispatch_cpu_direct(&self, config: &Configuration, params: P) {
+		unsafe {
+			crate::cpu::render::render_cpu_direct(self.name, config, self.cpu_dispatch_tile, &params);
+		}
+	}
 }

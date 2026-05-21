@@ -19,7 +19,11 @@
 /// The two associated constants must equal the values emitted by
 /// `#[gpu_struct]`; mismatch will trip the `const _` size/align asserts the
 /// `gpu_struct` macro plants next to the struct.
-pub trait KernelParams: Copy + Sized + 'static {
+///
+/// `Sync` is required because the CPU dispatcher (`render_cpu_direct`)
+/// shares the params struct across rayon worker threads via a raw pointer.
+/// All `#[gpu_struct]` types are Sync by construction (only scalar fields).
+pub trait KernelParams: Copy + Sync + Sized + 'static {
 	const SIZE: usize;
 	const ALIGN: usize;
 }

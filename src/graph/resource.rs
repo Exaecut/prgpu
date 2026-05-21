@@ -74,6 +74,7 @@ pub struct MipPyramidDesc {
 	pub levels: u32,
 	pub tag: u32,
 	pub lifetime: ResourceLifetime,
+	pub populate_from_source: bool,
 }
 
 impl MipPyramidDesc {
@@ -84,6 +85,7 @@ impl MipPyramidDesc {
 			levels: 1,
 			tag: 0,
 			lifetime: ResourceLifetime::Device,
+			populate_from_source: false,
 		}
 	}
 
@@ -99,6 +101,11 @@ impl MipPyramidDesc {
 
 	pub const fn lifetime(mut self, lifetime: ResourceLifetime) -> Self {
 		self.lifetime = lifetime;
+		self
+	}
+
+	pub const fn populate_from_source(mut self, populate: bool) -> Self {
+		self.populate_from_source = populate;
 		self
 	}
 }

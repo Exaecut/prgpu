@@ -73,6 +73,37 @@ where
 		if buffer.buf.raw.is_null() {
 			return Err(GraphError::ResourceAllocFailed { name: decl.name });
 		}
+
+		if desc.populate_from_source && !local_base.main_source.is_null() {
+			let mut tmp_cfg = Configuration {
+				device_handle: local_base.device_handle,
+				context_handle: local_base.context_handle,
+				command_queue_handle: local_base.command_queue_handle,
+				outgoing_data: Some(local_base.main_source.data),
+				incoming_data: Some(local_base.main_source.data),
+				dest_data: buffer.buf.raw,
+				outgoing_pitch_px: local_base.main_source.pitch_px,
+				incoming_pitch_px: local_base.main_source.pitch_px,
+				dest_pitch_px: buffer.pitch_px as i32,
+				width: desc.base_width,
+				height: desc.base_height,
+				outgoing_width: local_base.main_source.width,
+				outgoing_height: local_base.main_source.height,
+				incoming_width: local_base.main_source.width,
+				incoming_height: local_base.main_source.height,
+				bytes_per_pixel: local_base.bytes_per_pixel,
+				time: local_base.time,
+				progress: local_base.progress,
+				render_generation: local_base.render_generation,
+				pixel_layout: local_base.pixel_layout.as_u32(),
+				outgoing_mip_levels: desc.levels,
+			};
+			unsafe {
+				mip::prepare_mip_source(&mut tmp_cfg, desc.tag).map_err(|m| GraphError::KernelDispatch { pass: "prepare_mip_resource", message: m })?;
+				mip::generate_mips(&tmp_cfg).map_err(|m| GraphError::KernelDispatch { pass: "generate_mip_resource", message: m })?;
+			}
+		}
+
 		resources.push(AllocatedResource { desc, buffer });
 	}
 

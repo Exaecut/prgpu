@@ -59,7 +59,16 @@ fn empty_graph_runs_clean() {
 	let mut src = vec![0u8; 16 * 16 * 4];
 	let mut dst = vec![0u8; 16 * 16 * 4];
 	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 16, 16);
-	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("empty graph runs");
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("empty graph runs");
+}
+
+#[test]
+fn legacy_execute_cpu_alias_still_resolves() {
+	let graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	let mut src = vec![0u8; 8 * 8 * 4];
+	let mut dst = vec![0u8; 8 * 8 * 4];
+	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
+	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("alias works");
 }
 
 #[test]
@@ -72,7 +81,7 @@ fn mip_pyramid_resource_is_allocated_with_requested_levels() {
 	let mut src = vec![0u8; 64 * 64 * 4];
 	let mut dst = vec![0u8; 64 * 64 * 4];
 	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 64, 64);
-	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("alloc-only graph runs");
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("alloc-only graph runs");
 }
 
 #[test]
@@ -121,7 +130,7 @@ fn mip_chain_iterates_levels_minus_one_steps() {
 	let mut src = vec![0u8; 64 * 64 * 4];
 	let mut dst = vec![0u8; 64 * 64 * 4];
 	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 64, 64);
-	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("mip chain runs");
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("mip chain runs");
 
 	// 4-level pyramid → 3 transitions per direction.
 	assert_eq!(down_calls.load(Ordering::SeqCst), 3);

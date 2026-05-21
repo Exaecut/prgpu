@@ -1,13 +1,12 @@
 //! Graph execution.
 //!
-//! `execute_cpu` walks the declared graph against an [`InvocationBase`],
-//! allocates resources from the CPU buffer pool, builds a fresh
-//! `Configuration` per pass via `ConfigBuilder`, and routes each pass
-//! through its type-erased dispatcher closure.
-//!
-//! GPU execution lands in Phase 5; the per-pass dispatcher closure already
-//! knows how to call `Kernel<P>::dispatch_gpu` so this file's structure
-//! will be reused unchanged.
+//! [`execute`] walks the declared graph against an [`InvocationBase`],
+//! allocates resources from the CPU or GPU buffer pool (picked by
+//! `base.backend`), builds a fresh `Configuration` per pass via
+//! `ConfigBuilder`, and routes each pass through its type-erased dispatcher
+//! closure. The dispatcher closure itself decides between
+//! `Kernel<P>::dispatch_cpu_direct` and `Kernel<P>::dispatch_gpu` based on
+//! the active backend.
 
 use crate::cpu::buffer as cpu_buffer;
 use crate::effect::{FrameBinding, InvocationBase, PixelLayout};
@@ -15,7 +14,7 @@ use crate::graph::builder::{GraphError, RenderGraph};
 use crate::graph::context::{MipPyramidCtx, PassContext};
 use crate::graph::pass::{MipChainPassDecl, MipDirection, PassDecl, SinglePassDecl, Slot};
 use crate::graph::resource::{MipPyramidDesc, ResourceId};
-use crate::types::{ConfigBuilder, Configuration, ImageBuffer, PassBinding};
+use crate::types::{Backend, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
 
 struct AllocatedResource {
 	#[allow(dead_code)]
@@ -42,37 +41,48 @@ impl AllocatedResource {
 	}
 }
 
-/// Execute a CPU graph end-to-end against `base`. Resources are allocated
-/// from the CPU buffer pool keyed by `MipPyramidDesc::tag`. Errors short-
-/// circuit: a failure mid-graph aborts the whole render to surface as an
-/// effect-level error rather than producing a partial output.
-pub fn execute_cpu<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
+/// Execute a graph end-to-end against `base`. Resources are allocated from
+/// the CPU buffer pool when `base.backend == Cpu`, the GPU buffer pool
+/// otherwise. Errors short-circuit: a failure mid-graph aborts the whole
+/// render to surface as an effect-level error rather than producing a
+/// partial output.
+pub fn execute<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
 where
 	F: Copy + Send + Sync + 'static,
 {
 	let mut resources: Vec<AllocatedResource> = Vec::with_capacity(graph.resources.len());
-	for (idx, decl) in graph.resources.iter().enumerate() {
+	for decl in &graph.resources {
 		let ctx = MipPyramidCtx::new(frame_data, base);
 		let desc = (decl.desc_fn)(&ctx);
-		let buffer = cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, base.bytes_per_pixel, desc.levels.max(1), desc.tag);
+		let buffer = match base.backend {
+			Backend::Cpu => cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, base.bytes_per_pixel, desc.levels.max(1), desc.tag),
+			Backend::Cuda | Backend::Metal | Backend::OpenCL => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(base.device_handle), desc.base_width, desc.base_height, base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
+		};
 		if buffer.buf.raw.is_null() {
 			return Err(GraphError::ResourceAllocFailed { name: decl.name });
 		}
-		let _ = idx;
 		resources.push(AllocatedResource { desc, buffer });
 	}
 
 	for pass in &graph.passes {
 		match pass {
-			PassDecl::Single(p) => execute_single_cpu(p, frame_data, base, &resources)?,
-			PassDecl::MipChain(p) => execute_mip_chain_cpu(p, frame_data, base, &resources)?,
+			PassDecl::Single(p) => execute_single(p, frame_data, base, &resources)?,
+			PassDecl::MipChain(p) => execute_mip_chain(p, frame_data, base, &resources)?,
 		}
 	}
 
 	Ok(())
 }
 
-fn execute_single_cpu<F>(pass: &SinglePassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
+/// Backwards-compat alias kept for tests written before the unified executor.
+pub fn execute_cpu<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
+where
+	F: Copy + Send + Sync + 'static,
+{
+	execute(graph, frame_data, base)
+}
+
+fn execute_single<F>(pass: &SinglePassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
 where
 	F: Copy + Send + Sync + 'static,
 {
@@ -99,7 +109,7 @@ where
 	(pass.dispatcher)(&ctx, &config).map_err(|m| GraphError::KernelDispatch { pass: pass.name, message: m })
 }
 
-fn execute_mip_chain_cpu<F>(pass: &MipChainPassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
+fn execute_mip_chain<F>(pass: &MipChainPassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
 where
 	F: Copy + Send + Sync + 'static,
 {

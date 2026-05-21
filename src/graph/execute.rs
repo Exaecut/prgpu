@@ -108,9 +108,20 @@ where
 	}
 
 	for pass in &graph.passes {
+		let ctx = PassContext::new(frame_data, &local_base);
 		match pass {
-			PassDecl::Single(p) => execute_single(p, frame_data, &local_base, &resources)?,
-			PassDecl::MipChain(p) => execute_mip_chain(p, frame_data, &local_base, &resources)?,
+			PassDecl::Single(p) => {
+				let enabled = p.enabled_when.as_ref().map(|f| f(&ctx)).unwrap_or(true);
+				if enabled {
+					execute_single(p, frame_data, &local_base, &resources)?;
+				}
+			}
+			PassDecl::MipChain(p) => {
+				let enabled = p.enabled_when.as_ref().map(|f| f(&ctx)).unwrap_or(true);
+				if enabled {
+					execute_mip_chain(p, frame_data, &local_base, &resources)?;
+				}
+			}
 		}
 	}
 

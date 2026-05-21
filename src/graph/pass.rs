@@ -37,12 +37,16 @@ pub type SingleDispatcher<F> = Box<dyn Fn(&PassContext<F>, &crate::types::Config
 /// Type-erased mip-chain dispatcher: `(level, ctx, config) → Result<()>`.
 pub type MipDispatcher<F> = Box<dyn Fn(u32, &PassContext<F>, &crate::types::Configuration) -> Result<(), &'static str> + Send + Sync + 'static>;
 
+/// Optional pass predicate signature: returns `true` if the pass should run.
+pub type EnabledPredicate<F> = Box<dyn Fn(&PassContext<F>) -> bool + Send + Sync + 'static>;
+
 pub(crate) struct SinglePassDecl<F> {
 	pub name: &'static str,
 	pub source: Slot,
 	pub input: Option<Slot>,
 	pub target: Slot,
 	pub dispatcher: SingleDispatcher<F>,
+	pub enabled_when: Option<EnabledPredicate<F>>,
 }
 
 pub(crate) struct MipChainPassDecl<F> {
@@ -50,6 +54,7 @@ pub(crate) struct MipChainPassDecl<F> {
 	pub resource: ResourceId,
 	pub direction: MipDirection,
 	pub dispatcher: MipDispatcher<F>,
+	pub enabled_when: Option<EnabledPredicate<F>>,
 }
 
 pub(crate) enum PassDecl<F> {

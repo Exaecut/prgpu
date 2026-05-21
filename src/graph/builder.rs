@@ -95,7 +95,17 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 		P: KernelParams + Send + Sync,
 		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
 	{
-		self.add_pass_inner(name, kernel, source, None, target, params_fn);
+		self.add_pass_inner(name, kernel, source, None, target, params_fn, None);
+	}
+
+	/// Register a single-pass kernel invocation with a conditional predicate.
+	pub fn add_pass_conditional<P, A, E>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, target: Slot, params_fn: A, enabled_fn: E)
+	where
+		P: KernelParams + Send + Sync,
+		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
+		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
+	{
+		self.add_pass_inner(name, kernel, source, None, target, params_fn, Some(Box::new(enabled_fn)));
 	}
 
 	/// Register a single-pass invocation with an explicit secondary input
@@ -106,10 +116,20 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 		P: KernelParams + Send + Sync,
 		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
 	{
-		self.add_pass_inner(name, kernel, source, Some(input), target, params_fn);
+		self.add_pass_inner(name, kernel, source, Some(input), target, params_fn, None);
 	}
 
-	fn add_pass_inner<P, A>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Option<Slot>, target: Slot, params_fn: A)
+	/// Register a single-pass invocation with an explicit secondary input and a conditional predicate.
+	pub fn add_pass_with_input_conditional<P, A, E>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Slot, target: Slot, params_fn: A, enabled_fn: E)
+	where
+		P: KernelParams + Send + Sync,
+		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
+		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
+	{
+		self.add_pass_inner(name, kernel, source, Some(input), target, params_fn, Some(Box::new(enabled_fn)));
+	}
+
+	fn add_pass_inner<P, A>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Option<Slot>, target: Slot, params_fn: A, enabled_when: Option<crate::graph::pass::EnabledPredicate<F>>)
 	where
 		P: KernelParams + Send + Sync,
 		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
@@ -131,12 +151,31 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 			input,
 			target,
 			dispatcher,
+			enabled_when,
 		}));
 	}
 
 	/// Register an N-level sweep across a mip pyramid. `direction = Down`
 	/// runs `lod 0 → 1 → ... → N-1`; `direction = Up` runs the reverse.
 	pub fn add_mip_chain<P, A>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A)
+	where
+		P: KernelParams + Send + Sync,
+		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
+	{
+		self.add_mip_chain_inner(name, resource, direction, kernel, params_fn, None);
+	}
+
+	/// Register a conditional N-level sweep across a mip pyramid.
+	pub fn add_mip_chain_conditional<P, A, E>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A, enabled_fn: E)
+	where
+		P: KernelParams + Send + Sync,
+		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
+		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
+	{
+		self.add_mip_chain_inner(name, resource, direction, kernel, params_fn, Some(Box::new(enabled_fn)));
+	}
+
+	fn add_mip_chain_inner<P, A>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A, enabled_when: Option<crate::graph::pass::EnabledPredicate<F>>)
 	where
 		P: KernelParams + Send + Sync,
 		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
@@ -157,6 +196,7 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 			resource: resource.id(),
 			direction,
 			dispatcher,
+			enabled_when,
 		}));
 	}
 }

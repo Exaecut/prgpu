@@ -40,6 +40,11 @@ pub struct MipDownsampleParams {
 	pub _pad2: u32,
 }
 
+impl crate::types::KernelParams for MipDownsampleParams {
+	const SIZE: usize = core::mem::size_of::<Self>();
+	const ALIGN: usize = core::mem::align_of::<Self>();
+}
+
 declare_kernel!(mip_downsample, MipDownsampleParams);
 
 /// Fill levels `1..N` from level 0 in `config.outgoing_data`.

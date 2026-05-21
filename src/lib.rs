@@ -1,4 +1,6 @@
 pub mod kernels;
+pub mod kernel;
+pub use kernel::Kernel;
 
 pub mod cpu;
 pub mod gpu;

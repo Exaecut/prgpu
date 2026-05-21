@@ -1,6 +1,7 @@
 //! Built-in pixel-difference kernel. Generates a blackbody heatmap.
 
 use crate::declare_kernel;
+use crate::types::KernelParams;
 
 /// Must match `DiffParams` in `diff.slang` byte-for-byte.
 /// `_pad*` fills to 32 bytes (8 × u32) for vec4 alignment.
@@ -15,6 +16,11 @@ pub struct DiffParams {
     pub smooth_b: f32,
     pub _pad0: u32,
     pub _pad1: u32,
+}
+
+impl KernelParams for DiffParams {
+    const SIZE: usize = core::mem::size_of::<Self>();
+    const ALIGN: usize = core::mem::align_of::<Self>();
 }
 
 declare_kernel!(diff, DiffParams);

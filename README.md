@@ -106,9 +106,8 @@ is pinned in `src/build/sdk.rs`.
 
 When you call `compile_shaders("./shaders")`, prgpu looks for a sibling
 directory named `vekl` (relative to prgpu's own checkout) and adds it to the
-slangc include path if found. This keeps Exaecut's internal shader library
-transparent for us. If you're building a plugin outside the Exaecut workspace,
-call the explicit form instead:
+slangc include path if found. If your effect crate isn't laid out next to
+a `vekl/` checkout, call the explicit form instead:
 
 ```rust
 use std::path::PathBuf;
@@ -134,7 +133,6 @@ Dual-licensed under MIT OR Apache-2.0.
 
 ## Status
 
-prgpu is used in production by [Exaecut](https://exaecut.io) video effects
-plugins (radialblur, vignette, ...). APIs are stabilizing; the `0.1.x` series
-may still see breaking changes in minor bumps. Pinning an exact `=0.1.N`
-version is reasonable if you're shipping a release binary.
+APIs are stabilising; the `0.1.x` series may still see breaking changes in
+minor bumps. Pinning an exact `=0.1.N` version is reasonable if you're
+shipping a release binary.

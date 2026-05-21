@@ -18,8 +18,10 @@
 //! | `Cmd_SmartRenderGpu`    | graph execution (GPU)                              |
 //! | `Cmd_GpuDeviceSetup`    | declares supported GPU framework                   |
 //!
-//! Mindglow's old 750-line `lib.rs` collapses into ~120 lines of `Effect`
-//! impls plus the two `pub type` declarations.
+//! A typical handwritten `lib.rs` (`handle_command` + per-host parameter
+//! visibility + manual licence checks + per-pass `Configuration` mutation)
+//! collapses into a single `impl Effect` plus a thin `AdobePluginGlobal`
+//! trampoline.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -241,7 +243,7 @@ impl<E: Effect> EffectAdapter<E> {
 		let dest_pitch = out_layer.buffer_stride() as i32 / bpp as i32;
 
 		// Metal: device handle is the device pointer. CUDA: device handle is
-		// the context pointer (matches mindglow's existing gpu.rs).
+		// the context pointer.
 		#[cfg(gpu_backend = "metal")]
 		let device_ptr = info.devicePV;
 		#[cfg(gpu_backend = "cuda")]

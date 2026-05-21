@@ -1,18 +1,17 @@
 //! Optional license-gate trait the AE/Premiere adapters consult.
 //!
 //! [`LicenseGate`] is opt-in. Effects that don't ship a licence check use
-//! [`NoLicenseGate`] (the [`crate::effect::Effect`] trait's default
-//! associated type once Phase 11 lands), and the adapters skip every check.
+//! [`NoLicenseGate`] and the adapters skip every check.
 //!
-//! Effects that DO need a licence check (mindglow, retrovhs, ...) implement
-//! the trait against their own backend (`themis`, today). The adapter then
-//! calls:
+//! Effects that need a licence check implement this trait against their own
+//! licence backend. The adapter then calls:
 //!
 //! - [`LicenseGate::initialize`] once during `Cmd_GlobalSetup`,
 //! - [`LicenseGate::is_valid`] before every render selector,
 //! - [`LicenseGate::retry`] when the user clicks a "Retry" parameter button.
 //!
-//! `prgpu` itself never depends on `themis` or any concrete licence backend.
+//! `prgpu` itself depends on no licence backend; the trait is the only
+//! contract the adapters require.
 
 /// Marker for an effect's licence backend.
 ///

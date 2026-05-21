@@ -94,7 +94,7 @@ impl<E: Effect> GpuFilterAdapter<E> {
 		};
 
 		// CUDA needs the context handle as the device handle for buffer alloc;
-		// Metal uses devicePV directly. Match mindglow's existing gpu.rs.
+		// CUDA: device handle = CUcontext (contextPV). Metal: device handle = MTLDevice (devicePV).
 		#[cfg(gpu_backend = "cuda")]
 		let device_handle = base_cfg.context_handle.unwrap_or(std::ptr::null_mut());
 		#[cfg(gpu_backend = "metal")]
@@ -150,7 +150,7 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 
 		// Some Premiere builds give us PPix bounds that disagree with
 		// `render_params.render_*()` (e.g. Premiere 25.2 native-res ppix).
-		// Match the existing mindglow override: when src/dst bounds match
+		// Premiere 25.2 native-res PPix workaround: when src/dst bounds match
 		// each other but differ from `bounds`, prefer them.
 		let src_ppix = props.frames.1;
 		let dst_ppix = unsafe { *out_frame };

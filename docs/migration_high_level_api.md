@@ -1,8 +1,12 @@
 # Migrating an existing effect to the high-level API
 
-Mindglow shrank from 865 lines (`lib.rs` + `gpu.rs`) to 270 lines through
-this migration. The mapping is mechanical — most existing logic moves
-into trait methods without behavioural change.
+A typical pre-migration multi-pass effect splits its logic across a
+hand-written `lib.rs` (parameter setup + UI visibility + AE selectors +
+CPU render) and a `gpu.rs` (Premiere `pr::GpuFilter` impl), running into
+the four-figure-line range for non-trivial bloom / blur pipelines.
+Migration folds both files into one `impl Effect` with no behavioural
+change — typical reduction ratios sit around 60-70%. The mapping is
+mechanical.
 
 ## Old → new
 
@@ -33,9 +37,9 @@ time, ext_x/ext_y) into one `Copy + Send + Sync + 'static` struct.
 ```rust
 #[derive(Clone, Copy)]
 pub struct FrameData {
-    pub prefilter: BloomPrefilterParams,
-    pub upsample: BloomUpsampleParams,
-    pub composite: MindglowCompositeParams,
+    pub prefilter: PrefilterParams,
+    pub upsample:  UpsampleParams,
+    pub composite: CompositeParams,
     pub quality: u32,
     pub frame_index: u32,
     pub ext_x: i32,
@@ -122,12 +126,17 @@ but `from_cpu` / `from_gpu` keep the same signatures. Migration adds
 ## Verifying parity
 
 Run any GPU render tests against a baseline output PNG before and after
-migration. The reference output should be byte-identical — every behavior
+migration. The reference output should be byte-identical — every behaviour
 the legacy code expressed (popup normalisation, BGRA layout, Premiere
 alias snapshot, mip chain dispatch order) lives in prgpu now and produces
 the same kernel inputs.
 
-For mindglow, the regression bookmark is
-`.kilo/plans/mindglow_baseline.png` (SHA256 `AC59...2716`); the
-`mindglow/tests/render_basic.rs` test rerun matches the baseline exactly
-post-migration.
+The recommended workflow:
+
+1. Capture the pre-migration test output as a golden PNG.
+2. Tag the pre-migration commit (e.g. `git tag pre-prgpu-migration`).
+3. Run the migration.
+4. Re-run the test; diff the output PNG against the golden.
+5. SHA256 should match exactly. If it doesn't, audit each pass's
+   `Configuration` fields (output dims, pitch, mip levels, source/dest
+   pointers) against the legacy code's manual values.

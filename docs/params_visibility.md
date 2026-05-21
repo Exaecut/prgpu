@@ -34,7 +34,7 @@ fn ui(api: &mut ParamApi<Params>) -> Result<(), ae::Error> {
             Ok(())
         });
         a.on_click(Params::Feedback, |_ctx| {
-            let _ = webbrowser::open("https://exaecut.io/feedback/36");
+            let _ = webbrowser::open("https://example.com/feedback");
             Ok(())
         });
     });

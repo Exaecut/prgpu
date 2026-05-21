@@ -31,7 +31,7 @@ fn pipeline(g: &mut RenderGraph<FrameData>) {
         |level, ctx| { let mut up = ctx.frame_data().upsample; up.dst_lod = level; up });
 
     g.add_pass_with_input("composite",
-        k::mindglow_composite::kernel(),
+        k::composite::kernel(),
         Slot::MainSource, bloom.mip(0), Slot::Output,
         |ctx| ctx.frame_data().composite);
 }

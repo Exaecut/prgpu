@@ -53,12 +53,13 @@ the lower half encoding the role:
 
 | Tag           | Meaning                |
 |---------------|------------------------|
-| `0xMG_0001`   | mindglow bloom pyramid |
-| `0xMG_0002`   | mindglow source snapshot |
-| `0xRB_0001`   | radialblur source mip pyramid |
+| `0xAA_0001`   | effect "AA" — bloom pyramid |
+| `0xAA_0002`   | effect "AA" — source snapshot |
+| `0xBB_0001`   | effect "BB" — source mip pyramid |
 
 Distinct lower halves keep the bloom pyramid and the source snapshot from
-sharing a slot.
+sharing a slot. The upper-half byte is just an effect-side convention so
+two effects loaded into the same host don't collide on tag values.
 
 ## Why not always snapshot?
 

@@ -44,8 +44,8 @@ options-button label, premiere pixel formats.
 
 ```rust
 fn descriptor() -> EffectDescriptor {
-    EffectDescriptor::new("EXAE Mindglow")
-        .about("Exaecut - Mindglow")
+    EffectDescriptor::new("My Effect")
+        .about("My Effect — short description shown in About dialog")
         .version(env!("CARGO_PKG_VERSION"))
         .options_button("Infos")
         .premiere_pixel_formats([
@@ -73,9 +73,9 @@ struct so you rarely need to touch the extractors directly:
 ```rust
 fn frame_data(ctx: FrameDataContext<Params>) -> Result<FrameData, ae::Error> {
     Ok(FrameData {
-        prefilter: BloomPrefilterParams::from_context(&ctx)?,
-        upsample:  BloomUpsampleParams::from_context(&ctx)?,
-        composite: MindglowCompositeParams::from_context(&ctx)?,
+        prefilter: PrefilterParams::from_context(&ctx)?,
+        upsample:  UpsampleParams::from_context(&ctx)?,
+        composite: CompositeParams::from_context(&ctx)?,
         quality:   ctx.popup_zero_based(Params::Quality)?,
         frame_index: ctx.frame_index(),
         time_seconds: ctx.time_seconds(),
@@ -132,7 +132,7 @@ inside each effect crate by `ae::define_effect!`). The user writes a
 
 ```rust
 #[derive(Default)]
-struct Plugin(prgpu::adobe::ae::EffectAdapter<Mindglow>);
+struct Plugin(prgpu::adobe::ae::EffectAdapter<MyEffect>);
 
 impl AdobePluginGlobal for Plugin {
     fn params_setup(&self, params: &mut Parameters<Params>, in_data: InData, out_data: OutData)
@@ -146,7 +146,7 @@ impl AdobePluginGlobal for Plugin {
 
 ae::define_effect!(Plugin, (), Params);
 
-pub type PremiereGPU = prgpu::adobe::premiere::GpuFilterAdapter<Mindglow>;
+pub type PremiereGPU = prgpu::adobe::premiere::GpuFilterAdapter<MyEffect>;
 premiere::define_gpu_filter!(PremiereGPU);
 ```
 

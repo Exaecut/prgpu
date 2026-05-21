@@ -90,7 +90,7 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 		};
 
 		if pass_cfg.context_handle.is_some() {
-			unsafe { mip_downsample(&pass_cfg, params)? };
+			unsafe { mip_downsample::gpu(&pass_cfg, params)? };
 		} else {
 			// CPU dispatch — direct rayon tile loop, no AE plumbing.
 			unsafe {

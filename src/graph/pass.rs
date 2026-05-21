@@ -58,6 +58,7 @@ pub(crate) enum PassDecl<F> {
 }
 
 impl<F> PassDecl<F> {
+	#[allow(dead_code)]
 	pub fn name(&self) -> &'static str {
 		match self {
 			PassDecl::Single(p) => p.name,

@@ -58,6 +58,12 @@ pub struct FrameBinding {
 	pub pixel_layout: PixelLayout,
 }
 
+// `data` is a host-owned pixel pointer that lives across the dispatch and is
+// only ever read/written via the host's GPU context (or the rayon CPU pool's
+// scoped pointer copy). Same contract as `crate::types::Configuration`.
+unsafe impl Send for FrameBinding {}
+unsafe impl Sync for FrameBinding {}
+
 impl FrameBinding {
 	pub const fn null(bytes_per_pixel: u32, pixel_layout: PixelLayout) -> Self {
 		Self {

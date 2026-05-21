@@ -230,6 +230,14 @@ macro_rules! kernel_params {
                     $( $field: $crate::kernel_params!(@cpu $P, __params, __width, __height, __is_premiere $(, $($spec)+)?), )*
                 })
             }
+
+            /// Host-agnostic extraction. Picks `from_cpu` (AE) or `from_gpu`
+            /// (Premiere GPU) based on the active `FrameDataContext`.
+            pub fn from_context(
+                __ctx: &$crate::effect::FrameDataContext<'_, $P>,
+            ) -> ::core::result::Result<Self, ::after_effects::Error> {
+                __ctx.extract_kernel_params(Self::from_cpu, Self::from_gpu)
+            }
         }
     };
 

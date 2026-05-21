@@ -3,6 +3,7 @@ pub mod kernel;
 pub use kernel::Kernel;
 
 pub mod graph;
+pub mod adobe;
 
 pub mod cpu;
 pub mod gpu;

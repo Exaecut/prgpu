@@ -145,6 +145,14 @@ macro_rules! kernel_params {
         let __p: (f32, f32) = $crate::params::get_param($f, <$P>::$v, $rp);
         __p.1
     }};
+    (@gpu_base point_px_x, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {{
+        let __p: (f32, f32) = $crate::params::get_param($f, <$P>::$v, $rp);
+        __p.0 * $w
+    }};
+    (@gpu_base point_px_y, $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $v:ident) => {{
+        let __p: (f32, f32) = $crate::params::get_param($f, <$P>::$v, $rp);
+        __p.1 * $h
+    }};
 
 
     (@cpu $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $ext:ident($v:ident) / $($t:tt)+) => {
@@ -203,6 +211,14 @@ macro_rules! kernel_params {
     (@cpu_base point_pct_y, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
         let __pt = $p.point(<$P>::$v)?;
         __pt.1 / $h
+    }};
+    (@cpu_base point_px_x, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
+        let __pt = $p.point(<$P>::$v)?;
+        __pt.0
+    }};
+    (@cpu_base point_px_y, $P:path, $p:ident, $w:ident, $h:ident, $is_pr:ident, $v:ident) => {{
+        let __pt = $p.point(<$P>::$v)?;
+        __pt.1
     }};
 }
 

@@ -18,3 +18,9 @@ pub use host::{Capability, Host, HostCapabilities, RenderKind};
 
 pub mod invocation;
 pub use invocation::{FrameBinding, InvocationBase, PixelLayout};
+
+pub mod params_api;
+pub use params_api::{ActionContext, ParamApi, VisibilityBuilder, ActionBuilder};
+
+pub mod license;
+pub use license::{LicenseGate, NoLicenseGate};

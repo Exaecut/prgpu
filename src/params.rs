@@ -153,7 +153,12 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 	}
 }
 
-/// Declare a `#[repr(C)]` kernel params struct with auto-generated `from_gpu` and `from_cpu`.
+/// Declare a `gpu_struct`-laid-out kernel params struct with auto-generated
+/// `from_gpu` / `from_cpu` and a [`crate::KernelParams`] impl.
+///
+/// Layout, alignment, padding, and ABI checks are delegated to
+/// `#[prgpu::gpu_struct]`; the macro adds the host-side parameter extractors
+/// and the `KernelParams` marker the dispatcher relies on.
 ///
 /// Extractors: `float`, `angle`, `color_r/g/b/a`, `point_pct_x/y`, `checkbox`, `popup`.
 /// Append `/ expr` or `* expr` after an extractor for a post-transform.
@@ -181,7 +186,7 @@ impl<P: SetupParams> CpuParams<P> for Parameters<'_, P> {
 ///         scale_x:    f32 = [float(ScaleX)];
 ///         anchor_x:   f32 = [point_pct_x(Anchor)];
 ///         noise_phase:f32 = [angle(NoiseTimeOffset) * prgpu::params::DEG_TO_RAD];
-///         _pad:       [f32; 3];
+///         _pad0:      f32;
 ///     }
 /// }
 /// ```
@@ -192,10 +197,14 @@ macro_rules! kernel_params {
             $( $field:ident : $ty:ty $(= [$($spec:tt)+])? ; )*
         }
     ) => {
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy)]
+        #[$crate::gpu_struct]
         pub struct $name {
             $( pub $field : $ty, )*
+        }
+
+        impl $crate::KernelParams for $name {
+            const SIZE: usize = <$name>::SIZE;
+            const ALIGN: usize = <$name>::ALIGN;
         }
 
         impl $name {

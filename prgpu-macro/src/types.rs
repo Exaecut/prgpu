@@ -109,6 +109,15 @@ pub fn resolve_type(
     config: &GpuStructConfig,
     is_gpu_nested: bool,
 ) -> Result<GpuType, syn::Error> {
+    // `macro_rules!` `$ty:ty` substitution and parenthesised types arrive as
+    // transparent wrappers; unwrap so callers see the real `Type::Path` /
+    // `Type::Array` and don't trip the catch-all "unsupported type" arm.
+    match ty {
+        Type::Group(g) => return resolve_type(&g.elem, config, is_gpu_nested),
+        Type::Paren(p) => return resolve_type(&p.elem, config, is_gpu_nested),
+        _ => {}
+    }
+
     match ty {
         Type::Path(type_path) => {
             if let Some(last_seg) = type_path.path.segments.last() {

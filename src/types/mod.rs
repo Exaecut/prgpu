@@ -15,3 +15,6 @@ pub use backend::*;
 
 pub mod render;
 pub use render::*;
+
+pub mod kernel_params;
+pub use kernel_params::KernelParams;

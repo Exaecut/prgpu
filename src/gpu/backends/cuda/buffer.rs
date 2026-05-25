@@ -131,15 +131,6 @@ unsafe fn get_or_create_with_mips_inner(device: DeviceHandleInit, width: u32, he
 	if let Some(existing) = guard.get(&key) {
 		let ptr = existing.raw;
 		drop(guard);
-		// [DEBUG-mg7a] race detector: if multiple threads see HIT on the same
-		// key with the same ptr in the same render burst, the global LRU is
-		// handing out a shared buffer to concurrent kernel chains.
-		log::info!(
-			"[DEBUG-mg7a] cuda buffer HIT thread={:?} key=(dev=0x{:x}, {}x{}, bpp={}, tag=0x{:08x}, mips={}) ptr={:p}",
-			std::thread::current().id(),
-			key.device, width, height, bytes_per_pixel, tag, mips,
-			ptr
-		);
 		return (
 			ImageBuffer {
 				buf: BufferObj { raw: ptr },
@@ -177,15 +168,6 @@ unsafe fn get_or_create_with_mips_inner(device: DeviceHandleInit, width: u32, he
 
 	// Drop the lock before freeing evicted memory; no need to hold it across the GPU free.
 	drop(guard);
-
-	// [DEBUG-mg7a] same probe on the miss path so we can correlate alloc-then-share patterns.
-	log::info!(
-		"[DEBUG-mg7a] cuda buffer MISS thread={:?} key=(dev=0x{:x}, {}x{}, bpp={}, tag=0x{:08x}, mips={}) ptr={:p} alloc_bytes={}",
-		std::thread::current().id(),
-		key.device, width, height, bytes_per_pixel, tag, mips,
-		raw,
-		length
-	);
 
 	if let Some(evicted_buf) = evicted {
 		unsafe { free_buffer(evicted_buf) };
@@ -252,37 +234,6 @@ pub unsafe fn copy_buffer(
 
 	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);
 	let dst_dev = (dst as CUdeviceptr).wrapping_add(dst_offset);
-
-	// [DEBUG-mg7a] log the actual memory type CUDA reports for each pointer.
-	// Premiere's GPUFoundation routes frames through `PendingHostMemoryCopyManager`
-	// and may expose pinned-host (UVA-mapped) memory via `gpu_ppix_data` rather
-	// than pure device memory. Confirmed by RE of `RendererGPU.dll`:
-	// `cuMemHostRegister` / `cuMemHostAlloc` / `cuMemAllocHost_v2` all loaded
-	// alongside `cuMemAlloc_v2`. CU_POINTER_ATTRIBUTE_MEMORY_TYPE values:
-	// 1=HOST, 2=DEVICE, 3=ARRAY, 4=UNIFIED.
-	{
-		use cudarc::driver::sys::{cuPointerGetAttribute, CUpointer_attribute_enum};
-		let mut src_ty: i32 = 0;
-		let mut dst_ty: i32 = 0;
-		let _ = unsafe {
-			cuPointerGetAttribute(
-				&mut src_ty as *mut _ as *mut c_void,
-				CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-				src_dev,
-			)
-		};
-		let _ = unsafe {
-			cuPointerGetAttribute(
-				&mut dst_ty as *mut _ as *mut c_void,
-				CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-				dst_dev,
-			)
-		};
-		log::info!(
-			"[DEBUG-mg7a] copy_buffer src={:#x} ty={} (1=HOST,2=DEVICE,4=UNIFIED)  dst={:#x} ty={}  src_pitch={} dst_pitch={} width={} height={}",
-			src_dev, src_ty, dst_dev, dst_ty, src_pitch_bytes, dst_pitch_bytes, width_bytes, height
-		);
-	}
 
 	// Always go through the 2D copy with `CU_MEMORYTYPE_UNIFIED` so CUDA can
 	// auto-detect the actual memory type via UVA. The Premiere RE shows source

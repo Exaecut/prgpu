@@ -25,7 +25,6 @@ use crate::graph::{execute::execute as run_graph, RenderGraph};
 use crate::gpu::pipeline;
 use crate::gpu::render_properties::GPURenderProperties;
 use crate::types::{Backend, Configuration};
-use crate::PrRect;
 
 /// Adobe high-precision time uses 254 016 000 000 ticks/sec; the SDK does
 /// not expose this as a constant.
@@ -146,30 +145,7 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		}
 
 		let props = unsafe { GPURenderProperties::new(filter, render_params.clone(), frames, frame_count, out_frame) }?;
-		let mut base_cfg = unsafe { Configuration::effect(&props, out_frame)? };
-
-		// Some Premiere builds give us PPix bounds that disagree with
-		// `render_params.render_*()` (e.g. Premiere 25.2 native-res ppix).
-		// Premiere 25.2 native-res PPix workaround: when src/dst bounds match
-		// each other but differ from `bounds`, prefer them.
-		let src_ppix = props.frames.1;
-		let dst_ppix = unsafe { *out_frame };
-		if let (Ok(sb), Ok(db)) = (filter.ppix_suite.bounds(src_ppix), filter.ppix_suite.bounds(dst_ppix)) {
-			let sr = ae::Rect::from(PrRect::from(sb));
-			let dr = ae::Rect::from(PrRect::from(db));
-			let sw = sr.width().max(0) as u32;
-			let sh = sr.height().max(0) as u32;
-			let dw = dr.width().max(0) as u32;
-			let dh = dr.height().max(0) as u32;
-			if sw > 0 && sh > 0 && sw == dw && sh == dh && (sw, sh) != (base_cfg.width, base_cfg.height) {
-				base_cfg.width = sw;
-				base_cfg.height = sh;
-				base_cfg.outgoing_width = sw;
-				base_cfg.outgoing_height = sh;
-				base_cfg.incoming_width = sw;
-				base_cfg.incoming_height = sh;
-			}
-		}
+		let base_cfg = unsafe { Configuration::effect(&props, out_frame)? };
 
 		let w = base_cfg.width;
 		let h = base_cfg.height;
@@ -178,9 +154,11 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		}
 		let bpp = props.bytes_per_pixel as u32;
 
-		// Drop frames where Premiere reports a source pitch shorter than
-		// the destination width — same defensive bail as the legacy path.
-		let expected_pitch_bytes = w.saturating_mul(bpp);
+		// Source pitch must cover the source width. Both now come from the same
+		// native PPix (`GPURenderProperties` derives dims from the output buffer),
+		// so this only trips on a genuinely malformed frame rather than on
+		// legitimately small stills (a 400x400 image in a 1080p sequence).
+		let expected_pitch_bytes = base_cfg.outgoing_width.saturating_mul(bpp);
 		let src_pitch_bytes = (base_cfg.outgoing_pitch_px as u32).saturating_mul(bpp);
 		if src_pitch_bytes < expected_pitch_bytes {
 			log::warn!("[adapter] skipping frame: source pitch {src_pitch_bytes} < expected {expected_pitch_bytes}. dims={w}x{h} bpp={bpp}");

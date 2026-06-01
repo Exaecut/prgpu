@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash, ptr};
+use std::{any::TypeId, collections::HashMap, fmt::Debug, hash::Hash, ptr, sync::{OnceLock, RwLock}};
 
 use after_effects::{InData, OutData, Parameters, sys::PF_Pixel};
 use premiere::{self as pr};
@@ -7,7 +7,7 @@ use crate::types::Pixel;
 
 pub const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0;
 
-pub trait SetupParams: Sized + Eq + Hash + Copy + Debug + Into<usize> {
+pub trait SetupParams: Sized + Eq + Hash + Copy + Debug + Into<usize> + 'static {
 	fn to_index(self) -> usize {
 		self.into()
 	}
@@ -107,14 +107,61 @@ impl FromParam for Pixel {
 	}
 }
 
-pub fn get_param<T: FromParam + Default, Params: SetupParams>(filter: &pr::GpuFilterData, param: Params, render_params: &pr::RenderParams) -> T {
-    let idx = param.to_index();
-    let clip = render_params.clip_time();
-    filter
-        .param(idx, clip)
+/// Per-`Params` map of enum discriminant → host param index, captured from the
+/// AE `Parameters` registration order during param setup.
+///
+/// The Premiere GPU path reads params positionally via `GpuFilterData::param(i)`,
+/// where `i` is the registration-order index — NOT the enum discriminant. They
+/// only coincide when params are added in discriminant order; an effect that
+/// registers a param out of order (every effect registers its license button
+/// first, which is the highest discriminant) shifts every other param by one.
+/// Capturing the real map keeps the GPU path aligned with the CPU/AE path, which
+/// already resolves through `Parameters::index`.
+fn gpu_param_index_registry() -> &'static RwLock<HashMap<TypeId, HashMap<usize, usize>>> {
+    static REG: OnceLock<RwLock<HashMap<TypeId, HashMap<usize, usize>>>> = OnceLock::new();
+    REG.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Record the discriminant → host-index map for `P`. Called once per param
+/// setup by the adapter, after `Effect::params` has registered everything.
+pub fn register_gpu_param_indices<P: SetupParams>(map: HashMap<usize, usize>) {
+    if let Ok(mut reg) = gpu_param_index_registry().write() {
+        reg.insert(TypeId::of::<P>(), map);
+    }
+}
+
+/// Resolve a discriminant to its host param index for `P`. Falls back to the
+/// discriminant itself when no map is registered, preserving legacy behavior
+/// and keeping `from_gpu` unit tests (which never run param setup) unchanged.
+fn gpu_param_index<P: SetupParams>(discriminant: usize) -> usize {
+    gpu_param_index_registry()
+        .read()
         .ok()
-        .and_then(T::extract)
-        .unwrap_or_default()
+        .and_then(|reg| reg.get(&TypeId::of::<P>()).and_then(|m| m.get(&discriminant).copied()))
+        .unwrap_or(discriminant)
+}
+
+pub fn get_param<T: FromParam + Default, Params: SetupParams>(filter: &pr::GpuFilterData, param: Params, render_params: &pr::RenderParams) -> T {
+    let discriminant = param.to_index();
+    let idx = gpu_param_index::<Params>(discriminant);
+    let clip = render_params.clip_time();
+    match filter.param(idx, clip) {
+        Ok(p) => match T::extract(p) {
+            Some(v) => v,
+            None => {
+                #[cfg(debug_assertions)]
+                after_effects::log::warn!(
+                    "[params] discriminant {discriminant} (host idx {idx}): present but not the variant this kernel field expects; substituting Default (0). A zeroed param (e.g. angle=0) makes the effect a no-op / passthrough."
+                );
+                T::default()
+            }
+        },
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            after_effects::log::warn!("[params] discriminant {discriminant} (host idx {idx}): lookup failed ({_e:?}); substituting Default (0).");
+            T::default()
+        }
+    }
 }
 
 pub trait CpuParams<P: SetupParams> {

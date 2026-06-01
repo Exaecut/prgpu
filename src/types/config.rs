@@ -224,6 +224,16 @@ pub struct FrameParams {
 	pub progress: f32,
 }
 
+// Compile-time ABI guard. The Slang `vekl::TextureDesc` / `FrameParams` are
+// read byte-for-byte against these. `#[repr(C)]` over all-u32/f32 fields has no
+// padding, so the size is fully determined by MAX_MIP. A failure here means the
+// Rust struct drifted from the MAX_MIP-derived layout the kernels expect — fix
+// MAX_MIP (and the matching `vekl` constant), not the assert.
+const _: () = {
+	assert!(core::mem::size_of::<TextureDesc>() == (8 + 4 * MAX_MIP as usize) * 4);
+	assert!(core::mem::size_of::<FrameParams>() == 3 * (8 + 4 * MAX_MIP as usize) * 4 + 16);
+};
+
 pub const PIXEL_STORAGE_UNORM8X4: u32 = 0;
 pub const PIXEL_STORAGE_UNORM16X4: u32 = 1;
 pub const PIXEL_STORAGE_FLOAT32X4: u32 = 2;

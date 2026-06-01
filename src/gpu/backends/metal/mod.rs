@@ -139,6 +139,24 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 		let user_param_size = std::mem::size_of::<UP>();
 		log::info!("[Metal] dispatching kernel '{}' with user params size = {} bytes ({} floats)", entry, user_param_size, user_param_size / 4);
+		#[cfg(debug_assertions)]
+		log::info!(
+			"[Metal] '{entry}' bufs: dispatch={}x{} dst_pitch_px={} | outgoing={}x{} out_pitch_px={} mip_levels={} outDesc.mipCount={} | dstDesc={}x{} dstDesc.pitch={} | outgoing_ptr={:?} incoming_ptr={:?} dst_ptr={:?}",
+			config.width,
+			config.height,
+			config.dest_pitch_px,
+			config.outgoing_width,
+			config.outgoing_height,
+			config.outgoing_pitch_px,
+			config.outgoing_mip_levels,
+			frame_params.out_desc.mip_level_count,
+			frame_params.dst_desc.width,
+			frame_params.dst_desc.height,
+			frame_params.dst_desc.pitch_bytes,
+			outgoing_ptr,
+			incoming_ptr,
+			config.dest_data,
+		);
 		let user_params_buffer: *mut Object = unsafe {
 			msg_send![
 				device,

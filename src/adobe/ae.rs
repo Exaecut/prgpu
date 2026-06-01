@@ -314,7 +314,17 @@ impl<E: Effect> EffectAdapter<E> {
 		if let Some(label) = self.descriptor().options_button {
 			let _ = in_data.effect().set_options_button_name(label);
 		}
-		E::params(params, in_data, out_data)
+		E::params(params, in_data, out_data)?;
+
+		// Capture the real discriminant→host-param-index map from the registration
+		// order so the Premiere GPU path (which indexes params positionally) reads
+		// the same param the CPU path resolves through `Parameters::index`. Without
+		// this, registering a param out of discriminant order (e.g. the license
+		// button first) shifts every GPU param read. See `params::get_param`.
+		let gpu_indices: std::collections::HashMap<usize, usize> =
+			params.map.iter().map(|(p, info)| ((*p).into(), info.index)).collect();
+		crate::params::register_gpu_param_indices::<E::Params>(gpu_indices);
+		Ok(())
 	}
 
 	/// AE PF `handle_command` selector. Call from the user's

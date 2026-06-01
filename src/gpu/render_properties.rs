@@ -1,7 +1,4 @@
-use crate::{
-	PrRect,
-	gpu::{frames_as_slice, gpu_bytes_per_pixels},
-};
+use crate::gpu::{frames_as_slice, gpu_bytes_per_pixels};
 use after_effects::log;
 use premiere::{self as pr, PixelFormat, Property};
 
@@ -114,20 +111,31 @@ impl<'a> GPURenderProperties<'a> {
 
 		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
 
-		// `render_params` is the source of truth for dimensions; `ppix_suite.bounds()` returns garbage for some Metal GPU PPix.
-		let rw = render_params.render_width() as i32;
-		let rh = render_params.render_height() as i32;
-		let mut bounds = after_effects::Rect { left: 0, top: 0, right: rw, bottom: rh };
-		if bounds.width() <= 0 || bounds.height() <= 0 {
-			if let Ok(b) = filter.ppix_suite.bounds(output_frame) {
-				let r = after_effects::Rect::from(PrRect::from(b));
-				if r.width() > 0 && r.height() > 0 {
-					bounds = r;
-				}
-			}
-		}
-
 		let bytes_per_pixel = gpu_bytes_per_pixels(pixel_format);
+
+		// Premiere never expands frames: the source and output PPix are always at
+		// the clip's native resolution, which can differ from the sequence size
+		// `render_params.render_*()` reports (e.g. a 400x400 still in a 1920x1080
+		// sequence). Derive the real dims from the output buffer — `row_bytes` is
+		// the tight pixel pitch (width) and `gpu_ppix_size / row_bytes` is the
+		// height. The PPix `bounds()` rect is unreliable on some Metal GPU PPix, so
+		// the sequence size is only a fallback when the buffer query fails.
+		let buffer_bounds = {
+			let row_bytes = filter.ppix_suite.row_bytes(output_frame).unwrap_or(0);
+			let size = filter.gpu_device_suite.gpu_ppix_size(output_frame).unwrap_or(0);
+			if row_bytes > 0 && bytes_per_pixel > 0 && size > 0 {
+				let w = row_bytes / bytes_per_pixel;
+				let h = (size / row_bytes as usize) as i32;
+				(w > 0 && h > 0).then_some(after_effects::Rect { left: 0, top: 0, right: w, bottom: h })
+			} else {
+				None
+			}
+		};
+		let bounds = buffer_bounds.unwrap_or_else(|| {
+			let rw = render_params.render_width() as i32;
+			let rh = render_params.render_height() as i32;
+			after_effects::Rect { left: 0, top: 0, right: rw, bottom: rh }
+		});
 
 		let ticks_per_frame = render_params.render_ticks_per_frame();
 		let time = if ticks_per_frame != 0 {

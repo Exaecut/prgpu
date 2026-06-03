@@ -101,6 +101,7 @@ pub fn diff_heatmap_gpu(
         progress: 0.0,
         render_generation: 0,
         pixel_layout: 1,
+        storage: crate::types::storage_from_bpp(bpp),
         outgoing_mip_levels: 0,
     };
 

@@ -169,8 +169,8 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 	let frame = FrameParams {
 		out_desc: crate::types::make_outgoing_desc(config),
-		in_desc: crate::types::make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
-		dst_desc: crate::types::make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout),
+		in_desc: crate::types::make_in_desc(config),
+		dst_desc: crate::types::make_dst_desc(config),
 		width: config.width,
 		height: config.height,
 		time: config.time,

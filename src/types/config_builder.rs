@@ -152,6 +152,7 @@ impl<'a> ConfigBuilder<'a> {
 			progress: self.base.progress,
 			render_generation: self.base.render_generation,
 			pixel_layout: self.base.pixel_layout.as_u32(),
+			storage: self.base.storage,
 			outgoing_mip_levels,
 		})
 	}

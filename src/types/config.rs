@@ -43,6 +43,10 @@ pub struct Configuration {
 	pub progress: f32,
 	pub render_generation: u64,
 	pub pixel_layout: u32, // 0=RGBA, 1=BGRA, 2=VUYA601, 3=VUYA709
+	/// Pixel storage tag (0=Unorm8x4, 1=Unorm16x4, 2=Float32x4, 3=Float16x4).
+	/// Ambiguous from bpp alone: 8 bpp is Float16x4 on the Premiere GPU path but
+	/// Unorm16x4 on the CPU/AE path, so the adapter sets this from the host format.
+	pub storage: u32,
 	/// Mip levels to allocate and auto-generate on the outgoing buffer (incl. level 0).
 	/// `0`/`1` disables mip support; `2..=MAX_MIP` requests an N-level pyramid the
 	/// kernel can sample via `SampleLinear(uv, lod)` / `SampleLinearTrilinear(uv, lodF)`.
@@ -106,6 +110,7 @@ impl Configuration {
 			progress: render_properties.progress,
 			render_generation: scheduling::advance_generation(),
 			pixel_layout: 1, // GPU path always receives BGRA from Premiere
+			storage: render_properties.storage,
 			outgoing_mip_levels: 0,
 		})
 	}
@@ -132,6 +137,7 @@ impl Configuration {
 			progress: 0.0,
 			render_generation: 0,
 			pixel_layout,
+			storage: storage_from_bpp(bytes_per_pixel),
 			outgoing_mip_levels: 0,
 		}
 	}
@@ -183,6 +189,7 @@ impl Configuration {
 			progress: render_properties.progress,
 			render_generation: scheduling::advance_generation(),
 			pixel_layout: 1, // GPU path always receives BGRA from Premiere
+			storage: render_properties.storage,
 			outgoing_mip_levels: 0,
 		})
 	}
@@ -237,7 +244,10 @@ const _: () = {
 pub const PIXEL_STORAGE_UNORM8X4: u32 = 0;
 pub const PIXEL_STORAGE_UNORM16X4: u32 = 1;
 pub const PIXEL_STORAGE_FLOAT32X4: u32 = 2;
+pub const PIXEL_STORAGE_FLOAT16X4: u32 = 3;
 
+/// Default storage for a bpp on integer/float-32 paths (CPU/AE). Never returns
+/// `Float16x4`: half-float is GPU-only and set explicitly by the adapter.
 pub fn storage_from_bpp(bpp: u32) -> u32 {
 	match bpp {
 		8 => PIXEL_STORAGE_UNORM16X4,
@@ -289,6 +299,7 @@ pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 		config.bytes_per_pixel,
 		config.pixel_layout,
 	);
+	desc.storage = config.storage;
 	if config.outgoing_mip_levels > 1 {
 		fill_mip_desc(
 			&mut desc,
@@ -299,6 +310,21 @@ pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 			config.outgoing_mip_levels,
 		);
 	}
+	desc
+}
+
+/// Incoming (secondary source) `TextureDesc`, carrying the config's storage tag
+/// so half-float (`Float16x4`) sources decode correctly.
+pub fn make_in_desc(config: &Configuration) -> TextureDesc {
+	let mut desc = make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout);
+	desc.storage = config.storage;
+	desc
+}
+
+/// Destination `TextureDesc` (dispatch extent), carrying the config's storage tag.
+pub fn make_dst_desc(config: &Configuration) -> TextureDesc {
+	let mut desc = make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout);
+	desc.storage = config.storage;
 	desc
 }
 

@@ -96,6 +96,10 @@ pub struct InvocationBase {
 
 	pub bytes_per_pixel: u32,
 	pub pixel_layout: PixelLayout,
+	/// Vekl `PixelStorage` tag (0=Unorm8x4, 1=Unorm16x4, 2=Float32x4, 3=Float16x4).
+	/// Set by the adapter from the host pixel format; carried into every pass's
+	/// `Configuration` so half-float GPU buffers decode correctly.
+	pub storage: u32,
 	pub time: f32,
 	pub progress: f32,
 	pub render_generation: u64,

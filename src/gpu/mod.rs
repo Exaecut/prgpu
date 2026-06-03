@@ -44,6 +44,16 @@ fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
 	}
 }
 
+/// Vekl `PixelStorage` tag for a Premiere GPU pixel format. `GpuBgra4444_16f`
+/// is **half-float** (not unorm16), so it cannot be inferred from bpp alone —
+/// the host format is the only reliable signal.
+pub(crate) fn gpu_storage(pixel_format: pr::PixelFormat) -> u32 {
+	match pixel_format {
+		pr::PixelFormat::GpuBgra4444_16f => crate::types::PIXEL_STORAGE_FLOAT16X4,
+		_ => crate::types::PIXEL_STORAGE_FLOAT32X4, // GpuBgra4444_32f, Bgra4444_32f
+	}
+}
+
 pub mod buffer {
 	pub use imp::*;
 

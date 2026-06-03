@@ -21,14 +21,10 @@ use premiere::{self as pr};
 use crate::effect::frame_context::{FrameDataContext, HostBackend};
 use crate::effect::host::{Host, RenderKind};
 use crate::effect::{Effect, FrameBinding, InvocationBase, LicenseGate, PixelLayout};
-use crate::graph::{execute::execute as run_graph, RenderGraph};
 use crate::gpu::pipeline;
 use crate::gpu::render_properties::GPURenderProperties;
+use crate::graph::{RenderGraph, execute::execute as run_graph};
 use crate::types::{Backend, Configuration};
-
-/// Adobe high-precision time uses 254 016 000 000 ticks/sec; the SDK does
-/// not expose this as a constant.
-const PR_TICKS_PER_SECOND: f64 = 254_016_000_000.0;
 
 pub struct GpuFilterAdapter<E: Effect> {
 	license: E::License,
@@ -110,6 +106,7 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			command_queue_handle: base_cfg.command_queue_handle,
 			bytes_per_pixel: bpp,
 			pixel_layout,
+			storage: base_cfg.storage,
 			time: base_cfg.time,
 			progress: base_cfg.progress,
 			render_generation: base_cfg.render_generation,
@@ -131,7 +128,12 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		}
 	}
 
-	fn get_frame_dependencies(&self, _filter: &pr::GpuFilterData, _render_params: pr::RenderParams, _query_index: &mut i32) -> Result<pr::sys::PrGPUFilterFrameDependency, pr::Error> {
+	fn get_frame_dependencies(
+		&self,
+		_filter: &pr::GpuFilterData,
+		_render_params: pr::RenderParams,
+		_query_index: &mut i32,
+	) -> Result<pr::sys::PrGPUFilterFrameDependency, pr::Error> {
 		Err(pr::Error::None)
 	}
 
@@ -139,7 +141,14 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		Ok(())
 	}
 
-	fn render(&self, filter: &pr::GpuFilterData, render_params: pr::RenderParams, frames: *const pr::sys::PPixHand, frame_count: usize, out_frame: *mut pr::sys::PPixHand) -> Result<(), pr::Error> {
+	fn render(
+		&self,
+		filter: &pr::GpuFilterData,
+		render_params: pr::RenderParams,
+		frames: *const pr::sys::PPixHand,
+		frame_count: usize,
+		out_frame: *mut pr::sys::PPixHand,
+	) -> Result<(), pr::Error> {
 		if !self.license.is_valid() {
 			return Ok(());
 		}
@@ -166,11 +175,47 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		}
 
 		let frame_index = if render_params.render_ticks_per_frame() != 0 {
-			(render_params.clip_time() / render_params.render_ticks_per_frame()) as u32
+			(render_params.sequence_time() / render_params.render_ticks_per_frame()) as u32
 		} else {
 			0
 		};
-		let time_seconds = (render_params.clip_time() as f64 / PR_TICKS_PER_SECOND) as f32;
+		// Canonical time already lives in base_cfg.time (sequence seconds, set by
+		// Configuration::effect); reuse it so frame_data and the shader agree.
+		let time_seconds = base_cfg.time;
+		let quality = render_params.quality();
+
+		// Dispatch-boundary evidence. `storage` is what vekl will use to decode the
+		// buffer; `frame.time` is the value that actually reaches the shader (distinct
+		// from the seconds value handed to `frame_data`).
+		let storage_tag = base_cfg.storage;
+		let storage_label = match storage_tag {
+			0 => "Unorm8x4",
+			1 => "Unorm16x4",
+			2 => "Float32x4",
+			3 => "Float16x4",
+			_ => "?",
+		};
+
+		log::info!(
+			"[GPU] frame {frame_index} t_sec={time_seconds:.4} frame.time={frame_time} {w}x{h} bpp={bpp} storage={storage_tag}({storage_label}) layout={layout}(0=RGBA,1=BGRA) pixel_format={pf:?} half_precision={half} src_pitch_px={src_pitch} dst_pitch_px={dst_pitch} seq_time={seq} clip_time={clip} ticks_per_frame={tpf} quality={quality:?}",
+			frame_time = base_cfg.time,
+			layout = base_cfg.pixel_layout,
+			pf = props.pixel_format,
+			half = props.half_precision,
+			src_pitch = base_cfg.outgoing_pitch_px,
+			dst_pitch = base_cfg.dest_pitch_px,
+			seq = render_params.sequence_time(),
+			clip = render_params.clip_time(),
+			tpf = render_params.render_ticks_per_frame(),
+		);
+
+		// Regression guard: a half-float host format must resolve to Float16x4.
+		if props.half_precision && storage_tag != crate::types::PIXEL_STORAGE_FLOAT16X4 {
+			log::warn!(
+				"[GPU] STORAGE REGRESSION: {pf:?} is half-float (16f) but storage tag is {storage_tag} (expected Float16x4=3); decode will be wrong.",
+				pf = props.pixel_format,
+			);
+		}
 
 		let ctx = FrameDataContext {
 			host: Host::Premiere,
@@ -189,7 +234,10 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 				}
 			},
 			render_kind: RenderKind::PremiereGpuEffect,
-			inner: HostBackend::Gpu { filter, render_params: &render_params },
+			inner: HostBackend::Gpu {
+				filter,
+				render_params: &render_params,
+			},
 			layer_width: w,
 			layer_height: h,
 			output_width: w,

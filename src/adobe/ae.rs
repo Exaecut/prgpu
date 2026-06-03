@@ -26,8 +26,8 @@
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use after_effects::{self as ae, Command, GpuFramework, InData, OutData, Parameters};
 use after_effects::aegp;
+use after_effects::{self as ae, Command, GpuFramework, InData, OutData, Parameters};
 use parking_lot::Mutex;
 
 use crate::effect::descriptor::install_descriptor_pixel_formats;
@@ -35,8 +35,27 @@ use crate::effect::frame_context::{FrameDataContext, HostBackend};
 use crate::effect::host::{Host, RenderKind};
 use crate::effect::params_api::{ActionContext, ActionRule, ParamApi, VisibilityRule};
 use crate::effect::{Effect, EffectDescriptor, FrameBinding, InvocationBase, LicenseGate, PixelLayout};
-use crate::graph::{execute::execute as run_graph, RenderGraph};
+use crate::graph::{RenderGraph, execute::execute as run_graph};
 use crate::types::Backend;
+
+/// Canonical effect time in seconds. In Premiere this is the sequence/timeline
+/// time (`PF_UtilitySuite::GetSequenceTime`), matching the GPU path's
+/// `RenderParams::sequence_time`. In After Effects (no sequence) it falls back
+/// to layer-local `current_time / time_scale`.
+fn canonical_time_seconds(in_data: &InData) -> f32 {
+	if in_data.is_premiere() {
+		if let Ok(suite) = ae::pf::suites::Utility::new() {
+			if let Ok(ticks) = suite.sequence_time(in_data.effect_ref()) {
+				return crate::adobe::ticks_to_seconds(ticks);
+			}
+		}
+	}
+	if in_data.time_scale() != 0 {
+		in_data.current_time() as f32 / in_data.time_scale() as f32
+	} else {
+		0.0
+	}
+}
 
 /// Cached visibility/action rules collected by `Effect::ui`.
 struct UiState<E: Effect> {
@@ -133,7 +152,11 @@ impl<E: Effect> EffectAdapter<E> {
 	fn build_frame_data_cpu(in_data: &InData, params: &Parameters<E::Params>, in_layer: Option<&ae::Layer>, out_w: u32, out_h: u32) -> Result<E::FrameData, ae::Error> {
 		let host = if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects };
 		let backend = Backend::Cpu;
-		let render_kind = if in_data.is_premiere() { RenderKind::PremiereGpuEffect } else { RenderKind::AeSmartRenderCpu };
+		let render_kind = if in_data.is_premiere() {
+			RenderKind::PremiereGpuEffect
+		} else {
+			RenderKind::AeSmartRenderCpu
+		};
 		let layer_w = in_layer.map(|l| l.width() as u32).unwrap_or(out_w);
 		let layer_h = in_layer.map(|l| l.height() as u32).unwrap_or(out_h);
 
@@ -141,17 +164,16 @@ impl<E: Effect> EffectAdapter<E> {
 			let step = in_data.time_step().max(1);
 			(in_data.current_time() / step).max(0) as u32
 		};
-		let time_seconds = if in_data.time_scale() != 0 {
-			in_data.current_time() as f32 / in_data.time_scale() as f32
-		} else {
-			0.0
-		};
+		let time_seconds = canonical_time_seconds(in_data);
 
 		let ctx = FrameDataContext {
 			host,
 			backend,
 			render_kind,
-			inner: HostBackend::Cpu { params, is_premiere: in_data.is_premiere() },
+			inner: HostBackend::Cpu {
+				params,
+				is_premiere: in_data.is_premiere(),
+			},
 			layer_width: layer_w,
 			layer_height: layer_h,
 			output_width: out_w,
@@ -178,7 +200,11 @@ impl<E: Effect> EffectAdapter<E> {
 		let dest_pitch = out_layer.buffer_stride() as i32 / bpp as i32;
 
 		let host = if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects };
-		let render_kind = if in_data.is_premiere() { RenderKind::PremiereGpuEffect } else { RenderKind::AeSmartRenderCpu };
+		let render_kind = if in_data.is_premiere() {
+			RenderKind::PremiereGpuEffect
+		} else {
+			RenderKind::AeSmartRenderCpu
+		};
 
 		let main = FrameBinding {
 			data: in_ptr,
@@ -208,7 +234,8 @@ impl<E: Effect> EffectAdapter<E> {
 			command_queue_handle: std::ptr::null_mut(),
 			bytes_per_pixel: bpp,
 			pixel_layout,
-			time: if in_data.time_scale() != 0 { in_data.current_time() as f32 / in_data.time_scale() as f32 } else { 0.0 },
+			storage: crate::types::storage_from_bpp(bpp),
+			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: 0,
 			main_source: main,
@@ -218,7 +245,12 @@ impl<E: Effect> EffectAdapter<E> {
 		})
 	}
 
-	fn build_invocation_gpu(in_data: &InData, in_layer: &mut ae::Layer, out_layer: &mut ae::Layer, extra: &ae::pf::SmartRenderExtra) -> Result<InvocationBase, ae::Error> {
+	fn build_invocation_gpu(
+		in_data: &InData,
+		in_layer: &mut ae::Layer,
+		out_layer: &mut ae::Layer,
+		extra: &ae::pf::SmartRenderExtra,
+	) -> Result<InvocationBase, ae::Error> {
 		let gpu_suite = ae::pf::suites::GPUDevice::new()?;
 		let device_index = extra.device_index();
 		let info = gpu_suite.device_info(in_data.effect_ref(), device_index)?;
@@ -291,7 +323,8 @@ impl<E: Effect> EffectAdapter<E> {
 			command_queue_handle: info.command_queuePV as *mut c_void,
 			bytes_per_pixel: bpp,
 			pixel_layout,
-			time: if in_data.time_scale() != 0 { in_data.current_time() as f32 / in_data.time_scale() as f32 } else { 0.0 },
+			storage: crate::types::storage_from_bpp(bpp),
+			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: frame_index as u64,
 			main_source: main,
@@ -321,8 +354,7 @@ impl<E: Effect> EffectAdapter<E> {
 		// the same param the CPU path resolves through `Parameters::index`. Without
 		// this, registering a param out of discriminant order (e.g. the license
 		// button first) shifts every GPU param read. See `params::get_param`.
-		let gpu_indices: std::collections::HashMap<usize, usize> =
-			params.map.iter().map(|(p, info)| ((*p).into(), info.index)).collect();
+		let gpu_indices: std::collections::HashMap<usize, usize> = params.map.iter().map(|(p, info)| ((*p).into(), info.index)).collect();
 		crate::params::register_gpu_param_indices::<E::Params>(gpu_indices);
 		Ok(())
 	}
@@ -389,8 +421,15 @@ impl<E: Effect> EffectAdapter<E> {
 				let exp_ctx = FrameDataContext {
 					host: if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects },
 					backend: Backend::Cpu,
-					render_kind: if in_data.is_premiere() { RenderKind::PremiereGpuEffect } else { RenderKind::AeSmartRenderCpu },
-					inner: HostBackend::Cpu { params, is_premiere: in_data.is_premiere() },
+					render_kind: if in_data.is_premiere() {
+						RenderKind::PremiereGpuEffect
+					} else {
+						RenderKind::AeSmartRenderCpu
+					},
+					inner: HostBackend::Cpu {
+						params,
+						is_premiere: in_data.is_premiere(),
+					},
 					layer_width: layer_w,
 					layer_height: layer_h,
 					output_width: layer_w,
@@ -415,10 +454,48 @@ impl<E: Effect> EffectAdapter<E> {
 			Command::FrameSetdown => {
 				in_data.destroy_frame_data::<E::FrameData>();
 			}
-			Command::Render { mut in_layer, mut out_layer } => {
+			Command::Render { in_layer, mut out_layer } => {
 				if !self.license.is_valid() {
 					return Ok(());
 				}
+
+				log::info!(
+					"Quality: {:?} | Bit depth: {} | Resolution: {}x{}x{}(stride) | World Type: {:?} | Pixel Format: {:?}",
+					in_data.quality(),
+					out_layer.bit_depth(),
+					out_layer.width(),
+					out_layer.height(),
+					out_layer.buffer_stride(),
+					out_layer.world_type(),
+					out_layer.pixel_format()
+				);
+
+				// Dispatch-boundary evidence: the real bpp/layout/time the pipeline will
+				// use. Premiere's out_layer.pixel_format()/world_type() are unreliable here
+				// (they report Argb32/U8 regardless of the real depth), so trust
+				// pr_pixel_format()/stride and dump the first source pixel for channel order.
+				{
+					let dbg_bpp = crate::cpu::render::compute_bpp(&in_data, &out_layer).unwrap_or(0);
+					let dbg_layout = crate::cpu::render::pixel_layout_from_format(&in_data, &in_layer);
+					let pr_fmt = in_layer.pr_pixel_format();
+					let src_pitch_px = if dbg_bpp > 0 { in_layer.buffer_stride() as i32 / dbg_bpp as i32 } else { 0 };
+					let dst_pitch_px = if dbg_bpp > 0 { out_layer.buffer_stride() as i32 / dbg_bpp as i32 } else { 0 };
+					// frame.time the shader receives (sequence seconds in Premiere); local_t_sec is the old layer-local value for comparison.
+					let t_sec = canonical_time_seconds(&in_data);
+					let local_t_sec = if in_data.time_scale() != 0 { in_data.current_time() as f32 / in_data.time_scale() as f32 } else { 0.0 };
+					let head = {
+						let buf = in_layer.buffer();
+						let n = (dbg_bpp as usize).min(buf.len());
+						buf[..n].iter().map(|b| format!("{:02x}", *b)).collect::<Vec<_>>().join(" ")
+					};
+					log::info!(
+						"[CPU] computed bpp={dbg_bpp} layout={dbg_layout}(0=RGBA,1=BGRA) pr_pixel_format={pr_fmt:?} src_pitch_px={src_pitch_px} dst_pitch_px={dst_pitch_px} t_sec={t_sec:.4} local_t_sec={local_t_sec:.4} current_time={ct} time_step={ts} time_scale={tsc} first_px_bytes=[{head}]",
+						ct = in_data.current_time(),
+						ts = in_data.time_step(),
+						tsc = in_data.time_scale(),
+					);
+				}
+
 				let frame_data = in_data.frame_data::<E::FrameData>().ok_or(ae::Error::Generic)?;
 				let base = Self::build_invocation_cpu(&in_data, &in_layer, &mut out_layer)?;
 				let _ = (frame_data, &base);
@@ -436,7 +513,10 @@ impl<E: Effect> EffectAdapter<E> {
 					host: if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects },
 					backend: Backend::Cpu,
 					render_kind: RenderKind::AeSmartRenderCpu,
-					inner: HostBackend::Cpu { params, is_premiere: in_data.is_premiere() },
+					inner: HostBackend::Cpu {
+						params,
+						is_premiere: in_data.is_premiere(),
+					},
 					layer_width: layer_w,
 					layer_height: layer_h,
 					output_width: layer_w,
@@ -456,7 +536,10 @@ impl<E: Effect> EffectAdapter<E> {
 				}
 				.into();
 
-				if let Ok(in_result) = extra.callbacks().checkout_layer(0, 0, &src_request, in_data.current_time(), in_data.time_step(), in_data.time_scale()) {
+				if let Ok(in_result) = extra
+					.callbacks()
+					.checkout_layer(0, 0, &src_request, in_data.current_time(), in_data.time_step(), in_data.time_scale())
+				{
 					let layer_max = ae::Rect::from(in_result.max_result_rect);
 					let layer_result = ae::Rect::from(in_result.result_rect);
 					let max_rect = ext.inflate_rect(layer_max);

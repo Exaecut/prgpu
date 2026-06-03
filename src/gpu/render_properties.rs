@@ -1,4 +1,4 @@
-use crate::gpu::{frames_as_slice, gpu_bytes_per_pixels};
+use crate::gpu::{frames_as_slice, gpu_bytes_per_pixels, gpu_storage};
 use after_effects::log;
 use premiere::{self as pr, PixelFormat, Property};
 
@@ -9,6 +9,7 @@ pub struct GPURenderProperties<'a> {
 	pub gpu_index: u32,
 	pub pixel_format: PixelFormat,
 	pub half_precision: bool,
+	pub storage: u32,
 	pub bounds: after_effects::Rect,
 	pub output_frame: pr::sys::PPixHand,
 	pub frames: (pr::sys::PPixHand, pr::sys::PPixHand),
@@ -110,6 +111,7 @@ impl<'a> GPURenderProperties<'a> {
 		}
 
 		let half_precision = pixel_format != pr::PixelFormat::GpuBgra4444_32f;
+		let storage = gpu_storage(pixel_format);
 
 		let bytes_per_pixel = gpu_bytes_per_pixels(pixel_format);
 
@@ -137,12 +139,9 @@ impl<'a> GPURenderProperties<'a> {
 			after_effects::Rect { left: 0, top: 0, right: rw, bottom: rh }
 		});
 
-		let ticks_per_frame = render_params.render_ticks_per_frame();
-		let time = if ticks_per_frame != 0 {
-			render_params.clip_time() as f32 / ticks_per_frame as f32
-		} else {
-			0.0
-		};
+		// Canonical effect time: sequence/timeline seconds, matching the CPU path
+		// (PF_UtilitySuite::GetSequenceTime). frame.time is seconds on every backend.
+		let time = crate::adobe::ticks_to_seconds(render_params.sequence_time());
 
 		Ok(GPURenderProperties {
 			progress,
@@ -150,6 +149,7 @@ impl<'a> GPURenderProperties<'a> {
 			gpu_index,
 			pixel_format,
 			half_precision,
+			storage,
 			bounds,
 			output_frame,
 			bytes_per_pixel,

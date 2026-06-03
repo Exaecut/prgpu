@@ -96,6 +96,7 @@ where
 				progress: local_base.progress,
 				render_generation: local_base.render_generation,
 				pixel_layout: local_base.pixel_layout.as_u32(),
+				storage: local_base.storage,
 				outgoing_mip_levels: desc.levels,
 			};
 			unsafe {
@@ -138,6 +139,7 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 		command_queue_handle: base.command_queue_handle,
 		bytes_per_pixel: base.bytes_per_pixel,
 		pixel_layout: base.pixel_layout,
+		storage: base.storage,
 		time: base.time,
 		progress: base.progress,
 		render_generation: base.render_generation,
@@ -185,6 +187,7 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy) -> Resul
 		progress: base.progress,
 		render_generation: base.render_generation,
 		pixel_layout: base.pixel_layout.as_u32(),
+		storage: base.storage,
 		outgoing_mip_levels: 0,
 	};
 

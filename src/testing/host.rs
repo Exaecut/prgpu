@@ -217,6 +217,23 @@ unsafe extern "C" fn mock_gpu_ppix_device_index(
     0
 }
 
+// `GPURenderProperties::new` derives the real buffer dims from `row_bytes` and
+// the total byte size (GetGPUPPixSize). Without this mock the suite fn pointer
+// is None and the premiere `call_suite_fn_single!` macro panics with
+// `unreachable!()` before the caller's `.unwrap_or(0)` fallback can apply,
+// breaking every GPU render test. Size = rowbytes × height (tight buffer).
+unsafe extern "C" fn mock_get_gpu_ppix_size(
+    ppix_handle: pr_sys::PPixHand,
+    out_size: *mut usize,
+) -> i32 {
+    if ppix_handle.is_null() || unsafe { *ppix_handle }.is_null() { return -1; }
+    let ppix = unsafe { &**ppix_handle };
+    let row_bytes = ppix.rowbytes.unsigned_abs() as usize;
+    let height = (ppix.bounds.bottom - ppix.bounds.top).unsigned_abs() as usize;
+    unsafe { *out_size = row_bytes * height };
+    0
+}
+
 unsafe extern "C" fn mock_create_gpu_ppix(
     _device_index: u32,
     _pixel_format: pr_sys::PrPixelFormat,
@@ -341,6 +358,7 @@ fn make_gpu_device_vtable() -> Box<pr_sys::PrSDKGPUDeviceSuite> {
     let mut v = unsafe { Box::<pr_sys::PrSDKGPUDeviceSuite>::new_zeroed().assume_init() };
     v.GetGPUPPixData = Some(mock_get_gpu_ppix_data);
     v.GetGPUPPixDeviceIndex = Some(mock_gpu_ppix_device_index);
+    v.GetGPUPPixSize = Some(mock_get_gpu_ppix_size);
     v.CreateGPUPPix = Some(mock_create_gpu_ppix);
     v.GetDeviceInfo = Some(mock_get_device_info);
     v.AllocateDeviceMemory = Some(mock_allocate_device_memory);

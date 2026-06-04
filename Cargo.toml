@@ -3,7 +3,7 @@ members = [".", "prgpu-macro"]
 
 [package]
 name = "prgpu"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 description = "GPU-accelerated rendering utilities for Adobe Premiere Pro and After Effects plugins"
 license = "MIT OR Apache-2.0"

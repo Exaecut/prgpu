@@ -153,6 +153,7 @@ impl<'a> ConfigBuilder<'a> {
 			render_generation: self.base.render_generation,
 			pixel_layout: self.base.pixel_layout.as_u32(),
 			storage: self.base.storage,
+			flip_y: self.base.flip_y,
 			outgoing_mip_levels,
 		})
 	}

@@ -255,6 +255,7 @@ impl GpuContext {
             render_generation: 0,
             pixel_layout: 1, // BGRA — GPU path convention
             storage: crate::types::storage_from_bpp(bytes_per_pixel),
+            flip_y: 0,
             outgoing_mip_levels: 0,
         }
     }
@@ -328,6 +329,7 @@ fn upload_metal(
         render_generation: 0,
         pixel_layout: 1,
         storage: crate::types::storage_from_bpp(bpp),
+        flip_y: 0,
         outgoing_mip_levels: 0,
     };
 

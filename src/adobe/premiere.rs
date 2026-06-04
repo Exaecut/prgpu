@@ -107,6 +107,7 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			bytes_per_pixel: bpp,
 			pixel_layout,
 			storage: base_cfg.storage,
+			flip_y: 0, // Premiere GPU PPix is top-down
 			time: base_cfg.time,
 			progress: base_cfg.progress,
 			render_generation: base_cfg.render_generation,

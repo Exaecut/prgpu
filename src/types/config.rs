@@ -47,6 +47,9 @@ pub struct Configuration {
 	/// Ambiguous from bpp alone: 8 bpp is Float16x4 on the Premiere GPU path but
 	/// Unorm16x4 on the CPU/AE path, so the adapter sets this from the host format.
 	pub storage: u32,
+	/// 0 = top-down host buffer; 1 = bottom-up (Premiere CPU). Applied uniformly to
+	/// every buffer access so kernel UV stays top-left and matches the GPU path.
+	pub flip_y: u32,
 	/// Mip levels to allocate and auto-generate on the outgoing buffer (incl. level 0).
 	/// `0`/`1` disables mip support; `2..=MAX_MIP` requests an N-level pyramid the
 	/// kernel can sample via `SampleLinear(uv, lod)` / `SampleLinearTrilinear(uv, lodF)`.
@@ -111,6 +114,7 @@ impl Configuration {
 			render_generation: scheduling::advance_generation(),
 			pixel_layout: 1, // GPU path always receives BGRA from Premiere
 			storage: render_properties.storage,
+			flip_y: 0,
 			outgoing_mip_levels: 0,
 		})
 	}
@@ -138,6 +142,7 @@ impl Configuration {
 			render_generation: 0,
 			pixel_layout,
 			storage: storage_from_bpp(bytes_per_pixel),
+			flip_y: 0,
 			outgoing_mip_levels: 0,
 		}
 	}
@@ -190,6 +195,7 @@ impl Configuration {
 			render_generation: scheduling::advance_generation(),
 			pixel_layout: 1, // GPU path always receives BGRA from Premiere
 			storage: render_properties.storage,
+			flip_y: 0,
 			outgoing_mip_levels: 0,
 		})
 	}
@@ -209,6 +215,8 @@ pub struct TextureDesc {
 	pub storage: u32,
 	pub layout: u32,
 	pub address_mode: u32,
+	// 0 = top-down; 1 = bottom-up host buffer (Premiere CPU). Matches `vekl::TextureDesc.flipY`.
+	pub flip_y: u32,
 
 	// Mip-chain metadata. `mip_level_count >= 1`; entries past it are undefined.
 	// Slang side uses `uint[MAX_MIP]` to match this layout byte-for-byte.
@@ -237,8 +245,8 @@ pub struct FrameParams {
 // Rust struct drifted from the MAX_MIP-derived layout the kernels expect — fix
 // MAX_MIP (and the matching `vekl` constant), not the assert.
 const _: () = {
-	assert!(core::mem::size_of::<TextureDesc>() == (8 + 4 * MAX_MIP as usize) * 4);
-	assert!(core::mem::size_of::<FrameParams>() == 3 * (8 + 4 * MAX_MIP as usize) * 4 + 16);
+	assert!(core::mem::size_of::<TextureDesc>() == (9 + 4 * MAX_MIP as usize) * 4);
+	assert!(core::mem::size_of::<FrameParams>() == 3 * (9 + 4 * MAX_MIP as usize) * 4 + 16);
 };
 
 pub const PIXEL_STORAGE_UNORM8X4: u32 = 0;
@@ -265,6 +273,7 @@ pub fn make_texture_desc(width: u32, height: u32, pitch_px: u32, bpp: u32, pixel
 		storage: storage_from_bpp(bpp),
 		layout: pixel_layout,
 		address_mode: 0, // AddressMode::Clamp
+		flip_y: 0,
 		mip_level_count: 1,
 		mip_offset_bytes: [0; MAX_MIP as usize],
 		mip_width: [0; MAX_MIP as usize],
@@ -300,6 +309,7 @@ pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 		config.pixel_layout,
 	);
 	desc.storage = config.storage;
+	desc.flip_y = config.flip_y;
 	if config.outgoing_mip_levels > 1 {
 		fill_mip_desc(
 			&mut desc,
@@ -318,6 +328,7 @@ pub fn make_outgoing_desc(config: &Configuration) -> TextureDesc {
 pub fn make_in_desc(config: &Configuration) -> TextureDesc {
 	let mut desc = make_texture_desc(config.incoming_width, config.incoming_height, config.incoming_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout);
 	desc.storage = config.storage;
+	desc.flip_y = config.flip_y;
 	desc
 }
 
@@ -325,6 +336,7 @@ pub fn make_in_desc(config: &Configuration) -> TextureDesc {
 pub fn make_dst_desc(config: &Configuration) -> TextureDesc {
 	let mut desc = make_texture_desc(config.width, config.height, config.dest_pitch_px as u32, config.bytes_per_pixel, config.pixel_layout);
 	desc.storage = config.storage;
+	desc.flip_y = config.flip_y;
 	desc
 }
 
@@ -406,7 +418,7 @@ mod tests {
 
 	#[test]
 	fn rust_texture_desc_size_matches_slang_layout() {
-		// 7 scalar u32 + 1 level count + 4 * [u32; MAX_MIP] = (7 + 1 + 4 * MAX_MIP) * 4.
-		assert_eq!(std::mem::size_of::<TextureDesc>(), (7 + 1 + 4 * MAX_MIP as usize) * 4);
+		// 8 scalar u32 (incl. flip_y) + 1 level count + 4 * [u32; MAX_MIP] = (8 + 1 + 4 * MAX_MIP) * 4.
+		assert_eq!(std::mem::size_of::<TextureDesc>(), (8 + 1 + 4 * MAX_MIP as usize) * 4);
 	}
 }

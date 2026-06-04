@@ -97,6 +97,7 @@ where
 				render_generation: local_base.render_generation,
 				pixel_layout: local_base.pixel_layout.as_u32(),
 				storage: local_base.storage,
+				flip_y: local_base.flip_y,
 				outgoing_mip_levels: desc.levels,
 			};
 			unsafe {
@@ -140,6 +141,7 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 		bytes_per_pixel: base.bytes_per_pixel,
 		pixel_layout: base.pixel_layout,
 		storage: base.storage,
+		flip_y: base.flip_y,
 		time: base.time,
 		progress: base.progress,
 		render_generation: base.render_generation,
@@ -188,6 +190,7 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy) -> Resul
 		render_generation: base.render_generation,
 		pixel_layout: base.pixel_layout.as_u32(),
 		storage: base.storage,
+		flip_y: base.flip_y,
 		outgoing_mip_levels: 0,
 	};
 

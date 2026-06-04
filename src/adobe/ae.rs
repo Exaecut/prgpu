@@ -235,6 +235,7 @@ impl<E: Effect> EffectAdapter<E> {
 			bytes_per_pixel: bpp,
 			pixel_layout,
 			storage: crate::types::storage_from_bpp(bpp),
+			flip_y: in_data.is_premiere() as u32, // Premiere CPU host buffer is bottom-up; AE is top-down
 			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: 0,
@@ -324,6 +325,7 @@ impl<E: Effect> EffectAdapter<E> {
 			bytes_per_pixel: bpp,
 			pixel_layout,
 			storage: crate::types::storage_from_bpp(bpp),
+			flip_y: 0, // AE GPU world is top-down
 			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: frame_index as u64,
@@ -489,7 +491,8 @@ impl<E: Effect> EffectAdapter<E> {
 						buf[..n].iter().map(|b| format!("{:02x}", *b)).collect::<Vec<_>>().join(" ")
 					};
 					log::info!(
-						"[CPU] computed bpp={dbg_bpp} layout={dbg_layout}(0=RGBA,1=BGRA) pr_pixel_format={pr_fmt:?} src_pitch_px={src_pitch_px} dst_pitch_px={dst_pitch_px} t_sec={t_sec:.4} local_t_sec={local_t_sec:.4} current_time={ct} time_step={ts} time_scale={tsc} first_px_bytes=[{head}]",
+						"[CPU] computed bpp={dbg_bpp} layout={dbg_layout}(0=RGBA,1=BGRA) flip_y={fy} pr_pixel_format={pr_fmt:?} src_pitch_px={src_pitch_px} dst_pitch_px={dst_pitch_px} t_sec={t_sec:.4} local_t_sec={local_t_sec:.4} current_time={ct} time_step={ts} time_scale={tsc} first_px_bytes=[{head}]",
+						fy = in_data.is_premiere() as u32,
 						ct = in_data.current_time(),
 						ts = in_data.time_step(),
 						tsc = in_data.time_scale(),

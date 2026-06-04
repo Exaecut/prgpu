@@ -100,6 +100,9 @@ pub struct InvocationBase {
 	/// Set by the adapter from the host pixel format; carried into every pass's
 	/// `Configuration` so half-float GPU buffers decode correctly.
 	pub storage: u32,
+	/// 0 = top-down; 1 = bottom-up host buffer (Premiere CPU). Applied uniformly to
+	/// every buffer access so kernel UV is top-left on all backends.
+	pub flip_y: u32,
 	pub time: f32,
 	pub progress: f32,
 	pub render_generation: u64,

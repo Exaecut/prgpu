@@ -263,9 +263,17 @@ impl GpuContext {
 
 #[cfg(gpu_backend = "metal")]
 fn create_metal_context() -> Result<GpuContext, String> {
-    use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+    use objc::{msg_send, runtime::Object, sel, sel_impl};
 
-    let device: *mut Object = unsafe { msg_send![class!(MTLCreateSystemDefaultDevice), retain] };
+    // MTLCreateSystemDefaultDevice is a C function (NS_RETURNS_RETAINED), not an
+    // Obj-C class, so `class!()` can never resolve it. Call it directly; the
+    // returned device is already +1-owned.
+    #[link(name = "Metal", kind = "framework")]
+    unsafe extern "C" {
+        fn MTLCreateSystemDefaultDevice() -> *mut Object;
+    }
+
+    let device: *mut Object = unsafe { MTLCreateSystemDefaultDevice() };
     if device.is_null() {
         return Err("MTLCreateSystemDefaultDevice returned null — no Metal-capable GPU".into());
     }

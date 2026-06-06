@@ -5,6 +5,7 @@
 //! Premiere pixel formats). Frame-dependent state belongs in `FrameData`,
 //! not here.
 
+use after_effects::Rect;
 use after_effects::pf;
 use after_effects::pr;
 
@@ -49,11 +50,43 @@ impl EffectDescriptor {
 	}
 }
 
-/// Per-side pixel inflation. Re-exported from `cross_host` for back-compat
-/// — the new `Effect::expansion` returns this same type so adapters that
-/// already handle the legacy `CrossHostEffect::compute_expansion` keep
-/// working.
-pub use crate::effect::cross_host::ExpansionExtent;
+
+/// Per-side pixel inflation applied uniformly to the input layer to compute
+/// the rendered output rect.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExpansionExtent {
+	pub left: i32,
+	pub top: i32,
+	pub right: i32,
+	pub bottom: i32,
+}
+
+impl ExpansionExtent {
+	pub fn symmetric(px: i32) -> Self {
+		Self { left: px, top: px, right: px, bottom: px }
+	}
+
+	pub fn is_zero(&self) -> bool {
+		self.left == 0 && self.top == 0 && self.right == 0 && self.bottom == 0
+	}
+
+	pub fn total_width(&self) -> i32 {
+		self.left + self.right
+	}
+
+	pub fn total_height(&self) -> i32 {
+		self.top + self.bottom
+	}
+
+	pub fn inflate_rect(&self, r: Rect) -> Rect {
+		let mut out = Rect::empty();
+		out.left = r.left - self.left;
+		out.top = r.top - self.top;
+		out.right = r.right + self.right;
+		out.bottom = r.bottom + self.bottom;
+		out
+	}
+}
 
 impl ExpansionExtent {
 	pub const fn none() -> Self {

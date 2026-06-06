@@ -10,9 +10,6 @@
 //!   uses the new `Effect` trait sees these through `FrameDataContext` /
 //!   `ExpansionContext` rather than directly.
 
-pub mod cross_host;
-pub use cross_host::*;
-
 pub mod host;
 pub use host::{Capability, Host, HostCapabilities, RenderKind};
 
@@ -26,7 +23,7 @@ pub mod license;
 pub use license::{LicenseGate, NoLicenseGate};
 
 pub mod descriptor;
-pub use descriptor::EffectDescriptor;
+pub use descriptor::{EffectDescriptor, ExpansionExtent};
 
 pub mod frame_context;
 pub use frame_context::{ExpansionContext, FrameDataContext};

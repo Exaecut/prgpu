@@ -23,7 +23,7 @@ pub mod license;
 pub use license::{LicenseGate, NoLicenseGate};
 
 pub mod descriptor;
-pub use descriptor::{EffectDescriptor, ExpansionExtent};
+pub use descriptor::{EffectDescriptor, ExpansionExtent, ExpansionSymmetry};
 
 pub mod frame_context;
 pub use frame_context::{ExpansionContext, FrameDataContext};

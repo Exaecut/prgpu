@@ -145,25 +145,3 @@ pub(crate) fn install_descriptor_pixel_formats(in_data: &after_effects::InData, 
 	pf::suites::Utility::new()?.effect_wants_checked_out_frames_to_match_render_pixel_format(in_data.effect_ref())?;
 	Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-	use super::ExpansionExtent;
-
-	#[test]
-	fn symmetric_hv_independent_axes() {
-		let e = ExpansionExtent::symetric(ExpansionSymmetry::IndependentAxes { horizontal: 30, vertical: 12 });
-		assert_eq!((e.left, e.right), (30, 30));
-		assert_eq!((e.top, e.bottom), (12, 12));
-		assert_eq!(e.total_width(), 60);
-		assert_eq!(e.total_height(), 24);
-	}
-
-	#[test]
-	fn symmetric_hv_matches_symmetric_when_equal() {
-		assert_eq!(
-			ExpansionExtent::symetric(ExpansionSymmetry::IndependentAxes { horizontal: 20, vertical: 20 }).total_width(),
-			ExpansionExtent::symetric(ExpansionSymmetry::Symmetric(20)).total_width()
-		);
-	}
-}

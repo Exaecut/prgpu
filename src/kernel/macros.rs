@@ -49,7 +49,13 @@ macro_rules! kernel_params {
             $( $field:ident : $ty:ty $(= [$($spec:tt)+])? ; )*
         }
     ) => {
-        #[$crate::gpu_struct]
+        // align = 16: kernel params are bound as a GPU ConstantBuffer, which
+        // Slang rounds up to 16 bytes on every backend (Metal/CUDA/OpenCL). The
+        // host upload must be that same size or Metal aborts in
+        // validateComputeFunctionArguments. Without this floor an all-scalar
+        // struct only gets 4-byte struct alignment, so any field count that
+        // isn't a multiple of 4 dwords under-sizes the buffer.
+        #[$crate::gpu_struct(align = 16)]
         pub struct $name {
             $( pub $field : $ty, )*
         }
@@ -58,6 +64,19 @@ macro_rules! kernel_params {
             const SIZE: usize = <$name>::SIZE;
             const ALIGN: usize = <$name>::ALIGN;
         }
+
+        // Self-validating guard for the ConstantBuffer ABI. `align = 16` already
+        // guarantees this; keeping the check turns any future regression (a
+        // macro change, a hand-rolled align override) into a compile error
+        // instead of a runtime GPU-validation abort.
+        const _: () = {
+            if <$name>::SIZE % 16 != 0 {
+                panic!(concat!(
+                    "kernel params `", stringify!($name),
+                    "` size must be a multiple of 16 bytes to match the GPU ConstantBuffer ABI"
+                ));
+            }
+        };
 
         impl $name {
             pub fn from_gpu(
@@ -68,6 +87,9 @@ macro_rules! kernel_params {
             ) -> Self {
                 Self {
                     $( $field: $crate::kernel_params!(@gpu $P, __filter, __rp, __width, __height $(, $($spec)+)?), )*
+                    // Zeroes any padding the gpu_struct alignment floor injects
+                    // (e.g. `_prgpu_pad_tail`); user fields above take precedence.
+                    ..<Self as ::bytemuck::Zeroable>::zeroed()
                 }
             }
 
@@ -80,6 +102,7 @@ macro_rules! kernel_params {
                 use $crate::params::CpuParams as _;
                 Ok(Self {
                     $( $field: $crate::kernel_params!(@cpu $P, __params, __width, __height, __is_premiere $(, $($spec)+)?), )*
+                    ..<Self as ::bytemuck::Zeroable>::zeroed()
                 })
             }
 

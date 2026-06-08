@@ -149,7 +149,13 @@ impl<E: Effect> EffectAdapter<E> {
 		Ok(())
 	}
 
-	fn build_frame_data_cpu(in_data: &InData, params: &Parameters<E::Params>, in_layer: Option<&ae::Layer>, out_w: u32, out_h: u32) -> Result<E::FrameData, ae::Error> {
+	/// `layer_w`/`layer_h` are the un-expanded source dimensions; `out_w`/`out_h`
+	/// are the (possibly expanded) output frame. `Effect::frame_data` derives the
+	/// centering offset from their difference (`ext = (out - layer) / 2`), so the
+	/// caller must pass the real source size — never the output size — when the
+	/// frame is expanded. Passing the output size for both collapses `ext` to 0
+	/// and pins the source to the top-left of the expanded buffer.
+	fn build_frame_data_cpu(in_data: &InData, params: &Parameters<E::Params>, layer_w: u32, layer_h: u32, out_w: u32, out_h: u32) -> Result<E::FrameData, ae::Error> {
 		let host = if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects };
 		let backend = Backend::Cpu;
 		let render_kind = if in_data.is_premiere() {
@@ -157,8 +163,6 @@ impl<E: Effect> EffectAdapter<E> {
 		} else {
 			RenderKind::AeSmartRenderCpu
 		};
-		let layer_w = in_layer.map(|l| l.width() as u32).unwrap_or(out_w);
-		let layer_h = in_layer.map(|l| l.height() as u32).unwrap_or(out_h);
 
 		let frame_index = {
 			let step = in_data.time_step().max(1);
@@ -450,7 +454,7 @@ impl<E: Effect> EffectAdapter<E> {
 					out_data.set_origin(ae::Point { h: ext.left, v: ext.top });
 				}
 
-				let frame_data = Self::build_frame_data_cpu(&in_data, params, Some(&in_layer), out_w, out_h)?;
+				let frame_data = Self::build_frame_data_cpu(&in_data, params, layer_w, layer_h, out_w, out_h)?;
 				out_data.set_frame_data::<E::FrameData>(frame_data);
 			}
 			Command::FrameSetdown => {
@@ -557,7 +561,15 @@ impl<E: Effect> EffectAdapter<E> {
 
 					let out_w = result_rect.width().max(1) as u32;
 					let out_h = result_rect.height().max(1) as u32;
-					let frame_data = Self::build_frame_data_cpu(&in_data, params, None, out_w, out_h)?;
+					// The source occupies `layer_result` (the un-inflated checked-out
+					// rect); `result_rect` adds `ext` on every side. Feeding the source
+					// size as the layer dims keeps `frame_data`'s
+					// `ext = (out - layer) / 2` equal to the per-side expansion, so the
+					// SmartRender pass centers the source the same way the GPU path will
+					// (input world = source size, output world = expanded size).
+					let src_w = layer_result.width().max(1) as u32;
+					let src_h = layer_result.height().max(1) as u32;
+					let frame_data = Self::build_frame_data_cpu(&in_data, params, src_w, src_h, out_w, out_h)?;
 					extra.set_pre_render_data::<E::FrameData>(frame_data);
 				}
 			}

@@ -14,7 +14,7 @@ use crate::graph::builder::{GraphError, RenderGraph};
 use crate::graph::context::{MipPyramidCtx, PassContext};
 use crate::graph::pass::{MipChainPassDecl, MipDirection, PassDecl, SinglePassDecl, Slot};
 use crate::graph::resource::{MipPyramidDesc, ResourceId};
-use crate::graph::source::SourcePolicy;
+use crate::graph::source::{SourcePolicy, AUTO_SOURCE_SNAPSHOT_TAG};
 use crate::pipeline::mip;
 use crate::types::{Backend, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
 
@@ -49,18 +49,20 @@ impl AllocatedResource {
 /// render to surface as an effect-level error rather than producing a
 /// partial output.
 ///
-/// Source-snapshot policy is evaluated up front: if the graph declares
-/// `SnapshotIfAliased { tag }` and the host signals
-/// `Capability::SourceOutputMayAlias`, the executor copies `main_source`
-/// into a private buffer keyed by `tag` and rebinds `base.main_source` to
-/// that snapshot for the rest of the graph. `AlwaysSnapshot` skips the
-/// capability check.
+/// Source-snapshot policy is evaluated up front: the default `Auto` copies
+/// `main_source` into a private buffer when the host signals
+/// `Capability::SourceOutputMayAlias` and a pass reads `MainSource` while
+/// writing `Output`; `SnapshotIfAliased { tag }` does the same with a caller
+/// tag; `AlwaysSnapshot` skips the capability check; `Direct` never copies.
+/// When a snapshot is taken the executor rebinds `base.main_source` to it for
+/// the rest of the graph.
 pub fn execute<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
 where
 	F: Copy + Send + Sync + 'static,
 {
 	let mut local_base = clone_base(base);
-	let _snapshot_buf = apply_source_policy(&mut local_base, graph.source_policy)?;
+	let auto_snapshot_needed = graph_samples_source_into_output(graph);
+	let _snapshot_buf = apply_source_policy(&mut local_base, graph.source_policy, auto_snapshot_needed)?;
 
 	let mut resources: Vec<AllocatedResource> = Vec::with_capacity(graph.resources.len());
 	for decl in &graph.resources {
@@ -152,9 +154,29 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 	}
 }
 
-fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy) -> Result<Option<ImageBuffer>, GraphError> {
+/// True when any single pass reads `MainSource` (as source or secondary input)
+/// and writes `Output`. That is the displaced-sample-after-write hazard the
+/// source snapshot guards against; mip-chain passes touch private resources, so
+/// they never trigger it.
+fn graph_samples_source_into_output<F: Copy + Send + Sync + 'static>(graph: &RenderGraph<F>) -> bool {
+	graph.passes.iter().any(|pass| match pass {
+		PassDecl::Single(p) => {
+			let reads_source = matches!(p.source, Slot::MainSource) || matches!(p.input, Some(Slot::MainSource));
+			reads_source && matches!(p.target, Slot::Output)
+		}
+		PassDecl::MipChain(_) => false,
+	})
+}
+
+fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_snapshot_needed: bool) -> Result<Option<ImageBuffer>, GraphError> {
 	let tag = match policy {
 		SourcePolicy::Direct => return Ok(None),
+		SourcePolicy::Auto => {
+			if !auto_snapshot_needed || !base.capabilities().supports(Capability::SourceOutputMayAlias) {
+				return Ok(None);
+			}
+			AUTO_SOURCE_SNAPSHOT_TAG
+		}
 		SourcePolicy::SnapshotIfAliased { tag } => {
 			if !base.capabilities().supports(Capability::SourceOutputMayAlias) {
 				return Ok(None);

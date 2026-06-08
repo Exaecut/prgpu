@@ -43,6 +43,8 @@ fn synthetic_base(out_data: *mut std::ffi::c_void, src_data: *mut std::ffi::c_vo
 		command_queue_handle: std::ptr::null_mut(),
 		bytes_per_pixel: 4,
 		pixel_layout: PixelLayout::Bgra,
+		storage: 0,
+		flip_y: 0,
 		time: 0.0,
 		progress: 0.0,
 		render_generation: 0,
@@ -69,6 +71,35 @@ fn legacy_execute_cpu_alias_still_resolves() {
 	let mut dst = vec![0u8; 8 * 8 * 4];
 	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
 	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("alias works");
+}
+
+#[test]
+fn default_policy_is_auto() {
+	assert_eq!(prgpu::graph::SourcePolicy::default(), prgpu::graph::SourcePolicy::Auto);
+	let graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	let _ = graph; // new() seeds the Auto default; nothing to configure.
+}
+
+#[test]
+fn auto_policy_runs_clean_on_non_aliasing_host() {
+	// A MainSource -> Output pass trips the auto-snapshot heuristic, but AE+CPU
+	// does not report SourceOutputMayAlias so the snapshot short-circuits and the
+	// graph runs against the host buffers directly.
+	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
+	graph.add_pass("shake_like", prgpu::kernel::builtin::diff::kernel(), Slot::MainSource, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
+		tol_r: 0.0,
+		tol_g: 0.0,
+		tol_b: 0.0,
+		tol_a: 0.0,
+		smooth_a: 0.0,
+		smooth_b: 0.0,
+		_pad0: 0,
+		_pad1: 0,
+	});
+	let mut src = vec![2u8; 8 * 8 * 4];
+	let mut dst = vec![0u8; 8 * 8 * 4];
+	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
+	prgpu::graph::execute::execute(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("auto policy runs");
 }
 
 #[test]

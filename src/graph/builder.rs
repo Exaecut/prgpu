@@ -64,7 +64,7 @@ impl<F: Copy + Send + Sync + 'static> Default for RenderGraph<F> {
 impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 	pub fn new() -> Self {
 		Self {
-			source_policy: SourcePolicy::Direct,
+			source_policy: SourcePolicy::default(),
 			resources: Vec::new(),
 			passes: Vec::new(),
 		}

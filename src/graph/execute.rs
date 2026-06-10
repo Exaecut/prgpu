@@ -101,6 +101,12 @@ where
 				storage: local_base.storage,
 				flip_y: local_base.flip_y,
 				outgoing_mip_levels: desc.levels,
+				canvas_width: local_base.output.width,
+				canvas_height: local_base.output.height,
+				layer_width: local_base.main_source.width,
+				layer_height: local_base.main_source.height,
+				ext_x: local_base.ext_x,
+				ext_y: local_base.ext_y,
 			};
 			unsafe {
 				mip::prepare_mip_source(&mut tmp_cfg, desc.tag).map_err(|m| GraphError::KernelDispatch { pass: "prepare_mip_resource", message: m })?;
@@ -147,6 +153,8 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 		time: base.time,
 		progress: base.progress,
 		render_generation: base.render_generation,
+		ext_x: base.ext_x,
+		ext_y: base.ext_y,
 		main_source: base.main_source,
 		incoming_source: base.incoming_source,
 		outgoing_source: base.outgoing_source,
@@ -214,6 +222,12 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 		storage: base.storage,
 		flip_y: base.flip_y,
 		outgoing_mip_levels: 0,
+		canvas_width: base.output.width,
+		canvas_height: base.output.height,
+		layer_width: base.main_source.width,
+		layer_height: base.main_source.height,
+		ext_x: base.ext_x,
+		ext_y: base.ext_y,
 	};
 
 	let snapshot = unsafe { mip::prepare_source_copy(&mut tmp_cfg, tag) }.map_err(|m| GraphError::KernelDispatch { pass: "source_snapshot", message: m })?;

@@ -35,7 +35,7 @@ fn frames_as_slice<'a>(frames: *const pr::sys::PPixHand, frame_count: usize) -> 
 	Ok(unsafe { slice::from_raw_parts(frames, frame_count) })
 }
 
-fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
+pub(crate) fn gpu_bytes_per_pixels(pixel_format: pr::PixelFormat) -> i32 {
 	match pixel_format {
 		pr::PixelFormat::GpuBgra4444_32f => 16,
 		pr::PixelFormat::GpuBgra4444_16f => 8,
@@ -99,6 +99,36 @@ pub mod pipeline {
 	#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda", gpu_backend = "opencl", gpu_backend = "other")))]
 	mod imp {
 		compile_error!("Unsupported gpu_backend");
+	}
+}
+
+/// Per-frame submission scope shared by both GPU backends: the adapter
+/// brackets `run_graph` with `begin`/`end`, passes enqueue into the frame's
+/// stream / command buffer with no per-pass sync, and `end` performs the one
+/// sync Adobe's buffer lifecycle requires.
+pub mod frame_scope {
+	pub use imp::*;
+
+	#[cfg(gpu_backend = "metal")]
+	mod imp {
+		pub use crate::gpu::backends::metal::frame_scope::*;
+	}
+
+	#[cfg(gpu_backend = "cuda")]
+	mod imp {
+		pub use crate::gpu::backends::cuda::frame_scope::*;
+	}
+
+	#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+	mod imp {
+		use crate::types::FrameScopeDesc;
+
+		pub const ERR_WATCHDOG: &str = "metal frame watchdog";
+
+		pub fn begin(_desc: &FrameScopeDesc) {}
+		pub fn end(_desc: &FrameScopeDesc) -> Result<(), &'static str> {
+			Ok(())
+		}
 	}
 }
 

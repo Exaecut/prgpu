@@ -1,12 +1,12 @@
 use after_effects::log;
 use std::ffi::c_void;
 use std::ptr::null_mut;
-use std::time::Duration;
 
 use cudarc::driver::sys::{self as cuda, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, CUdeviceptr, CUresult};
 
 pub mod buffer;
 pub mod fence;
+pub mod frame_scope;
 pub mod pipeline;
 
 use crate::{Configuration, FrameParams};
@@ -46,7 +46,8 @@ unsafe fn compute_capability(dev: cuda::CUdevice) -> Result<(i32, i32), &'static
 /// Launch a CUDA kernel on `stream`. Does NOT synchronize.
 ///
 /// # Safety
-/// - `ctx`, `stream`, `func` must be valid CUDA handles.
+/// - `ctx`, `stream`, `func` must be valid CUDA handles, and `ctx` must
+///   already be current on this thread (`run` / the frame scope set it).
 /// - `params` must point to device memory matching the kernel signature.
 #[allow(clippy::too_many_arguments)]
 unsafe fn dispatch(
@@ -63,7 +64,6 @@ unsafe fn dispatch(
 		log::error!("[CUDA] dispatch - null handle");
 		return Err("null handle");
 	}
-	check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
 	check(
 		unsafe {
 			cuda::cuLaunchKernel(
@@ -150,10 +150,12 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 	}
 
 	let ctx = config.context_handle.unwrap();
+	let in_frame_scope = frame_scope::is_active();
 
-	// Slang's CUDA codegen for `ConstantBuffer<T>` produces a `.u64` kernel arg
-	// that the kernel dereferences via `ld.global` to read field bytes.
-	check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
+	// Inside a frame scope the adapter already set the context current.
+	if !in_frame_scope {
+		check(unsafe { cuda::cuCtxSetCurrent(ctx as cuda::CUcontext) }, "cuCtxSetCurrent")?;
+	}
 
 	let func = unsafe { gpu::pipeline::load_kernel(ctx as _, shader_src, entry) }.map_err(|e| {
 		log::error!("[CUDA] {e}");
@@ -167,26 +169,29 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 	let mut d_incoming = incoming_data as u64;
 	let mut d_dest = config.dest_data as u64;
 
-	let frame = FrameParams {
-		out_desc: crate::types::make_outgoing_desc(config),
-		in_desc: crate::types::make_in_desc(config),
-		dst_desc: crate::types::make_dst_desc(config),
-		width: config.width,
-		height: config.height,
-		time: config.time,
-		progress: config.progress,
-	};
+	let frame = FrameParams::from_config(config);
 
 	let frame_bytes = unsafe { std::slice::from_raw_parts((&frame as *const FrameParams) as *const u8, std::mem::size_of::<FrameParams>()) };
 	let user_bytes = unsafe { std::slice::from_raw_parts((&user_params as *const UP) as *const u8, std::mem::size_of::<UP>()) };
 
-	let scratch = DeviceParamScratch {
-		frame: unsafe { upload_to_device(frame_bytes)? },
-		user: unsafe { upload_to_device(user_bytes)? },
+	// Slang's CUDA codegen for `ConstantBuffer<T>` produces a `.u64` kernel arg
+	// the kernel dereferences via `ld.global`, so both param blobs must live in
+	// device memory. The frame-scope arena stages them with async H2D and no
+	// per-pass alloc/free; outside a scope (tests, single dispatch) fall back to
+	// the owned alloc + sync upload.
+	let (d_frame_ptr, d_user_ptr, scratch) = match (frame_scope::stage_params(frame_bytes), frame_scope::stage_params(user_bytes)) {
+		(Some(f), Some(u)) => (f, u, None),
+		_ => {
+			let s = DeviceParamScratch {
+				frame: unsafe { upload_to_device(frame_bytes)? },
+				user: unsafe { upload_to_device(user_bytes)? },
+			};
+			(s.frame, s.user, Some(s))
+		}
 	};
 
-	let mut d_frame = scratch.frame;
-	let mut d_user = scratch.user;
+	let mut d_frame = d_frame_ptr;
+	let mut d_user = d_user_ptr;
 
 	let mut params: [*mut c_void; 5] = [
 		&mut d_outgoing as *mut _ as *mut c_void,
@@ -207,7 +212,15 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 		dispatch(ctx, config.command_queue_handle, func, grid_x, grid_y, block_x, block_y, &mut params)?;
 	}
 
-	check(unsafe { cuda::cuStreamSynchronize(stream) }, "cuStreamSynchronize")?;
+	if in_frame_scope {
+		frame_scope::note_pass();
+	}
+
+	// Scratch params are freed on return, so the launch must complete first.
+	// Arena-staged params live until frame end and need no per-pass sync.
+	if scratch.is_some() || !in_frame_scope {
+		check(unsafe { cuda::cuStreamSynchronize(stream) }, "cuStreamSynchronize")?;
+	}
 
 	drop(scratch);
 	Ok(())

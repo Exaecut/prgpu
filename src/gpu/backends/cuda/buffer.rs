@@ -186,11 +186,12 @@ unsafe fn get_or_create_with_mips_inner(device: DeviceHandleInit, width: u32, he
 	)
 }
 
-/// Buffer-to-buffer device copy. `cuMemcpy2D_v2` for mismatched pitches
-/// (Premiere's padded source vs. tight mip buffer); falls back to flat
-/// `cuMemcpyDtoD_v2` when pitches match.
+/// Buffer-to-buffer device copy via `cuMemcpy2D(Async)_v2` (handles Premiere's
+/// padded source vs. tight mip buffer pitches).
 ///
-/// Synchronous on the default stream so subsequent dispatches see the copied data.
+/// Inside a frame scope the copy is enqueued async on the frame stream, so it
+/// orders with the surrounding kernel launches and costs no CPU stall;
+/// otherwise it is synchronous so subsequent dispatches see the copied data.
 ///
 /// Signature mirrors the Metal backend so callers stay backend-agnostic; both
 /// backends pull whichever Configuration field they need (Metal: command queue
@@ -215,7 +216,7 @@ pub unsafe fn copy_buffer(
 	width_bytes: u32,
 	height: u32,
 ) -> Result<(), &'static str> {
-	use cudarc::driver::sys::{cuMemcpy2D_v2, CUDA_MEMCPY2D_v2, CUmemorytype};
+	use cudarc::driver::sys::{cuMemcpy2DAsync_v2, cuMemcpy2D_v2, CUstream, CUDA_MEMCPY2D_v2, CUmemorytype};
 
 	let Some(ctx_ptr) = config.context_handle else {
 		log::error!("[CUDA/buffer] copy_buffer: config.context_handle is None");
@@ -225,11 +226,14 @@ pub unsafe fn copy_buffer(
 		log::error!("[CUDA/buffer] copy_buffer: config.context_handle is null");
 		return Err("copy_buffer: null CUcontext");
 	}
-	let ctx = ctx_ptr as CUcontext;
-	let set = unsafe { cuCtxSetCurrent(ctx) };
-	if set != CUresult::CUDA_SUCCESS {
-		log::error!("[CUDA/buffer] copy_buffer: cuCtxSetCurrent failed: {:?}", set);
-		return Err("copy_buffer: cuCtxSetCurrent failed");
+	let in_frame_scope = super::frame_scope::is_active();
+	if !in_frame_scope {
+		let ctx = ctx_ptr as CUcontext;
+		let set = unsafe { cuCtxSetCurrent(ctx) };
+		if set != CUresult::CUDA_SUCCESS {
+			log::error!("[CUDA/buffer] copy_buffer: cuCtxSetCurrent failed: {:?}", set);
+			return Err("copy_buffer: cuCtxSetCurrent failed");
+		}
 	}
 
 	let src_dev = (src as CUdeviceptr).wrapping_add(src_offset);
@@ -261,9 +265,13 @@ pub unsafe fn copy_buffer(
 		WidthInBytes: width_bytes as usize,
 		Height: height as usize,
 	};
-	let res = unsafe { cuMemcpy2D_v2(&cp) };
+	let res = if in_frame_scope {
+		unsafe { cuMemcpy2DAsync_v2(&cp, super::frame_scope::stream() as CUstream) }
+	} else {
+		unsafe { cuMemcpy2D_v2(&cp) }
+	};
 	if res != CUresult::CUDA_SUCCESS {
-		log::error!("[CUDA/buffer] cuMemcpy2D_v2 failed: {:?}", res);
+		log::error!("[CUDA/buffer] cuMemcpy2D(Async)_v2 failed: {:?}", res);
 		return Err("cuMemcpy2D_v2 failed");
 	}
 

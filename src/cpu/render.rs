@@ -143,15 +143,8 @@ pub fn render_cpu<P: Copy + Sync>(
 	};
 
 	// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the destination iteration extent.
-	let tp = FrameParams {
-		out_desc: crate::types::make_outgoing_desc(config),
-		in_desc: crate::types::make_in_desc(config),
-		dst_desc: crate::types::make_dst_desc(config),
-		width: w,
-		height: h,
-		time,
-		progress: config.progress,
-	};
+	let mut tp = FrameParams::from_config(config);
+	tp.time = time;
 
 	let can_iterate_with = !in_data.is_premiere() && w == out_layer.width() as u32 && h == out_layer.height() as u32;
 
@@ -313,15 +306,7 @@ pub unsafe fn render_cpu_direct<P: Copy + Sync>(
 
 	let buffers = SafeBuffers([outgoing_ptr, incoming_ptr, dest_ptr]);
 
-	let tp = FrameParams {
-		out_desc: crate::types::make_outgoing_desc(config),
-		in_desc: crate::types::make_in_desc(config),
-		dst_desc: crate::types::make_dst_desc(config),
-		width: w,
-		height: h,
-		time: config.time,
-		progress: config.progress,
-	};
+	let tp = FrameParams::from_config(config);
 
 	let out_stride_bytes = tp.dst_desc.pitch_bytes as usize;
 	let out_buf_size = (h as usize) * out_stride_bytes;

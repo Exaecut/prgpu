@@ -10,6 +10,35 @@ pub enum DeviceHandleInit<'a> {
 	FromSuite((u32, &'a GPUDevice)),
 }
 
+/// Handles the per-frame submission scope needs from an adapter
+/// (`gpu::frame_scope::begin`/`end`). CUDA: `context_handle` = CUcontext,
+/// `command_queue_handle` = CUstream. Metal: `command_queue_handle` =
+/// MTLCommandQueue, `context_handle` unused.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameScopeDesc {
+	pub context_handle: Option<*mut c_void>,
+	pub command_queue_handle: *mut c_void,
+	pub render_generation: u64,
+}
+
+impl FrameScopeDesc {
+	pub fn from_config(config: &Configuration) -> Self {
+		Self {
+			context_handle: config.context_handle,
+			command_queue_handle: config.command_queue_handle,
+			render_generation: config.render_generation,
+		}
+	}
+
+	pub fn from_invocation(base: &crate::effect::InvocationBase) -> Self {
+		Self {
+			context_handle: base.context_handle,
+			command_queue_handle: base.command_queue_handle,
+			render_generation: base.render_generation,
+		}
+	}
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MTLSize {
@@ -54,6 +83,16 @@ pub struct Configuration {
 	/// `0`/`1` disables mip support; `2..=MAX_MIP` requests an N-level pyramid the
 	/// kernel can sample via `SampleLinear(uv, lod)` / `SampleLinearTrilinear(uv, lodF)`.
 	pub outgoing_mip_levels: u32,
+	/// Frame geometry for the canvas sampling contract.
+	/// `canvas` = full output frame (sequence size on the Premiere GPU-filter path),
+	/// `layer` = un-expanded source clip, `ext` = source top-left offset inside the
+	/// canvas. When canvas == layer these collapse to the identity mapping.
+	pub canvas_width: u32,
+	pub canvas_height: u32,
+	pub layer_width: u32,
+	pub layer_height: u32,
+	pub ext_x: i32,
+	pub ext_y: i32,
 }
 
 impl Configuration {
@@ -89,8 +128,15 @@ impl Configuration {
 		);
 		let dest_pitch_px = dest_row_bytes / bytes_per_pixel;
 
+		// Canvas (= the possibly-just-allocated outFrame, sequence size on the
+		// Premiere GPU-filter path) drives the dispatch/destination; the source
+		// buffers carry the layer's own (possibly smaller) extent so kernels
+		// never read past the clip. `ext` is the source top-left inside the
+		// canvas (from the input PPix origin), not assumed centered.
 		let width = render_properties.bounds.width();
 		let height = render_properties.bounds.height();
+		let layer_w = render_properties.layer_bounds.width();
+		let layer_h = render_properties.layer_bounds.height();
 
 		Ok(Self {
 			device_handle: filter.gpu_info.outDeviceHandle,
@@ -104,10 +150,10 @@ impl Configuration {
 			dest_pitch_px,
 			width: width as u32,
 			height: height as u32,
-			outgoing_width: width as u32,
-			outgoing_height: height as u32,
-			incoming_width: width as u32,
-			incoming_height: height as u32,
+			outgoing_width: layer_w as u32,
+			outgoing_height: layer_h as u32,
+			incoming_width: layer_w as u32,
+			incoming_height: layer_h as u32,
 			bytes_per_pixel: render_properties.bytes_per_pixel as u32,
 			time: render_properties.time,
 			progress: render_properties.progress,
@@ -116,6 +162,12 @@ impl Configuration {
 			storage: render_properties.storage,
 			flip_y: 0,
 			outgoing_mip_levels: 0,
+			canvas_width: width as u32,
+			canvas_height: height as u32,
+			layer_width: layer_w as u32,
+			layer_height: layer_h as u32,
+			ext_x: render_properties.ext_x,
+			ext_y: render_properties.ext_y,
 		})
 	}
 
@@ -144,6 +196,12 @@ impl Configuration {
 			storage: storage_from_bpp(bytes_per_pixel),
 			flip_y: 0,
 			outgoing_mip_levels: 0,
+			canvas_width: width,
+			canvas_height: height,
+			layer_width: width,
+			layer_height: height,
+			ext_x: 0,
+			ext_y: 0,
 		}
 	}
 
@@ -197,6 +255,12 @@ impl Configuration {
 			storage: render_properties.storage,
 			flip_y: 0,
 			outgoing_mip_levels: 0,
+			canvas_width: width as u32,
+			canvas_height: height as u32,
+			layer_width: width as u32,
+			layer_height: height as u32,
+			ext_x: 0,
+			ext_y: 0,
 		})
 	}
 }
@@ -237,6 +301,38 @@ pub struct FrameParams {
 	pub height: u32,
 	pub time: f32,
 	pub progress: f32,
+	// Canvas sampling contract: the source's
+	// top-left sits at (ext_x, ext_y) inside the (canvas_w x canvas_h) output;
+	// p_src = p_out - ext. Identity when canvas == layer (AE clip space).
+	pub canvas_width: u32,
+	pub canvas_height: u32,
+	pub layer_width: u32,
+	pub layer_height: u32,
+	pub ext_x: i32,
+	pub ext_y: i32,
+}
+
+impl FrameParams {
+	/// Single source of truth for the per-pass constant block. `time`
+	/// defaults to `config.time`; CPU AE paths that derive time from
+	/// `InData` override the field afterwards.
+	pub fn from_config(config: &Configuration) -> Self {
+		Self {
+			out_desc: make_outgoing_desc(config),
+			in_desc: make_in_desc(config),
+			dst_desc: make_dst_desc(config),
+			width: config.width,
+			height: config.height,
+			time: config.time,
+			progress: config.progress,
+			canvas_width: config.canvas_width,
+			canvas_height: config.canvas_height,
+			layer_width: config.layer_width,
+			layer_height: config.layer_height,
+			ext_x: config.ext_x,
+			ext_y: config.ext_y,
+		}
+	}
 }
 
 // Compile-time ABI guard. The Slang `vekl::TextureDesc` / `FrameParams` are
@@ -246,7 +342,7 @@ pub struct FrameParams {
 // MAX_MIP (and the matching `vekl` constant), not the assert.
 const _: () = {
 	assert!(core::mem::size_of::<TextureDesc>() == (9 + 4 * MAX_MIP as usize) * 4);
-	assert!(core::mem::size_of::<FrameParams>() == 3 * (9 + 4 * MAX_MIP as usize) * 4 + 16);
+	assert!(core::mem::size_of::<FrameParams>() == 3 * (9 + 4 * MAX_MIP as usize) * 4 + 16 + 24);
 };
 
 pub const PIXEL_STORAGE_UNORM8X4: u32 = 0;

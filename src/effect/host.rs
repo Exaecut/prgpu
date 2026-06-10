@@ -74,9 +74,11 @@ impl HostCapabilities {
 
 	pub const fn supports(&self, capability: Capability) -> bool {
 		match capability {
-			// Premiere has no SDK call to enlarge `outFrame` on the GPU path,
-			// and Premiere CPU is disabled too for byte-for-byte parity.
-			Capability::FrameExpansion => matches!(self.host, Host::AfterEffects),
+			// AE: SmartFX `max_result_rect`. Premiere GPU filter: the outFrame
+			// is the full sequence canvas, so out-of-clip pixels exist there
+			// too; only Premiere CPU stays
+			// clip-locked.
+			Capability::FrameExpansion => matches!(self.host, Host::AfterEffects) || (matches!(self.host, Host::Premiere) && !matches!(self.backend, Backend::Cpu)),
 			Capability::DynamicParamVisibility => true,
 			Capability::SourceOutputMayAlias => matches!(self.host, Host::Premiere) && !matches!(self.backend, Backend::Cpu),
 			Capability::NativePremiereGpuFilter => matches!(self.host, Host::Premiere) && !matches!(self.backend, Backend::Cpu),

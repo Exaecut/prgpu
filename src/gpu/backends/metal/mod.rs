@@ -75,9 +75,13 @@ pub unsafe fn ns_error(err: *mut Object) -> Option<String> {
 
 pub mod buffer;
 pub mod fence;
+pub mod frame_scope;
 pub mod pipeline;
 
 use crate::{Configuration, FrameParams};
+
+// setBytes is only valid for argument data up to 4 KB.
+const SET_BYTES_LIMIT: usize = 4096;
 
 pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry: &'static str) -> Result<(), &'static str> {
 	use objc::rc::autoreleasepool;
@@ -109,38 +113,19 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 		}
 
 		// out_desc/in_desc describe SOURCE buffers (may be downsampled); dst_desc + width/height drive the dispatch grid.
-		let frame_params = FrameParams {
-			out_desc: crate::types::make_outgoing_desc(config),
-			in_desc: crate::types::make_in_desc(config),
-			dst_desc: crate::types::make_dst_desc(config),
-			width: config.width,
-			height: config.height,
-			time: config.time,
-			progress: config.progress,
-		};
+		let frame_params = FrameParams::from_config(config);
 
 		let outgoing_ptr = config.outgoing_data.unwrap_or(std::ptr::null_mut());
 		let incoming_ptr = config.incoming_data.unwrap_or(std::ptr::null_mut());
 
+		// Params go through setBytes (Metal's by-value constant path): no
+		// MTLBuffer alloc/release per pass. Valid only below 4 KB.
 		let frame_params_size = std::mem::size_of::<FrameParams>();
-		log::info!("[Metal] FrameParams size = {} bytes", frame_params_size);
-		let frame_params_buffer: *mut Object = unsafe {
-			msg_send![
-				device,
-				newBufferWithBytes: &frame_params as *const _ as *const c_void
-				length: frame_params_size
-				options: 0u64
-			]
-		};
-		if frame_params_buffer.is_null() {
-			log::error!("[Metal] failed to create params buffer");
-			return Err("params buffer allocation failed");
-		}
-
 		let user_param_size = std::mem::size_of::<UP>();
-		log::info!("[Metal] dispatching kernel '{}' with user params size = {} bytes ({} floats)", entry, user_param_size, user_param_size / 4);
+		debug_assert!(frame_params_size <= SET_BYTES_LIMIT && user_param_size <= SET_BYTES_LIMIT);
+
 		#[cfg(debug_assertions)]
-		log::info!(
+		log::debug!(
 			"[Metal] '{entry}' bufs: dispatch={}x{} dst_pitch_px={} | outgoing={}x{} out_pitch_px={} mip_levels={} outDesc.mipCount={} | dstDesc={}x{} dstDesc.pitch={} | outgoing_ptr={:?} incoming_ptr={:?} dst_ptr={:?}",
 			config.width,
 			config.height,
@@ -157,21 +142,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			incoming_ptr,
 			config.dest_data,
 		);
-		let user_params_buffer: *mut Object = unsafe {
-			msg_send![
-				device,
-				newBufferWithBytes: &user_params as *const _ as *const c_void
-				length: user_param_size
-				options: 0u64
-			]
-		};
-		if user_params_buffer.is_null() {
-			unsafe {
-				let _: () = msg_send![frame_params_buffer, release];
-			}
-			log::error!("[Metal] failed to create user params buffer");
-			return Err("user params buffer allocation failed");
-		}
 
 		// Threadgroup geometry is invariant across retries; derive it once.
 		let tew: usize = unsafe { msg_send![pipeline, threadExecutionWidth] };
@@ -192,12 +162,29 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			depth: 1,
 		};
 
-		// macOS Metal's GPU watchdog (kIOGPUCommandBufferCallbackError-
-		// ImpactingInteractivity) aborts command buffers that exceed the OS budget.
-		// First dispatches of a heavy kernel typically trip it because pipeline JIT,
-		// cold caches, and Premiere's concurrent decode/UI all land at once.
-		// Retrying once with a small cool-down silently masks that transient; non-
-		// watchdog errors still propagate so OOM / shader-fault paths show up.
+		// Inside a frame scope, encode into the frame's command buffer and let
+		// the adapter commit + wait once; the watchdog retry lives there too.
+		if frame_scope::is_active() {
+			let cmd = frame_scope::command_buffer();
+			let enc: *mut Object = unsafe { msg_send![cmd, computeCommandEncoder] };
+			if enc.is_null() {
+				log::error!("[Metal] failed to create compute encoder");
+				return Err("compute encoder creation failed");
+			}
+			unsafe {
+				encode_pass(enc, pipeline, outgoing_ptr, incoming_ptr, config.dest_data, &frame_params, &user_params, tg, tp);
+			}
+			frame_scope::note_pass();
+			return Ok(());
+		}
+
+		// Standalone dispatch (tests, single-pass callers): own command buffer,
+		// commit, single wait. macOS Metal's GPU watchdog
+		// (kIOGPUCommandBufferCallbackError / "Impacting Interactivity") aborts
+		// command buffers that exceed the OS budget; first dispatches of a heavy
+		// kernel typically trip it because pipeline JIT, cold caches, and
+		// Premiere's concurrent decode/UI all land at once. Retry once with a
+		// cool-down; non-watchdog errors still propagate.
 		const MAX_ATTEMPTS: u32 = 2;
 		let mut attempt: u32 = 0;
 		let gpu_ms = loop {
@@ -205,33 +192,18 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 			let cmd: *mut Object = unsafe { msg_send![queue, commandBuffer] };
 			if cmd.is_null() {
-				unsafe {
-					let _: () = msg_send![frame_params_buffer, release];
-					let _: () = msg_send![user_params_buffer, release];
-				}
 				log::error!("[Metal] failed to create command buffer");
 				return Err("command buffer creation failed");
 			}
 
 			let enc: *mut Object = unsafe { msg_send![cmd, computeCommandEncoder] };
 			if enc.is_null() {
-				unsafe {
-					let _: () = msg_send![frame_params_buffer, release];
-					let _: () = msg_send![user_params_buffer, release];
-				}
 				log::error!("[Metal] failed to create compute encoder");
 				return Err("compute encoder creation failed");
 			}
 
 			unsafe {
-				let _: () = msg_send![enc, setComputePipelineState: pipeline];
-				let _: () = msg_send![enc, setBuffer: outgoing_ptr as *mut Object   offset: 0usize  atIndex: 0usize];
-				let _: () = msg_send![enc, setBuffer: incoming_ptr as *mut Object   offset: 0usize  atIndex: 1usize];
-				let _: () = msg_send![enc, setBuffer: config.dest_data as *mut Object offset: 0usize atIndex: 2usize];
-				let _: () = msg_send![enc, setBuffer: frame_params_buffer       offset: 0usize  atIndex: 3usize];
-				let _: () = msg_send![enc, setBuffer: user_params_buffer             offset: 0usize  atIndex: 4usize];
-				let _: () = msg_send![enc, dispatchThreadgroups: tg threadsPerThreadgroup: tp];
-				let _: () = msg_send![enc, endEncoding];
+				encode_pass(enc, pipeline, outgoing_ptr, incoming_ptr, config.dest_data, &frame_params, &user_params, tg, tp);
 			}
 
 			#[cfg(debug_assertions)]
@@ -239,17 +211,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 			unsafe {
 				let _: () = msg_send![cmd, commit];
-			}
-
-			loop {
-				let status: u64 = unsafe { msg_send![cmd, status] };
-				if status >= 4 {
-					break;
-				}
-				std::thread::sleep(Duration::from_millis(1));
-			}
-
-			unsafe {
 				let _: () = msg_send![cmd, waitUntilCompleted];
 			}
 
@@ -257,8 +218,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 			if status == 5 {
 				let error: *mut Object = unsafe { msg_send![cmd, error] };
 				let msg = unsafe { ns_error(error) };
-				// The watchdog message reads as "Impacting Interactivity" /
-				// kIOGPUCommandBufferCallbackError. Match either form.
 				let is_watchdog = msg
 					.as_ref()
 					.is_some_and(|m| m.contains("Impacting Interactivity") || m.contains("kIOGPUCommandBufferCallbackError"));
@@ -273,10 +232,6 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 				if let Some(m) = msg {
 					log::error!("[Metal] command buffer error: {m}");
-				}
-				unsafe {
-					let _: () = msg_send![frame_params_buffer, release];
-					let _: () = msg_send![user_params_buffer, release];
 				}
 				return Err("GPU execution error");
 			}
@@ -301,11 +256,36 @@ pub fn run<UP>(config: &Configuration, user_params: UP, shader_src: &[u8], entry
 
 		crate::timing::record(entry, crate::types::Backend::Metal, (gpu_ms * 1_000_000.0) as u64);
 
-		unsafe {
-			let _: () = msg_send![frame_params_buffer, release];
-			let _: () = msg_send![user_params_buffer, release];
-		}
-
 		Ok(())
 	})
+}
+
+/// Encode one compute pass: pipeline, the 5-slot buffer convention
+/// (outgoing / incoming / dst / frame / params), dispatch, end encoding.
+/// Params bind via setBytes — no MTLBuffer alloc.
+///
+/// # Safety: `enc` and `pipeline` valid; buffer pointers follow the
+/// `Configuration` lifetime contract.
+#[allow(clippy::too_many_arguments)]
+unsafe fn encode_pass<UP>(
+	enc: *mut Object,
+	pipeline: *mut Object,
+	outgoing: *mut c_void,
+	incoming: *mut c_void,
+	dest: *mut c_void,
+	frame_params: &FrameParams,
+	user_params: &UP,
+	tg: crate::types::MTLSize,
+	tp: crate::types::MTLSize,
+) {
+	unsafe {
+		let _: () = msg_send![enc, setComputePipelineState: pipeline];
+		let _: () = msg_send![enc, setBuffer: outgoing as *mut Object offset: 0usize atIndex: 0usize];
+		let _: () = msg_send![enc, setBuffer: incoming as *mut Object offset: 0usize atIndex: 1usize];
+		let _: () = msg_send![enc, setBuffer: dest as *mut Object offset: 0usize atIndex: 2usize];
+		let _: () = msg_send![enc, setBytes: frame_params as *const _ as *const c_void length: std::mem::size_of::<FrameParams>() atIndex: 3usize];
+		let _: () = msg_send![enc, setBytes: user_params as *const _ as *const c_void length: std::mem::size_of::<UP>() atIndex: 4usize];
+		let _: () = msg_send![enc, dispatchThreadgroups: tg threadsPerThreadgroup: tp];
+		let _: () = msg_send![enc, endEncoding];
+	}
 }

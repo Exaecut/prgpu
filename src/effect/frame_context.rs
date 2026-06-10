@@ -49,6 +49,10 @@ where
 	pub(crate) layer_height: u32,
 	pub(crate) output_width: u32,
 	pub(crate) output_height: u32,
+	/// Source clip top-left inside the (output) canvas. Authoritative placement
+	/// from the host (Premiere GPU: input PPix origin; AE: centered expansion).
+	pub(crate) ext_x: i32,
+	pub(crate) ext_y: i32,
 	pub(crate) frame_index: u32,
 	pub(crate) time_seconds: f32,
 	pub(crate) progress: f32,
@@ -100,6 +104,19 @@ where
 	#[inline]
 	pub fn output_height(&self) -> u32 {
 		self.output_height
+	}
+
+	/// Source clip top-left offset inside the canvas. Prefer this over
+	/// `(output - layer)/2`: it is the host's actual placement, so glow/shadow
+	/// halos stay registered even when the clip is repositioned.
+	#[inline]
+	pub fn ext_x(&self) -> i32 {
+		self.ext_x
+	}
+
+	#[inline]
+	pub fn ext_y(&self) -> i32 {
+		self.ext_y
 	}
 
 	#[inline]

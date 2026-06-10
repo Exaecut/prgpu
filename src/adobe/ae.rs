@@ -115,10 +115,25 @@ impl<E: Effect> EffectAdapter<E> {
 
 	fn apply_visibility(&self, params: &mut Parameters<E::Params>, in_data: &InData, out_data: &mut OutData, ui_state: &UiState<E>) -> Result<(), ae::Error> {
 		let host = if in_data.is_premiere() { Host::Premiere } else { Host::AfterEffects };
-		// Backend at param-tick is unknown; the visibility predicates only
-		// see `Capability::FrameExpansion` (tied to host) so CPU is a safe
-		// stand-in for the backend position here.
-		let caps = crate::effect::HostCapabilities::new(host, Backend::Cpu);
+		// Backend at param-tick is unknown. On Premiere the render path is the
+		// GPU filter whenever a GPU backend is compiled in, and
+		// `Capability::FrameExpansion` now depends on that distinction; use the
+		// compiled backend as the stand-in so OOB-glow controls stay visible.
+		let ui_backend = {
+			#[cfg(gpu_backend = "cuda")]
+			{
+				Backend::Cuda
+			}
+			#[cfg(gpu_backend = "metal")]
+			{
+				Backend::Metal
+			}
+			#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+			{
+				Backend::Cpu
+			}
+		};
+		let caps = crate::effect::HostCapabilities::new(host, ui_backend);
 
 		let mut params_copy = params.clone();
 		let mut visible_map: Vec<(E::Params, bool)> = Vec::with_capacity(ui_state.visibility.len());
@@ -182,6 +197,10 @@ impl<E: Effect> EffectAdapter<E> {
 			layer_height: layer_h,
 			output_width: out_w,
 			output_height: out_h,
+			// AE expands symmetrically around the source, so the clip is centered
+			// in the expanded output.
+			ext_x: ((out_w as i32 - layer_w as i32) / 2).max(0),
+			ext_y: ((out_h as i32 - layer_h as i32) / 2).max(0),
 			frame_index,
 			time_seconds,
 			progress: 0.0,
@@ -243,6 +262,10 @@ impl<E: Effect> EffectAdapter<E> {
 			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: 0,
+			// AE hands an output already inflated by `expansion()`; the source is
+			// centered per the SmartPreRender result rect (symmetric).
+			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
+			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
 			main_source: main,
 			incoming_source: None,
 			outgoing_source: None,
@@ -333,6 +356,8 @@ impl<E: Effect> EffectAdapter<E> {
 			time: canonical_time_seconds(in_data),
 			progress: 0.0,
 			render_generation: frame_index as u64,
+			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
+			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
 			main_source: main,
 			incoming_source: None,
 			outgoing_source: None,
@@ -341,7 +366,26 @@ impl<E: Effect> EffectAdapter<E> {
 	}
 
 	fn run_graph(&self, frame_data: &E::FrameData, base: &InvocationBase) -> Result<(), ae::Error> {
-		run_graph(self.graph(), frame_data, base).map_err(|_| ae::Error::Generic)
+		// Frame scope batches GPU passes with one sync; begin() no-ops on the
+		// CPU paths (null queue handle). Watchdog: retry the whole frame once.
+		use crate::gpu::frame_scope;
+		let scope_desc = crate::types::FrameScopeDesc::from_invocation(base);
+		const MAX_FRAME_ATTEMPTS: u32 = 2;
+		for attempt in 1..=MAX_FRAME_ATTEMPTS {
+			frame_scope::begin(&scope_desc);
+			let result = run_graph(self.graph(), frame_data, base);
+			let sync = frame_scope::end(&scope_desc);
+			result.map_err(|_| ae::Error::Generic)?;
+			match sync {
+				Ok(()) => return Ok(()),
+				Err(e) if e == frame_scope::ERR_WATCHDOG && attempt < MAX_FRAME_ATTEMPTS => {
+					log::warn!("[prgpu] frame hit GPU watchdog (attempt {attempt}/{MAX_FRAME_ATTEMPTS}) — cooling down 50ms and retrying");
+					std::thread::sleep(std::time::Duration::from_millis(50));
+				}
+				Err(_) => return Err(ae::Error::Generic),
+			}
+		}
+		Err(ae::Error::Generic)
 	}
 }
 
@@ -440,6 +484,8 @@ impl<E: Effect> EffectAdapter<E> {
 					layer_height: layer_h,
 					output_width: layer_w,
 					output_height: layer_h,
+					ext_x: 0,
+					ext_y: 0,
 					frame_index: 0,
 					time_seconds: 0.0,
 					progress: 0.0,
@@ -528,6 +574,8 @@ impl<E: Effect> EffectAdapter<E> {
 					layer_height: layer_h,
 					output_width: layer_w,
 					output_height: layer_h,
+					ext_x: 0,
+					ext_y: 0,
 					frame_index: 0,
 					time_seconds: 0.0,
 					progress: 0.0,

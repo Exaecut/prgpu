@@ -257,6 +257,12 @@ impl GpuContext {
             storage: crate::types::storage_from_bpp(bytes_per_pixel),
             flip_y: 0,
             outgoing_mip_levels: 0,
+            canvas_width: width,
+            canvas_height: height,
+            layer_width: width,
+            layer_height: height,
+            ext_x: 0,
+            ext_y: 0,
         }
     }
 }
@@ -339,6 +345,12 @@ fn upload_metal(
         storage: crate::types::storage_from_bpp(bpp),
         flip_y: 0,
         outgoing_mip_levels: 0,
+        canvas_width: width,
+        canvas_height: height,
+        layer_width: width,
+        layer_height: height,
+        ext_x: 0,
+        ext_y: 0,
     };
 
     let result = unsafe {

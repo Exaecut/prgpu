@@ -48,6 +48,8 @@ fn synthetic_base(out_data: *mut std::ffi::c_void, src_data: *mut std::ffi::c_vo
 		time: 0.0,
 		progress: 0.0,
 		render_generation: 0,
+		ext_x: 0,
+		ext_y: 0,
 		main_source,
 		incoming_source: None,
 		outgoing_source: None,

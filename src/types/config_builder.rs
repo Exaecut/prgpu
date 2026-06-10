@@ -155,6 +155,12 @@ impl<'a> ConfigBuilder<'a> {
 			storage: self.base.storage,
 			flip_y: self.base.flip_y,
 			outgoing_mip_levels,
+			canvas_width: self.base.output.width,
+			canvas_height: self.base.output.height,
+			layer_width: self.base.main_source.width,
+			layer_height: self.base.main_source.height,
+			ext_x: self.base.ext_x,
+			ext_y: self.base.ext_y,
 		})
 	}
 

@@ -14,7 +14,6 @@
 
 use std::sync::OnceLock;
 
-use after_effects as ae;
 use after_effects::log;
 use premiere::{self as pr};
 
@@ -49,14 +48,17 @@ impl<E: Effect> GpuFilterAdapter<E> {
 		})
 	}
 
-	fn build_invocation(props: &GPURenderProperties<'_>, base_cfg: &Configuration, w: u32, h: u32, bpp: u32) -> Result<InvocationBase, pr::Error> {
+	fn build_invocation(props: &GPURenderProperties<'_>, base_cfg: &Configuration, bpp: u32) -> Result<InvocationBase, pr::Error> {
 		let pixel_layout = PixelLayout::from_u32(base_cfg.pixel_layout);
 
+		// Source carries the clip's own extent; output carries the canvas
+		// (sequence size on the pure GPU-filter path). They differ when
+		// Premiere hands a sequence-sized outFrame for a smaller clip.
 		let main = FrameBinding {
 			data: base_cfg.outgoing_data.unwrap_or(std::ptr::null_mut()),
 			pitch_px: base_cfg.outgoing_pitch_px,
-			width: w,
-			height: h,
+			width: base_cfg.layer_width,
+			height: base_cfg.layer_height,
 			mip_levels: 0,
 			bytes_per_pixel: bpp,
 			pixel_layout,
@@ -64,8 +66,8 @@ impl<E: Effect> GpuFilterAdapter<E> {
 		let output = FrameBinding {
 			data: base_cfg.dest_data,
 			pitch_px: base_cfg.dest_pitch_px,
-			width: w,
-			height: h,
+			width: base_cfg.canvas_width,
+			height: base_cfg.canvas_height,
 			mip_levels: 0,
 			bytes_per_pixel: bpp,
 			pixel_layout,
@@ -111,6 +113,8 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			time: base_cfg.time,
 			progress: base_cfg.progress,
 			render_generation: base_cfg.render_generation,
+			ext_x: base_cfg.ext_x,
+			ext_y: base_cfg.ext_y,
 			main_source: main,
 			incoming_source: None,
 			outgoing_source: None,
@@ -126,6 +130,8 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		unsafe {
 			pipeline::cleanup();
 			crate::gpu::buffer::cleanup();
+			#[cfg(gpu_backend = "cuda")]
+			crate::gpu::backends::cuda::frame_scope::cleanup();
 		}
 	}
 
@@ -135,7 +141,7 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		_render_params: pr::RenderParams,
 		_query_index: &mut i32,
 	) -> Result<pr::sys::PrGPUFilterFrameDependency, pr::Error> {
-		Err(pr::Error::None)
+		Err(pr::Error::NotImplemented)
 	}
 
 	fn precompute(&self, _filter: &pr::GpuFilterData, _render_params: pr::RenderParams, _index: i32, _frame: pr::sys::PPixHand) -> Result<(), pr::Error> {
@@ -154,7 +160,83 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 			return Ok(());
 		}
 
-		let props = unsafe { GPURenderProperties::new(filter, render_params.clone(), frames, frame_count, out_frame) }?;
+		// Before the potentially-destructive canvas swap in GPURenderProperties,
+		// call Effect::expansion() to decide whether the user requested expansion.
+		// Only when the expansion extent is non-zero do we allocate a canvas PPix
+		// (the WonderGlow pattern); otherwise the clip-sized in-place path stays.
+		let expand_to_canvas = {
+			// Safely read the first frame handle.
+			let first = if !frames.is_null() {
+				unsafe { Some(*frames) }
+			} else {
+				None
+			};
+			let clip = first.unwrap_or(std::ptr::null_mut());
+			let clip_ppix = if !clip.is_null() {
+				clip
+			} else {
+				unsafe { *out_frame }
+			};
+			let clip_w = if !clip_ppix.is_null() {
+				filter.ppix_suite.row_bytes(clip_ppix).map(|rb| {
+					let bpp = filter
+						.ppix_suite
+						.pixel_format(clip_ppix)
+						.map(|pf| crate::gpu::gpu_bytes_per_pixels(pf))
+						.unwrap_or(0);
+					if bpp > 0 { (rb / bpp) as u32 } else { 0 }
+				}).unwrap_or(0)
+			} else {
+				0
+			};
+			let clip_h = if !clip_ppix.is_null() {
+				filter
+					.gpu_device_suite
+					.gpu_ppix_size(clip_ppix)
+					.map(|s| {
+						let rb = filter.ppix_suite.row_bytes(clip_ppix).unwrap_or(1);
+						(s / rb as usize) as u32
+					})
+					.unwrap_or(0)
+			} else {
+				0
+			};
+			if clip_w == 0 || clip_h == 0 {
+				false // Can't determine clip dims — don't expand.
+			} else {
+				let exp_ctx = crate::effect::frame_context::FrameDataContext {
+					host: crate::effect::host::Host::Premiere,
+					backend: {
+						#[cfg(gpu_backend = "cuda")]
+						{ crate::types::Backend::Cuda }
+						#[cfg(gpu_backend = "metal")]
+						{ crate::types::Backend::Metal }
+						#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+						{ crate::types::Backend::Cpu }
+					},
+					render_kind: crate::effect::host::RenderKind::PremiereGpuEffect,
+					inner: crate::effect::frame_context::HostBackend::Gpu {
+						filter,
+						render_params: &render_params,
+					},
+					layer_width: clip_w,
+					layer_height: clip_h,
+					output_width: clip_w,
+					output_height: clip_h,
+					ext_x: 0,
+					ext_y: 0,
+					frame_index: 0,
+					time_seconds: 0.0,
+					progress: 0.0,
+				};
+				match E::expansion(exp_ctx) {
+					Ok(ext) => !ext.is_zero(),
+					Err(_) => false,
+				}
+			}
+		};
+
+		let props = unsafe { GPURenderProperties::new(filter, render_params.clone(), frames, frame_count, out_frame, expand_to_canvas) }?;
 		let base_cfg = unsafe { Configuration::effect(&props, out_frame)? };
 
 		let w = base_cfg.width;
@@ -198,8 +280,12 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		};
 
 		log::info!(
-			"[GPU] frame {frame_index} t_sec={time_seconds:.4} frame.time={frame_time} {w}x{h} bpp={bpp} storage={storage_tag}({storage_label}) layout={layout}(0=RGBA,1=BGRA) pixel_format={pf:?} half_precision={half} src_pitch_px={src_pitch} dst_pitch_px={dst_pitch} seq_time={seq} clip_time={clip} ticks_per_frame={tpf} quality={quality:?}",
+			"[GPU] frame {frame_index} t_sec={time_seconds:.4} frame.time={frame_time} canvas={w}x{h} layer={lw}x{lh} ext=({ex},{ey}) bpp={bpp} storage={storage_tag}({storage_label}) layout={layout}(0=RGBA,1=BGRA) pixel_format={pf:?} half_precision={half} src_pitch_px={src_pitch} dst_pitch_px={dst_pitch} seq_time={seq} clip_time={clip} ticks_per_frame={tpf} quality={quality:?}",
 			frame_time = base_cfg.time,
+			lw = base_cfg.layer_width,
+			lh = base_cfg.layer_height,
+			ex = base_cfg.ext_x,
+			ey = base_cfg.ext_y,
 			layout = base_cfg.pixel_layout,
 			pf = props.pixel_format,
 			half = props.half_precision,
@@ -239,10 +325,12 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 				filter,
 				render_params: &render_params,
 			},
-			layer_width: w,
-			layer_height: h,
-			output_width: w,
-			output_height: h,
+			layer_width: base_cfg.layer_width,
+			layer_height: base_cfg.layer_height,
+			output_width: base_cfg.canvas_width,
+			output_height: base_cfg.canvas_height,
+			ext_x: base_cfg.ext_x,
+			ext_y: base_cfg.ext_y,
 			frame_index,
 			time_seconds,
 			progress: base_cfg.progress,
@@ -253,12 +341,39 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 			pr::Error::Fail
 		})?;
 
-		let mut base = Self::build_invocation(&props, &base_cfg, w, h, bpp)?;
+		let mut base = Self::build_invocation(&props, &base_cfg, bpp)?;
 		base.render_generation = frame_index as u64;
 
-		run_graph(self.graph(), &frame_data, &base).map_err(|e| {
-			log::error!("[adapter] graph execute failed: {e:?}");
-			pr::Error::Fail
-		})
+		// One frame scope: backends enqueue every pass without per-pass syncs;
+		// the single sync in `end` satisfies Adobe's "inputs consumed before
+		// render() returns" contract. The macOS GPU watchdog can kill the
+		// frame-level command buffer on a cold first dispatch — retry the
+		// whole frame once before failing.
+		use crate::gpu::frame_scope;
+		let scope_desc = crate::types::FrameScopeDesc::from_invocation(&base);
+		const MAX_FRAME_ATTEMPTS: u32 = 2;
+		for attempt in 1..=MAX_FRAME_ATTEMPTS {
+			frame_scope::begin(&scope_desc);
+
+			let result = run_graph(self.graph(), &frame_data, &base);
+			let sync = frame_scope::end(&scope_desc);
+
+			if let Err(e) = result {
+				log::error!("[adapter] graph execute failed: {e:?}");
+				return Err(pr::Error::Fail);
+			}
+			match sync {
+				Ok(()) => return Ok(()),
+				Err(e) if e == frame_scope::ERR_WATCHDOG && attempt < MAX_FRAME_ATTEMPTS => {
+					log::warn!("[adapter] frame hit GPU watchdog (attempt {attempt}/{MAX_FRAME_ATTEMPTS}) — cooling down 50ms and retrying");
+					std::thread::sleep(std::time::Duration::from_millis(50));
+				}
+				Err(e) => {
+					log::error!("[adapter] frame sync failed: {e}");
+					return Err(pr::Error::Fail);
+				}
+			}
+		}
+		Err(pr::Error::Fail)
 	}
 }

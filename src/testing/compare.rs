@@ -104,6 +104,12 @@ pub fn diff_heatmap_gpu(
         storage: crate::types::storage_from_bpp(bpp),
         flip_y: 0,
         outgoing_mip_levels: 0,
+        canvas_width: width,
+        canvas_height: height,
+        layer_width: width,
+        layer_height: height,
+        ext_x: 0,
+        ext_y: 0,
     };
 
     let params = DiffParams {

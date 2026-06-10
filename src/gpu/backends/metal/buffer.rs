@@ -209,9 +209,10 @@ pub unsafe fn cleanup() {
 	}
 }
 
-/// Buffer-to-buffer GPU copy via a fresh `MTLBlitCommandEncoder`. Pulls the
-/// MTLCommandQueue from `config.command_queue_handle`; submits its own command
-/// buffer and waits before returning.
+/// Buffer-to-buffer GPU copy via an `MTLBlitCommandEncoder`. Inside a frame
+/// scope the blit encodes into the frame command buffer (ordered with the
+/// surrounding passes, no stall); otherwise it submits its own command buffer
+/// and waits before returning.
 ///
 /// Row-by-row blits when pitches mismatch; one flat blit when they match.
 ///
@@ -242,7 +243,12 @@ pub unsafe fn copy_buffer(
 		return Err("copy_buffer: null handle");
 	}
 
-	let cmd: *mut Object = unsafe { msg_send![command_queue, commandBuffer] };
+	let in_frame_scope = super::frame_scope::is_active();
+	let cmd: *mut Object = if in_frame_scope {
+		super::frame_scope::command_buffer()
+	} else {
+		unsafe { msg_send![command_queue, commandBuffer] }
+	};
 	if cmd.is_null() {
 		return Err("copy_buffer: commandBuffer() returned null");
 	}
@@ -277,8 +283,12 @@ pub unsafe fn copy_buffer(
 
 	unsafe {
 		let _: () = msg_send![enc, endEncoding];
-		let _: () = msg_send![cmd, commit];
-		let _: () = msg_send![cmd, waitUntilCompleted];
+	}
+	if !in_frame_scope {
+		unsafe {
+			let _: () = msg_send![cmd, commit];
+			let _: () = msg_send![cmd, waitUntilCompleted];
+		}
 	}
 	Ok(())
 }

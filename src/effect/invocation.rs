@@ -107,6 +107,10 @@ pub struct InvocationBase {
 	pub progress: f32,
 	pub render_generation: u64,
 
+	/// Source top-left offset inside the output canvas. (0,0) when output == source.
+	pub ext_x: i32,
+	pub ext_y: i32,
+
 	pub main_source: FrameBinding,
 	pub incoming_source: Option<FrameBinding>,
 	pub outgoing_source: Option<FrameBinding>,

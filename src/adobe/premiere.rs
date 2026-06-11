@@ -48,6 +48,19 @@ impl<E: Effect> GpuFilterAdapter<E> {
 		})
 	}
 
+	/// License gate consulted before render. Debug builds log the failing state
+	/// label so a blank Premiere render is traceable; release inlines to the
+	/// bare `is_valid()`.
+	#[inline]
+	fn license_valid(&self) -> bool {
+		let ok = self.license.is_valid();
+		#[cfg(debug_assertions)]
+		if !ok {
+			after_effects::log::warn!("license: gate closed, render skipped; state=[{}]", self.license.debug_label().unwrap_or_default());
+		}
+		ok
+	}
+
 	fn build_invocation(props: &GPURenderProperties<'_>, base_cfg: &Configuration, bpp: u32) -> Result<InvocationBase, pr::Error> {
 		let pixel_layout = PixelLayout::from_u32(base_cfg.pixel_layout);
 
@@ -156,7 +169,7 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		frame_count: usize,
 		out_frame: *mut pr::sys::PPixHand,
 	) -> Result<(), pr::Error> {
-		if !self.license.is_valid() {
+		if !self.license_valid() {
 			return Ok(());
 		}
 

@@ -99,6 +99,19 @@ impl<E: Effect> EffectAdapter<E> {
 		})
 	}
 
+	/// License gate consulted before every render selector. In debug builds a
+	/// closed gate logs the failing state label so a blank render is traceable
+	/// in the AE console; release inlines to the bare `is_valid()`.
+	#[inline]
+	fn license_valid(&self) -> bool {
+		let ok = self.license.is_valid();
+		#[cfg(debug_assertions)]
+		if !ok {
+			log::warn!("license: gate closed, render skipped; state=[{}]", self.license.debug_label().unwrap_or_default());
+		}
+		ok
+	}
+
 	fn collect_ui_rules(in_data: &InData, out_data: OutData, params: &mut Parameters<E::Params>) -> Result<UiState<E>, ae::Error> {
 		// SAFETY: `ParamApi::new` requires a `&mut Parameters<P>` with the
 		// same lifetime as `'a`. We use the AE-supplied params for the
@@ -428,6 +441,12 @@ impl<E: Effect> EffectAdapter<E> {
 				if let Ok(suite) = aegp::suites::Utility::new() {
 					self.plugin_id = suite.register_with_aegp(self.descriptor().display_name)?;
 				}
+				#[cfg(debug_assertions)]
+				match self.license.initialize() {
+					Ok(()) => log::info!("license: initialize ok; state=[{}]", self.license.debug_label().unwrap_or_default()),
+					Err(e) => log::warn!("license: initialize failed: {e}; state=[{}]", self.license.debug_label().unwrap_or_default()),
+				}
+				#[cfg(not(debug_assertions))]
 				let _ = self.license.initialize();
 			}
 			Command::About => {
@@ -463,7 +482,7 @@ impl<E: Effect> EffectAdapter<E> {
 				}
 			}
 			Command::FrameSetup { in_layer, .. } => {
-				if !self.license.is_valid() {
+				if !self.license_valid() {
 					return Ok(());
 				}
 				let layer_w = in_layer.width() as u32;
@@ -507,7 +526,7 @@ impl<E: Effect> EffectAdapter<E> {
 				in_data.destroy_frame_data::<E::FrameData>();
 			}
 			Command::Render { in_layer, mut out_layer } => {
-				if !self.license.is_valid() {
+				if !self.license_valid() {
 					return Ok(());
 				}
 
@@ -555,7 +574,7 @@ impl<E: Effect> EffectAdapter<E> {
 				self.run_graph(frame_data, &base)?;
 			}
 			Command::SmartPreRender { mut extra } => {
-				if !self.license.is_valid() {
+				if !self.license_valid() {
 					return Ok(());
 				}
 				let req = extra.output_request();
@@ -622,7 +641,7 @@ impl<E: Effect> EffectAdapter<E> {
 				}
 			}
 			Command::SmartRender { extra } => {
-				if !self.license.is_valid() {
+				if !self.license_valid() {
 					return Ok(());
 				}
 				let cb = extra.callbacks();
@@ -641,7 +660,7 @@ impl<E: Effect> EffectAdapter<E> {
 				render_result?;
 			}
 			Command::SmartRenderGpu { extra } => {
-				if !self.license.is_valid() {
+				if !self.license_valid() {
 					return Ok(());
 				}
 				let cb = extra.callbacks();

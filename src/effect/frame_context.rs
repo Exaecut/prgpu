@@ -13,7 +13,7 @@ use after_effects::Parameters;
 use premiere as pr;
 
 use crate::effect::host::{Host, HostCapabilities, RenderKind};
-use crate::params::{get_param, CpuParams, SetupParams};
+use crate::params::{get_param, CpuParams, ParamsSpec, SetupParams, SnapshotGeom};
 use crate::types::{Backend, Pixel};
 
 /// Per-host backend the context dispatches through. Carries the lifetime'd
@@ -192,8 +192,25 @@ where
 
 impl<'a, P> FrameDataContext<'a, P>
 where
-	P: SetupParams + Eq + Hash + Copy + Debug + 'static,
+	P: SetupParams + ParamsSpec + Eq + Hash + Copy + Debug + 'static,
 {
+	/// Transitional(plan-05): build a snapshot from the host backend for
+	/// `kernel!`'s `FromCtx` path. Replaced by the direct adapter wiring.
+	pub fn snapshot(&self) -> Result<P::Snapshot, after_effects::Error> {
+		let geom = SnapshotGeom {
+			layer_w: self.layer_width,
+			layer_h: self.layer_height,
+			output_w: self.output_width,
+			output_h: self.output_height,
+			ext_x: self.ext_x,
+			ext_y: self.ext_y,
+		};
+		match &self.inner {
+			HostBackend::Cpu { params, .. } => P::snapshot_cpu(params, &geom),
+			HostBackend::Gpu { filter, render_params } => Ok(P::snapshot_gpu(filter, render_params, &geom)),
+		}
+	}
+
 	/// Bridge that lets `kernel_params!` generate a `from_context` method
 	/// without leaking [`HostBackend`] across crate boundaries. The two
 	/// closures correspond to the macro-generated `from_cpu` / `from_gpu`

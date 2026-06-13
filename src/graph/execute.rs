@@ -9,28 +9,23 @@
 //! the active backend.
 
 use crate::cpu::buffer as cpu_buffer;
-use crate::effect::{Capability, FrameBinding, InvocationBase, PixelLayout};
-use crate::graph::builder::{GraphError, RenderGraph};
-use crate::graph::context::{MipPyramidCtx, PassContext};
+use crate::effect::{Capability, Ctx, FrameBinding, InvocationBase};
 use crate::graph::pass::{MipChainPassDecl, MipDirection, PassDecl, SinglePassDecl, Slot};
 use crate::graph::resource::{MipPyramidDesc, ResourceId};
 use crate::graph::source::{SourcePolicy, AUTO_SOURCE_SNAPSHOT_TAG};
+use crate::params::ParamsSpec;
 use crate::pipeline::mip;
-use crate::types::{Backend, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
+use crate::types::{Backend, ConfigBuildError, ConfigBuilder, Configuration, DeviceHandleInit, ImageBuffer, PassBinding};
+
+use crate::graph::builder::Graph;
 
 struct AllocatedResource {
-	#[allow(dead_code)]
 	desc: MipPyramidDesc,
 	buffer: ImageBuffer,
 }
 
 impl AllocatedResource {
-	fn binding_for(&self, lod: Option<u32>, base: &InvocationBase) -> FrameBinding {
-		// Mip chains use a tightly-packed buffer; the kernel resolves per-lod
-		// offsets from `frame.outDesc.mipOffsetBytes[]`. The pass binding always
-		// targets the base allocation with `mip_levels` set so `make_outgoing_desc`
-		// can populate the descriptor for every lod.
-		let _ = lod;
+	fn binding_for(&self, _lod: u32, base: &InvocationBase) -> FrameBinding {
 		FrameBinding {
 			data: self.buffer.buf.raw,
 			pitch_px: self.buffer.pitch_px as i32,
@@ -43,11 +38,20 @@ impl AllocatedResource {
 	}
 }
 
-/// Execute a graph end-to-end against `base`. Resources are allocated from
-/// the CPU buffer pool when `base.backend == Cpu`, the GPU buffer pool
-/// otherwise. Errors short-circuit: a failure mid-graph aborts the whole
-/// render to surface as an effect-level error rather than producing a
-/// partial output.
+#[derive(Debug)]
+pub enum GraphError {
+	ResourceAllocFailed { name: &'static str },
+	UnknownResource(&'static str),
+	BadMipLevel { pass: &'static str, level: u32, max: u32 },
+	ConfigBuild { pass: &'static str, kind: ConfigBuildError },
+	KernelDispatch { pass: &'static str, message: &'static str },
+}
+
+/// Execute a graph end-to-end against `ctx` and `base`. Resources are
+/// allocated from the CPU buffer pool when `base.backend == Cpu`, the GPU
+/// buffer pool otherwise. Errors short-circuit: a failure mid-graph aborts
+/// the whole render to surface as an effect-level error rather than producing
+/// a partial output.
 ///
 /// `Source` into a private buffer when the host signals
 /// `Capability::SourceOutputMayAlias` and a pass reads `Source` while
@@ -55,18 +59,14 @@ impl AllocatedResource {
 /// tag; `AlwaysSnapshot` skips the capability check; `Direct` never copies.
 /// When a snapshot is taken the executor rebinds `base.source` to it for
 /// the rest of the graph.
-pub fn execute<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
-where
-	F: Copy + Send + Sync + 'static,
-{
+pub fn execute<P: ParamsSpec>(graph: &Graph<P>, ctx: &Ctx<P>, base: &InvocationBase) -> Result<(), GraphError> {
 	let mut local_base = clone_base(base);
 	let auto_snapshot_needed = graph_samples_source_into_output(graph);
 	let _snapshot_buf = apply_source_policy(&mut local_base, graph.source_policy, auto_snapshot_needed)?;
 
 	let mut resources: Vec<AllocatedResource> = Vec::with_capacity(graph.resources.len());
 	for decl in &graph.resources {
-		let ctx = MipPyramidCtx::new(frame_data, &local_base);
-		let desc = (decl.desc_fn)(&ctx);
+		let desc = (decl.desc_fn)(ctx);
 		let buffer = match local_base.backend {
 			Backend::Cpu => cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag),
 			Backend::Cuda | Backend::Metal => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(local_base.device_handle), desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
@@ -117,18 +117,17 @@ where
 	}
 
 	for pass in &graph.passes {
-		let ctx = PassContext::new(frame_data, &local_base);
 		match pass {
 			PassDecl::Single(p) => {
-				let enabled = p.enabled_when.as_ref().map(|f| f(&ctx)).unwrap_or(true);
+				let enabled = p.enabled_when.as_ref().map(|f| f(ctx)).unwrap_or(true);
 				if enabled {
-					execute_single(p, frame_data, &local_base, &resources)?;
+					execute_single(p, ctx, &local_base, &resources)?;
 				}
 			}
 			PassDecl::MipChain(p) => {
-				let enabled = p.enabled_when.as_ref().map(|f| f(&ctx)).unwrap_or(true);
+				let enabled = p.enabled_when.as_ref().map(|f| f(ctx)).unwrap_or(true);
 				if enabled {
-					execute_mip_chain(p, frame_data, &local_base, &resources)?;
+					execute_mip_chain(p, ctx, &local_base, &resources)?;
 				}
 			}
 		}
@@ -160,11 +159,7 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 	}
 }
 
-/// True when any single pass reads `MainSource` (as source or secondary input)
-/// and writes `Output`. That is the displaced-sample-after-write hazard the
-/// source snapshot guards against; mip-chain passes touch private resources, so
-/// they never trigger it.
-fn graph_samples_source_into_output<F: Copy + Send + Sync + 'static>(graph: &RenderGraph<F>) -> bool {
+fn graph_samples_source_into_output<P: ParamsSpec>(graph: &Graph<P>) -> bool {
 	graph.passes.iter().any(|pass| match pass {
 		PassDecl::Single(p) => {
 			let reads_source = matches!(p.source, Slot::Source) || matches!(p.input, Some(Slot::Source));
@@ -243,12 +238,7 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 	Ok(Some(snapshot))
 }
 
-/// Backwards-compat alias kept for tests written before the unified executor.
-
-fn execute_single<F>(pass: &SinglePassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
-where
-	F: Copy + Send + Sync + 'static,
-{
+fn execute_single<P: ParamsSpec>(pass: &SinglePassDecl<P>, ctx: &Ctx<P>, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError> {
 	let target_binding = resolve_slot(pass.target, base, resources, Some(pass.name))?;
 	let source_binding = resolve_slot(pass.source, base, resources, Some(pass.name))?;
 	let input_binding = match pass.input {
@@ -268,19 +258,13 @@ where
 
 	let config = builder.build().map_err(|e| GraphError::ConfigBuild { pass: pass.name, kind: e })?;
 
-	let ctx = PassContext::new(frame_data, base);
-	(pass.dispatcher)(&ctx, &config).map_err(|m| GraphError::KernelDispatch { pass: pass.name, message: m })
+	(pass.dispatcher)(ctx, &config).map_err(|m| GraphError::KernelDispatch { pass: pass.name, message: m })
 }
 
-fn execute_mip_chain<F>(pass: &MipChainPassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
-where
-	F: Copy + Send + Sync + 'static,
-{
+fn execute_mip_chain<P: ParamsSpec>(pass: &MipChainPassDecl<P>, ctx: &Ctx<P>, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError> {
 	let res = resources.get(pass.resource.0 as usize).ok_or(GraphError::UnknownResource(pass.name))?;
 	let levels = res.desc.levels.max(1);
-	let binding = res.binding_for(None, base);
-
-	let ctx = PassContext::new(frame_data, base);
+	let binding = res.binding_for(0, base);
 
 	let level_iter: Box<dyn Iterator<Item = u32>> = match pass.direction {
 		MipDirection::Down => Box::new(0..levels.saturating_sub(1)),
@@ -304,7 +288,7 @@ where
 			.build()
 			.map_err(|e| GraphError::ConfigBuild { pass: pass.name, kind: e })?;
 
-		(pass.dispatcher)(level, &ctx, &config).map_err(|m| GraphError::KernelDispatch { pass: pass.name, message: m })?;
+		(pass.dispatcher)(level, ctx, &config).map_err(|m| GraphError::KernelDispatch { pass: pass.name, message: m })?;
 	}
 
 	Ok(())
@@ -315,27 +299,20 @@ fn resolve_slot(slot: Slot, base: &InvocationBase, resources: &[AllocatedResourc
 		Slot::Source => Ok(base.source),
 		Slot::Output => Ok(base.output),
 		Slot::Inline(b) => Ok(b),
-		Slot::ResourceWhole(id) => {
-			let r = resources.get(id.0 as usize).ok_or_else(|| GraphError::UnknownResource(pass_name.unwrap_or("?")))?;
-			Ok(r.binding_for(None, base))
-		}
-		Slot::ResourceMip(id, lod) => {
-			let r = resources.get(id.0 as usize).ok_or_else(|| GraphError::UnknownResource(pass_name.unwrap_or("?")))?;
+		Slot::Mip(handle, level) => {
+			let r = resources.get(handle.id.0 as usize).ok_or_else(|| GraphError::UnknownResource(pass_name.unwrap_or("?")))?;
 			let max = r.desc.levels;
-			if lod >= max {
+			if level >= max {
 				return Err(GraphError::BadMipLevel {
 					pass: pass_name.unwrap_or("?"),
-					level: lod,
+					level,
 					max,
 				});
 			}
-			let mut binding = r.binding_for(Some(lod), base);
-			binding.width = (r.buffer.width >> lod).max(1);
-			binding.height = (r.buffer.height >> lod).max(1);
+			let mut binding = r.binding_for(level, base);
+			binding.width = (r.buffer.width >> level).max(1);
+			binding.height = (r.buffer.height >> level).max(1);
 			Ok(binding)
 		}
 	}
 }
-
-#[allow(unused)]
-fn unused_silencer(_: PixelLayout, _: ResourceId, _: Configuration) {}

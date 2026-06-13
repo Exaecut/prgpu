@@ -122,6 +122,6 @@ pub unsafe fn cleanup() {
 				let _ = unsafe { cu::cuModuleUnload(k.module) };
 			}
 		}
-		log::info!("[CUDA] Module cache cleared");
+		log::debug!("[CUDA] Module cache cleared");
 	}
 }

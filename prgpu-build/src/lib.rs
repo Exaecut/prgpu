@@ -109,11 +109,6 @@ impl EffectBuild {
 
 	fn run(self) -> Result<(), DynError> {
 		let backend = backend::resolve_backend();
-		backend::emit_backend_cfg(backend);
-
-		// TRANSITIONAL(plan-04): effect crates only get the cfg transitionally;
-		// phase 4 removes the need for this emission.
-		println!("cargo:rustc-cfg=with_premiere");
 
 		let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
 		let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);

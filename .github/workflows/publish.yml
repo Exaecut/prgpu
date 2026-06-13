@@ -40,40 +40,6 @@ jobs:
           git clone --depth 1 https://github.com/Exaecut/vekl.git vekl
           rm -rf vekl/.git
 
-      - name: Bump workspace version from commit message
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Re-runs land on the [skip ci] release commit we pushed last time;
-          # don't bump again — just let the publish step ship those versions.
-          subject="$(git log -1 --pretty=%s)"
-          case "$subject" in
-            "chore(release): "*)
-              echo "HEAD is already a release commit — skipping bump."
-              exit 0
-              ;;
-          esac
-
-          # patch by default; a `minor:`/`major:` commit-subject prefix escalates.
-          case "$subject" in
-            major:*) kind=major ;;
-            minor:*) kind=minor ;;
-            *)       kind=patch ;;
-          esac
-
-          new="$(bash scripts/bump-versions.sh "$kind")"
-
-          # Reconcile the tracked Cargo.lock with the new member versions
-          # without disturbing external dependencies.
-          cargo metadata --no-deps --format-version 1 >/dev/null
-
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A -- Cargo.toml Cargo.lock 'prgpu-*/Cargo.toml'
-          git commit -m "chore(release): prgpu v$new [skip ci]"
-          # GITHUB_TOKEN pushes don't retrigger CI; the [skip ci] tag is belt-and-suspenders.
-          git push origin "HEAD:$GITHUB_REF_NAME"
 
       - name: Publish crates whose on-disk version isn't on crates.io yet
         shell: bash

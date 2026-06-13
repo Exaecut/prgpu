@@ -1,0 +1,5 @@
+error: `A` is missing `label = "..."`
+ --> tests/params/compile-fail/missing_label.rs:4:3
+  |
+4 |         A,
+  |         ^

@@ -1,9 +1,5 @@
-//! Effect-side public API.
-//!
-//! Effect authors implement [`Effect`] once and let the adapters (AE / Premiere)
-//! handle host-specific wiring. The prelude collects the symbols needed for a
-//! typical effect definition; the submodules expose the normalised host-capability
-//! and invocation surface the adapters and graph executor build on.
+//! Effect authoring surface: implement [`Effect`], call
+//! [`register_effect!`](crate::register_effect), done.
 
 pub mod host;
 pub use host::{Capability, Host, HostCapabilities, RenderKind};
@@ -11,20 +7,20 @@ pub use host::{Capability, Host, HostCapabilities, RenderKind};
 pub mod invocation;
 pub use invocation::{FrameBinding, InvocationBase, PixelLayout};
 
-pub mod params_api;
-pub use params_api::{ActionBuilder, ActionContext, ParamApi, VisibilityBuilder};
-
 pub mod license;
-pub use license::{LicenseGate, NoLicenseGate};
+pub use license::{LicenseGate, NoLicense};
 
 pub mod descriptor;
 pub use descriptor::{EffectDescriptor, ExpansionExtent};
 
-pub mod frame_context;
-pub use frame_context::{ExpansionContext, FrameDataContext};
+pub mod ctx;
+pub use ctx::{Ctx, Geometry, Timing};
 
 pub mod effect_trait;
 pub use effect_trait::Effect;
+
+pub mod ui;
+pub use ui::Ui;
 
 pub mod prelude;
 pub use prelude::*;

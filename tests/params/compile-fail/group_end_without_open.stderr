@@ -1,0 +1,5 @@
+error: `#[group(end)]` without a matching `#[group("...")]`
+ --> tests/params/compile-fail/group_end_without_open.rs:3:3
+  |
+3 |         #[group(end)]
+  |         ^^^^^^^^^^^^^

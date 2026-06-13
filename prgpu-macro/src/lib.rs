@@ -2,11 +2,49 @@ use proc_macro::TokenStream;
 
 mod diagnostics;
 mod generate;
+mod kernel_gen;
+mod kernel_parse;
 mod layout;
+mod params_gen;
+mod params_parse;
 mod parse;
+mod popup;
 mod types;
 
 use types::GpuType;
+
+/// `params! { pub enum Params { #[slider(..)] Strength, .. } }` — see
+/// `prgpu::params`. Generates the discriminant enum, per-param markers, the
+/// `ParamsSpec` (registration + snapshot), and the legacy `SetupParams` bridge.
+#[proc_macro]
+pub fn params(item: TokenStream) -> TokenStream {
+    let input = match syn::parse::<params_parse::ParamsInput>(item) {
+        Ok(i) => i,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    params_gen::generate(input).into()
+}
+
+/// `kernel! { name { field: type [= expr], ... } }` — declares a kernel module
+/// with GPU-laid-out params, `FromCtx` extraction, ABI check, and dispatch wiring.
+#[proc_macro]
+pub fn kernel(item: TokenStream) -> TokenStream {
+    let input = match syn::parse::<kernel_parse::KernelInput>(item) {
+        Ok(i) => i,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    kernel_gen::generate(&input.decls).into()
+}
+
+/// `#[derive(prgpu::Popup)]` on a `#[repr(u32)]` enum with `#[option("..")]`.
+#[proc_macro_derive(Popup, attributes(option))]
+pub fn popup(item: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(item as syn::DeriveInput);
+    match popup::derive_popup(&input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
 
 #[proc_macro_attribute]
 pub fn gpu_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -56,6 +94,21 @@ pub fn gpu_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
+
+    for field in fields {
+        let field_name = field.ident.as_ref().unwrap();
+        if field_name.to_string().starts_with("_pad") {
+            return syn::Error::new(
+                field_name.span(),
+                format!(
+                    "manual padding field `{field_name}` — #[gpu_struct] injects padding \
+                     automatically; construct with `..Default::default()` instead",
+                ),
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
 
     let mut resolved_fields: Vec<(syn::Ident, GpuType, proc_macro2::Span)> = Vec::new();
     for field in fields {

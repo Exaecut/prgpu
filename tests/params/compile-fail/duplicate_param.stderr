@@ -1,0 +1,5 @@
+error: duplicate parameter `Dup`
+ --> tests/params/compile-fail/duplicate_param.rs:6:3
+  |
+6 |         Dup,
+  |         ^^^

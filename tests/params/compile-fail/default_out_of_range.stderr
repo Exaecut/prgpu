@@ -1,0 +1,5 @@
+error: default 5 is outside range 0..=1
+ --> tests/params/compile-fail/default_out_of_range.rs:4:3
+  |
+4 |         A,
+  |         ^

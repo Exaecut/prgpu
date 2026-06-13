@@ -1,8 +1,8 @@
-//! `declare_kernel!` smoke tests.
+//! `kernel!` smoke tests.
 //!
-//! Verifies the generated module surface promised by the macro is reachable.
-//! `declare_kernel!(diff, ...)` is invoked inside `kernel/builtin/mod.rs`,
-//! so the generated module sits at `prgpu::kernel::builtin::diff::*`.
+//! Verifies the generated module surface: struct layout, `Default` zeroing,
+//! `from_ctx` against a synthetic snapshot, popup-enum accessor, bare-marker
+//! sugar with a transformed expression.
 
 use prgpu::Kernel;
 
@@ -14,9 +14,6 @@ fn diff_kernel_module_exposes_full_surface() {
 	let k: Kernel<prgpu::kernel::builtin::DiffParams> = prgpu::kernel::builtin::diff::kernel();
 	assert_eq!(k.name(), "diff");
 	assert_eq!(k.entry_point(), "diff");
-
-	let _: prgpu::cpu::render::CpuDispatchFn = prgpu::kernel::builtin::diff::CPU_DISPATCH;
-	let _: prgpu::cpu::render::CpuDispatchTileFn = prgpu::kernel::builtin::diff::CPU_DISPATCH_TILE;
 }
 
 #[test]

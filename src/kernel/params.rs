@@ -25,7 +25,7 @@
 /// `Sync` is required because the CPU dispatcher (`render_cpu_direct`)
 /// shares the params struct across rayon worker threads via a raw pointer.
 /// All `#[gpu_struct]` types are Sync by construction (only scalar fields).
-pub trait KernelParams: Copy + Sync + Sized + 'static {
+pub trait KernelParams: Copy + Send + Sync + Sized + 'static {
 	const SIZE: usize;
 	const ALIGN: usize;
 }

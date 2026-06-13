@@ -1,48 +1,136 @@
-//! Imperative graph-builder API.
+//! Pass-builder graph API (`Graph<P>`).
 //!
-//! `RenderGraph<F>` is built once per effect-instance lifetime by an
-//! `Effect::pipeline` callback. The surface exposes three declarations:
-//!
-//! - [`RenderGraph::declare_mip_pyramid`] — register a sized N-level mip
-//!   pyramid sized by a per-frame closure.
-//! - [`RenderGraph::add_pass`] — register a single source/(input)/target
-//!   kernel pass.
-//! - [`RenderGraph::add_mip_chain`] — register a per-level sweep across a
-//!   mip pyramid (down or up direction).
-//!
-//! Validation runs on first execution; declaration-time errors surface as
-//! [`GraphError`] when the executor walks the graph.
+//! Replaces `RenderGraph<F>` with a `ParamsSpec`-parameterised graph builder.
+//! Pipelines declare resources and passes via method chaining; the executor
+//! resolves slots and dispatches against a per-frame `Ctx<P>`.
 
-use crate::graph::context::{MipPyramidCtx, PassContext};
-use crate::graph::pass::{MipChainPassDecl, MipDirection, MipDispatcher, PassDecl, SingleDispatcher, SinglePassDecl, Slot};
-use crate::graph::resource::{MipPyramid, MipPyramidDesc, ResourceHandle, ResourceId};
+use std::marker::PhantomData;
+
+use crate::effect::Ctx;
+use crate::graph::pass::{MipDirection, PyramidHandle, SingleDispatcher, MipDispatcher, EnabledPredicate, SinglePassDecl, MipChainPassDecl, PassDecl, Slot};
+use crate::graph::resource::{MipPyramidDesc, ResourceId};
 use crate::graph::source::SourcePolicy;
-use crate::kernel::Kernel;
 use crate::kernel::KernelParams;
-use crate::types::ConfigBuildError;
+use crate::kernel::{FromCtx, Kernel};
+use crate::params::ParamsSpec;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GraphError {
-	MissingTarget(&'static str),
-	UnknownResource(&'static str),
-	BadMipLevel { pass: &'static str, level: u32, max: u32 },
-	ConfigBuild { pass: &'static str, kind: ConfigBuildError },
-	KernelDispatch { pass: &'static str, message: &'static str },
-	ResourceAllocFailed { name: &'static str },
+#[derive(Clone)]
+pub struct Derived<T: Send + Sync + 'static> {
+	pub(crate) index: usize,
+	_marker: PhantomData<T>,
 }
 
-pub(crate) struct ResourceDecl<F> {
+impl<T: Clone + Send + Sync + 'static> Copy for Derived<T> {}
+
+pub(crate) struct ResourceDecl<P: ParamsSpec> {
 	pub name: &'static str,
-	pub desc_fn: Box<dyn Fn(&MipPyramidCtx<F>) -> MipPyramidDesc + Send + Sync + 'static>,
+	pub desc_fn: Box<dyn Fn(&Ctx<P>) -> MipPyramidDesc + Send + Sync + 'static>,
 }
 
-pub struct RenderGraph<F: Copy + Send + Sync + 'static> {
+pub(crate) struct DerivedDecl<P: ParamsSpec> {
+	pub compute: Box<dyn Fn(&Ctx<P>) -> Box<dyn std::any::Any + Send + Sync> + Send + Sync + 'static>,
+}
+
+pub struct Graph<P: ParamsSpec> {
 	pub(crate) source_policy: SourcePolicy,
-	pub(crate) resources: Vec<ResourceDecl<F>>,
-	pub(crate) passes: Vec<PassDecl<F>>,
+	pub(crate) resources: Vec<ResourceDecl<P>>,
+	pub(crate) passes: Vec<PassDecl<P>>,
+	pub(crate) derived: Vec<DerivedDecl<P>>,
 }
 
-impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
+impl<P: ParamsSpec> Graph<P> {
+	pub fn new() -> Self {
+		Self {
+			source_policy: SourcePolicy::default(),
+			resources: Vec::new(),
+			passes: Vec::new(),
+			derived: Vec::new(),
+		}
+	}
+
+	pub fn source_policy(&mut self, p: SourcePolicy) {
+		self.source_policy = p;
+	}
+
+	pub fn derive<T, F>(&mut self, f: F) -> Derived<T>
+	where
+		T: Send + Sync + 'static,
+		F: Fn(&Ctx<P>) -> T + Send + Sync + 'static,
+	{
+		let index = self.derived.len();
+		self.derived.push(DerivedDecl {
+			compute: Box::new(move |ctx| Box::new(f(ctx))),
+		});
+		Derived { index, _marker: PhantomData }
+	}
+
+	pub fn mip_pyramid<F>(&mut self, name: &'static str, desc_fn: F) -> PyramidHandle
+	where
+		F: Fn(&Ctx<P>) -> MipPyramidDesc + Send + Sync + 'static,
+	{
+		let id = ResourceId(self.resources.len() as u32);
+		self.resources.push(ResourceDecl {
+			name,
+			desc_fn: Box::new(desc_fn),
+		});
+		PyramidHandle { id }
+	}
+
+	pub fn pass<K>(&mut self, kernel: Kernel<K>) -> PassBuilder<'_, P, K>
+	where
+		K: KernelParams + FromCtx<Spec = P>,
+	{
+		let default_params: Box<dyn Fn(&Ctx<P>) -> K + Send + Sync + 'static> =
+			Box::new(|ctx| K::from_ctx(ctx));
+		PassBuilder {
+			graph: self,
+			name: kernel.name(),
+			kernel,
+			source: Slot::Source,
+			input: None,
+			target: Slot::Output,
+			params_fn: Some(default_params),
+			enabled_when: None,
+		}
+	}
+
+	pub fn pass_with<K, F>(&mut self, kernel: Kernel<K>, params_fn: F) -> PassBuilder<'_, P, K>
+	where
+		K: KernelParams,
+		F: Fn(&Ctx<P>) -> K + Send + Sync + 'static,
+	{
+		PassBuilder {
+			graph: self,
+			name: kernel.name(),
+			kernel,
+			source: Slot::Source,
+			input: None,
+			target: Slot::Output,
+			params_fn: Some(Box::new(params_fn)),
+			enabled_when: None,
+		}
+	}
+
+	pub fn mip_chain<K>(
+		&mut self,
+		pyramid: PyramidHandle,
+		dir: MipDirection,
+		kernel: Kernel<K>,
+	) -> MipChainBuilder<'_, P, K>
+	where
+		K: KernelParams,
+	{
+		MipChainBuilder {
+			graph: self,
+			name: kernel.name(),
+			pyramid: pyramid.id,
+			direction: dir,
+			kernel,
+			params_fn: None,
+			enabled_when: None,
+		}
+	}
+
 	#[doc(hidden)]
 	pub fn pass_count(&self) -> usize {
 		self.passes.len()
@@ -54,86 +142,61 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 	}
 }
 
-impl<F: Copy + Send + Sync + 'static> Default for RenderGraph<F> {
-	fn default() -> Self {
-		Self::new()
+pub struct PassBuilder<'g, P: ParamsSpec, K: KernelParams> {
+	graph: &'g mut Graph<P>,
+	name: &'static str,
+	kernel: Kernel<K>,
+	source: Slot,
+	input: Option<Slot>,
+	target: Slot,
+	params_fn: Option<Box<dyn Fn(&Ctx<P>) -> K + Send + Sync + 'static>>,
+	enabled_when: Option<Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>>,
+}
+
+impl<'g, P: ParamsSpec, K: KernelParams + Send + Sync + 'static> PassBuilder<'g, P, K> {
+	pub fn reads(mut self, s: Slot) -> Self {
+		self.source = s;
+		self
+	}
+
+	pub fn reads_input(mut self, s: Slot) -> Self {
+		self.input = Some(s);
+		self
+	}
+
+	pub fn writes(mut self, s: Slot) -> Self {
+		self.target = s;
+		self
+	}
+
+	pub fn params<F>(mut self, f: F) -> Self
+	where
+		F: Fn(&Ctx<P>) -> K + Send + Sync + 'static,
+	{
+		self.params_fn = Some(Box::new(f));
+		self
+	}
+
+	pub fn when<F>(mut self, f: F) -> Self
+	where
+		F: Fn(&Ctx<P>) -> bool + Send + Sync + 'static,
+	{
+		self.enabled_when = Some(Box::new(f));
+		self
 	}
 }
 
-impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
-	pub fn new() -> Self {
-		Self {
-			source_policy: SourcePolicy::default(),
-			resources: Vec::new(),
-			passes: Vec::new(),
-		}
-	}
+impl<P: ParamsSpec, K: KernelParams + Send + Sync + 'static> Drop for PassBuilder<'_, P, K> {
+	fn drop(&mut self) {
+		let name = self.name;
+		let kernel = self.kernel.clone();
+		let source = self.source;
+		let input = self.input;
+		let target = self.target;
+		let params_fn = self.params_fn.take().unwrap();
+		let enabled_when = self.enabled_when.take();
 
-	pub fn set_source_policy(&mut self, policy: SourcePolicy) {
-		self.source_policy = policy;
-	}
-
-	pub fn declare_mip_pyramid<R>(&mut self, name: &'static str, desc_fn: R) -> ResourceHandle<MipPyramid>
-	where
-		R: Fn(&MipPyramidCtx<F>) -> MipPyramidDesc + Send + Sync + 'static,
-	{
-		let id = ResourceId(self.resources.len() as u32);
-		self.resources.push(ResourceDecl {
-			name,
-			desc_fn: Box::new(desc_fn),
-		});
-		ResourceHandle::<MipPyramid>::new(id)
-	}
-
-	/// Register a single-pass kernel invocation.
-	///
-	/// The `params_fn` closure runs per frame, pulling values out of the
-	/// effect's `FrameData` to build the kernel's per-pass constant buffer.
-	pub fn add_pass<P, A>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, target: Slot, params_fn: A)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
-	{
-		self.add_pass_inner(name, kernel, source, None, target, params_fn, None);
-	}
-
-	/// Register a single-pass kernel invocation with a conditional predicate.
-	pub fn add_pass_conditional<P, A, E>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, target: Slot, params_fn: A, enabled_fn: E)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
-		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
-	{
-		self.add_pass_inner(name, kernel, source, None, target, params_fn, Some(Box::new(enabled_fn)));
-	}
-
-	/// Register a single-pass invocation with an explicit secondary input
-	/// (slot 1 / `incoming`). Used when a kernel reads two distinct sources
-	/// (e.g. composite reads source + bloom-pyramid).
-	pub fn add_pass_with_input<P, A>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Slot, target: Slot, params_fn: A)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
-	{
-		self.add_pass_inner(name, kernel, source, Some(input), target, params_fn, None);
-	}
-
-	/// Register a single-pass invocation with an explicit secondary input and a conditional predicate.
-	pub fn add_pass_with_input_conditional<P, A, E>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Slot, target: Slot, params_fn: A, enabled_fn: E)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
-		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
-	{
-		self.add_pass_inner(name, kernel, source, Some(input), target, params_fn, Some(Box::new(enabled_fn)));
-	}
-
-	fn add_pass_inner<P, A>(&mut self, name: &'static str, kernel: Kernel<P>, source: Slot, input: Option<Slot>, target: Slot, params_fn: A, enabled_when: Option<crate::graph::pass::EnabledPredicate<F>>)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(&PassContext<F>) -> P + Send + Sync + 'static,
-	{
-		let dispatcher: SingleDispatcher<F> = Box::new(move |ctx, config| {
+		let dispatcher: SingleDispatcher<P> = Box::new(move |ctx, config| {
 			let params = params_fn(ctx);
 			match ctx.capabilities().backend() {
 				crate::types::Backend::Cpu => {
@@ -144,7 +207,7 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 			}
 		});
 
-		self.passes.push(PassDecl::Single(SinglePassDecl {
+		self.graph.passes.push(PassDecl::Single(SinglePassDecl {
 			name,
 			source,
 			input,
@@ -153,33 +216,46 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 			enabled_when,
 		}));
 	}
+}
 
-	/// Register an N-level sweep across a mip pyramid. `direction = Down`
-	/// runs `lod 0 → 1 → ... → N-1`; `direction = Up` runs the reverse.
-	pub fn add_mip_chain<P, A>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A)
+pub struct MipChainBuilder<'g, P: ParamsSpec, K: KernelParams> {
+	graph: &'g mut Graph<P>,
+	name: &'static str,
+	pyramid: ResourceId,
+	direction: MipDirection,
+	kernel: Kernel<K>,
+	params_fn: Option<Box<dyn Fn(u32, &Ctx<P>) -> K + Send + Sync + 'static>>,
+	enabled_when: Option<Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>>,
+}
+
+impl<'g, P: ParamsSpec, K: KernelParams + Send + Sync + 'static> MipChainBuilder<'g, P, K> {
+	pub fn params<F>(mut self, f: F) -> Self
 	where
-		P: KernelParams + Send + Sync,
-		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
+		F: Fn(u32, &Ctx<P>) -> K + Send + Sync + 'static,
 	{
-		self.add_mip_chain_inner(name, resource, direction, kernel, params_fn, None);
+		self.params_fn = Some(Box::new(f));
+		self
 	}
 
-	/// Register a conditional N-level sweep across a mip pyramid.
-	pub fn add_mip_chain_conditional<P, A, E>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A, enabled_fn: E)
+	pub fn when<F>(mut self, f: F) -> Self
 	where
-		P: KernelParams + Send + Sync,
-		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
-		E: Fn(&PassContext<F>) -> bool + Send + Sync + 'static,
+		F: Fn(&Ctx<P>) -> bool + Send + Sync + 'static,
 	{
-		self.add_mip_chain_inner(name, resource, direction, kernel, params_fn, Some(Box::new(enabled_fn)));
+		self.enabled_when = Some(Box::new(f));
+		self
 	}
+}
 
-	fn add_mip_chain_inner<P, A>(&mut self, name: &'static str, resource: ResourceHandle<MipPyramid>, direction: MipDirection, kernel: Kernel<P>, params_fn: A, enabled_when: Option<crate::graph::pass::EnabledPredicate<F>>)
-	where
-		P: KernelParams + Send + Sync,
-		A: Fn(u32, &PassContext<F>) -> P + Send + Sync + 'static,
-	{
-		let dispatcher: MipDispatcher<F> = Box::new(move |level, ctx, config| {
+impl<P: ParamsSpec, K: KernelParams + Send + Sync + 'static> Drop for MipChainBuilder<'_, P, K> {
+	fn drop(&mut self) {
+		let name = self.name;
+		let pyramid = self.pyramid;
+		let direction = self.direction;
+		let kernel = self.kernel.clone();
+		let params_fn = self.params_fn.take().unwrap();
+		let enabled_when = self.enabled_when.take();
+
+		let dispatcher: MipDispatcher<P> = Box::new(move |level, ctx, config| {
 			let params = params_fn(level, ctx);
 			match ctx.capabilities().backend() {
 				crate::types::Backend::Cpu => {
@@ -190,9 +266,9 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 			}
 		});
 
-		self.passes.push(PassDecl::MipChain(MipChainPassDecl {
+		self.graph.passes.push(PassDecl::MipChain(MipChainPassDecl {
 			name,
-			resource: resource.id(),
+			resource: pyramid,
 			direction,
 			dispatcher,
 			enabled_when,

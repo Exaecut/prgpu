@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "prgpu"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "prgpu-build"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "cc",
  "cudarc",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "prgpu-macro"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "proc-macro2",
  "quote",

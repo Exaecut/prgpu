@@ -279,9 +279,8 @@ impl<E: Effect> EffectAdapter<E> {
 			// centered per the SmartPreRender result rect (symmetric).
 			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
 			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
-			main_source: main,
-			incoming_source: None,
-			outgoing_source: None,
+			source: main,
+			secondary_source: None,
 			output,
 		})
 	}
@@ -327,7 +326,6 @@ impl<E: Effect> EffectAdapter<E> {
 		let backend = match extra.what_gpu() {
 			GpuFramework::Cuda => Backend::Cuda,
 			GpuFramework::Metal => Backend::Metal,
-			GpuFramework::OpenCl => Backend::OpenCL,
 			_ => Backend::Cpu,
 		};
 
@@ -371,9 +369,8 @@ impl<E: Effect> EffectAdapter<E> {
 			render_generation: frame_index as u64,
 			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
 			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
-			main_source: main,
-			incoming_source: None,
-			outgoing_source: None,
+			source: main,
+			secondary_source: None,
 			output,
 		})
 	}
@@ -461,7 +458,6 @@ impl<E: Effect> EffectAdapter<E> {
 			}
 			Command::UserChangedParam { param_index } => {
 				let changed = params.type_at(param_index);
-				let mut hot_reload = false;
 				let cache_state = self.ui_cache.lock().take();
 				let state = match cache_state {
 					Some(s) => s,
@@ -471,15 +467,9 @@ impl<E: Effect> EffectAdapter<E> {
 					if rule.param == changed {
 						let mut ctx = ActionContext::new();
 						let _ = (rule.callback)(&mut ctx);
-						if ctx.hot_reload_shaders {
-							hot_reload = true;
-						}
 					}
 				}
 				*self.ui_cache.lock() = Some(state);
-				if hot_reload {
-					crate::gpu::pipeline::hot_reload();
-				}
 			}
 			Command::FrameSetup { in_layer, .. } => {
 				if !self.license_valid() {

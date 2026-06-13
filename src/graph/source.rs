@@ -18,7 +18,7 @@
 //! when **both** hold:
 //!
 //! - the host signals `Capability::SourceOutputMayAlias`, and
-//! - a pass reads [`Slot::MainSource`] and writes [`Slot::Output`].
+//! - a pass reads [`Slot::Source`] and writes [`Slot::Output`].
 //!
 //! That covers every effect that samples the source anywhere other than the
 //! pixel it is writing — shakes, blurs, distortions, glows, echoes, godrays.
@@ -31,13 +31,13 @@
 //! ```ignore
 //! // Typical effect: nothing to do — Auto snapshots iff it detects the hazard.
 //! fn pipeline(g: &mut RenderGraph<Self::FrameData>) {
-//!     g.add_pass("shake", k::shake::kernel(), Slot::MainSource, Slot::Output, |c| c.frame_data().main);
+//!     g.add_pass("shake", k::shake::kernel(), Slot::Source, Slot::Output, |c| c.frame_data().main);
 //! }
 //!
 //! // 1:1 colour grade that only reads its own pixel: skip the copy.
 //! fn pipeline(g: &mut RenderGraph<Self::FrameData>) {
 //!     g.set_source_policy(SourcePolicy::Direct);
-//!     g.add_pass("grade", k::grade::kernel(), Slot::MainSource, Slot::Output, |c| c.frame_data().main);
+//!     g.add_pass("grade", k::grade::kernel(), Slot::Source, Slot::Output, |c| c.frame_data().main);
 //! }
 //!
 //! // Pipeline that reads the source back through a private pyramid and wants the
@@ -56,7 +56,7 @@ pub(crate) const AUTO_SOURCE_SNAPSHOT_TAG: u32 = 0x4155_544F;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePolicy {
 	/// Default. prgpu snapshots the source automatically when the host may
-	/// alias source/output **and** a pass reads `MainSource` while writing
+	/// alias source/output **and** a pass reads `Source` while writing
 	/// `Output`. No action required from the effect author.
 	Auto,
 	/// Never snapshot. Bind the host's source buffer directly. Use only for a

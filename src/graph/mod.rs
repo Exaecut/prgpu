@@ -8,8 +8,8 @@
 //! per-pass `Configuration` values by hand.
 //!
 //! `F` is the effect's `FrameData` — a `Copy + 'static` struct the per-pass
-//! params closures pull values out of. When the `Effect` trait lands
-//! (Phase 11) the graph is parameterised over `Effect::FrameData` directly.
+//! params closures pull values out of. The `Effect` trait parameterises the
+//! graph over `Effect::FrameData` directly.
 
 pub mod context;
 pub mod execute;

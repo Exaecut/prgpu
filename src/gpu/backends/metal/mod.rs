@@ -78,7 +78,7 @@ pub mod fence;
 pub mod frame_scope;
 pub mod pipeline;
 
-use crate::{Configuration, FrameParams};
+use crate::types::{Configuration, FrameParams};
 
 // setBytes is only valid for argument data up to 4 KB.
 const SET_BYTES_LIMIT: usize = 4096;

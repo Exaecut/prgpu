@@ -69,18 +69,18 @@ impl<'a, F> MipPyramidCtx<'a, F> {
 		self.base.output.height
 	}
 
-	/// Width of the (un-expanded) main source. A pyramid filled via
+	/// Width of the (un-expanded) source. A pyramid filled via
 	/// `populate_from_source` must match these dims so the copied buffer and the
 	/// pass-read buffer resolve to the same LRU allocation; sizing it to the
 	/// expanded output instead leaves the read buffer unpopulated.
 	#[inline]
 	pub fn source_width(&self) -> u32 {
-		self.base.main_source.width
+		self.base.source.width
 	}
 
 	#[inline]
 	pub fn source_height(&self) -> u32 {
-		self.base.main_source.height
+		self.base.source.height
 	}
 
 	#[inline]

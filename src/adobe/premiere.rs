@@ -128,9 +128,8 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			render_generation: base_cfg.render_generation,
 			ext_x: base_cfg.ext_x,
 			ext_y: base_cfg.ext_y,
-			main_source: main,
-			incoming_source: None,
-			outgoing_source: None,
+			source: main,
+			secondary_source: None,
 			output,
 		})
 	}

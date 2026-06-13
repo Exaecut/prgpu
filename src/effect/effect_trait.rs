@@ -47,7 +47,7 @@ pub trait Effect: Sized + Default + Send + Sync + 'static {
 	/// Per-side pixel inflation applied uniformly to the input layer to
 	/// compute the rendered output rect. Default returns no expansion.
 	fn expansion(_ctx: ExpansionContext<Self::Params>) -> Result<ExpansionExtent, after_effects::Error> {
-		Ok(ExpansionExtent::none())
+		Ok(ExpansionExtent::NONE)
 	}
 
 	/// Declare the render graph once per effect-instance lifetime. The

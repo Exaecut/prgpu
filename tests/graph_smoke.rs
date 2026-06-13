@@ -16,7 +16,7 @@ struct FakeFrame {
 }
 
 fn synthetic_base(out_data: *mut std::ffi::c_void, src_data: *mut std::ffi::c_void, w: u32, h: u32) -> InvocationBase {
-	let main_source = FrameBinding {
+	let source = FrameBinding {
 		data: src_data,
 		pitch_px: w as i32,
 		width: w,
@@ -50,9 +50,8 @@ fn synthetic_base(out_data: *mut std::ffi::c_void, src_data: *mut std::ffi::c_vo
 		render_generation: 0,
 		ext_x: 0,
 		ext_y: 0,
-		main_source,
-		incoming_source: None,
-		outgoing_source: None,
+		source,
+		secondary_source: None,
 		output,
 	}
 }
@@ -67,15 +66,6 @@ fn empty_graph_runs_clean() {
 }
 
 #[test]
-fn legacy_execute_cpu_alias_still_resolves() {
-	let graph: RenderGraph<FakeFrame> = RenderGraph::new();
-	let mut src = vec![0u8; 8 * 8 * 4];
-	let mut dst = vec![0u8; 8 * 8 * 4];
-	let base = synthetic_base(dst.as_mut_ptr() as *mut _, src.as_mut_ptr() as *mut _, 8, 8);
-	prgpu::graph::execute::execute_cpu(&graph, &FakeFrame { threshold: 0.0 }, &base).expect("alias works");
-}
-
-#[test]
 fn default_policy_is_auto() {
 	assert_eq!(prgpu::graph::SourcePolicy::default(), prgpu::graph::SourcePolicy::Auto);
 	let graph: RenderGraph<FakeFrame> = RenderGraph::new();
@@ -84,11 +74,11 @@ fn default_policy_is_auto() {
 
 #[test]
 fn auto_policy_runs_clean_on_non_aliasing_host() {
-	// A MainSource -> Output pass trips the auto-snapshot heuristic, but AE+CPU
+	// A Source -> Output pass trips the auto-snapshot heuristic, but AE+CPU
 	// does not report SourceOutputMayAlias so the snapshot short-circuits and the
 	// graph runs against the host buffers directly.
 	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
-	graph.add_pass("shake_like", prgpu::kernel::builtin::diff::kernel(), Slot::MainSource, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
+	graph.add_pass("shake_like", prgpu::kernel::builtin::diff::kernel(), Slot::Source, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
 		tol_r: 0.0,
 		tol_g: 0.0,
 		tol_b: 0.0,
@@ -117,7 +107,7 @@ fn source_policy_direct_is_a_noop() {
 #[test]
 fn snapshot_if_aliased_is_skipped_when_capability_absent() {
 	// CPU/AE base does NOT report SourceOutputMayAlias, so the snapshot path
-	// short-circuits and the original main_source pointer is preserved.
+	// short-circuits and the original source pointer is preserved.
 	let mut graph: RenderGraph<FakeFrame> = RenderGraph::new();
 	graph.set_source_policy(prgpu::graph::SourcePolicy::SnapshotIfAliased { tag: 0xCAFE_0001 });
 	let mut src = vec![1u8; 8 * 8 * 4];
@@ -221,7 +211,7 @@ fn slot_inline_can_be_used_directly() {
 		pixel_layout: PixelLayout::Bgra,
 	};
 	let _ = inline_target;
-	graph.add_pass("noop_pass", prgpu::kernel::builtin::diff::kernel(), Slot::MainSource, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
+	graph.add_pass("noop_pass", prgpu::kernel::builtin::diff::kernel(), Slot::Source, Slot::Output, |_ctx| prgpu::kernel::builtin::DiffParams {
 		tol_r: 0.0,
 		tol_g: 0.0,
 		tol_b: 0.0,

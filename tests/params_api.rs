@@ -13,8 +13,7 @@ use prgpu::effect::ActionBuilder;
 // Compile-only check: ActionBuilder accepts an `on_click` closure with the
 // expected signature.
 fn _on_click_compile_check(b: &mut ActionBuilder<usize>) {
-	b.on_click(0usize, |ctx| {
-		ctx.hot_reload_shaders();
+	b.on_click(0usize, |_ctx| {
 		Ok(())
 	});
 }

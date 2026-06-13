@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use premiere::suites::GPUDevice;
 
 use crate::gpu::scheduling;
-use crate::render_properties::GPURenderProperties;
+use crate::gpu::render_properties::GPURenderProperties;
 
 pub enum DeviceHandleInit<'a> {
 	FromPtr(*mut c_void),
@@ -53,6 +53,9 @@ pub struct Configuration {
 	pub device_handle: *mut c_void,
 	pub context_handle: Option<*mut c_void>,
 	pub command_queue_handle: *mut c_void,
+	// Pass-DSL naming: `outgoing` = source (slot 0), `incoming` = input (slot 1),
+	// `dest` = target (slot 2). The Slang ABI keeps the old names for byte
+	// compatibility; only the host-side builder vocabulary changed.
 	pub outgoing_data: Option<*mut c_void>,
 	pub incoming_data: Option<*mut c_void>,
 	pub dest_data: *mut c_void,

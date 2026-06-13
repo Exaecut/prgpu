@@ -1,14 +1,9 @@
 //! Effect-side public API.
 //!
-//! Two layers live here:
-//!
-//! - [`cross_host`] — the existing `CrossHostEffect<P>` AE PF dispatcher
-//!   trait. Effects that haven't migrated to the new graph API still
-//!   implement this and call its `handle_*` helpers from `handle_command`.
-//! - [`host`] / [`invocation`] — the normalised host-capability + invocation
-//!   surface the adapters and graph executor build on. Effect code that
-//!   uses the new `Effect` trait sees these through `FrameDataContext` /
-//!   `ExpansionContext` rather than directly.
+//! Effect authors implement [`Effect`] once and let the adapters (AE / Premiere)
+//! handle host-specific wiring. The prelude collects the symbols needed for a
+//! typical effect definition; the submodules expose the normalised host-capability
+//! and invocation surface the adapters and graph executor build on.
 
 pub mod host;
 pub use host::{Capability, Host, HostCapabilities, RenderKind};
@@ -23,10 +18,13 @@ pub mod license;
 pub use license::{LicenseGate, NoLicenseGate};
 
 pub mod descriptor;
-pub use descriptor::{EffectDescriptor, ExpansionExtent, ExpansionSymmetry};
+pub use descriptor::{EffectDescriptor, ExpansionExtent};
 
 pub mod frame_context;
 pub use frame_context::{ExpansionContext, FrameDataContext};
 
 pub mod effect_trait;
 pub use effect_trait::Effect;
+
+pub mod prelude;
+pub use prelude::*;

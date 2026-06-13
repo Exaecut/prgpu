@@ -12,16 +12,17 @@ use crate::graph::resource::ResourceId;
 
 /// Source / target binding the executor resolves per-pass.
 ///
-/// `MainSource` / `Output` resolve through the active `InvocationBase`;
+/// `Source` / `Output` resolve through the active `InvocationBase`;
 /// `ResourceMip` / `ResourceWhole` resolve through the executor's resource
 /// table; `Inline` carries a pre-built `FrameBinding` (used by the executor
 /// when promoting a snapshot or test fixture).
 #[derive(Debug, Clone, Copy)]
 pub enum Slot {
-	MainSource,
+	Source,
 	Output,
 	ResourceMip(ResourceId, u32),
 	ResourceWhole(ResourceId),
+	#[doc(hidden)]
 	Inline(FrameBinding),
 }
 

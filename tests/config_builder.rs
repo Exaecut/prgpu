@@ -9,7 +9,7 @@ use prgpu::effect::{FrameBinding, Host, InvocationBase, PixelLayout, RenderKind}
 use prgpu::types::{Backend, ConfigBuilder, ConfigBuildError, PassBinding};
 
 fn make_test_base() -> InvocationBase {
-	let main = FrameBinding {
+	let source = FrameBinding {
 		data: 0x1000 as *mut _,
 		pitch_px: 1920,
 		width: 1920,
@@ -43,9 +43,8 @@ fn make_test_base() -> InvocationBase {
 		render_generation: 7,
 		ext_x: 0,
 		ext_y: 0,
-		main_source: main,
-		incoming_source: None,
-		outgoing_source: None,
+		source,
+		secondary_source: None,
 		output,
 	}
 }
@@ -53,7 +52,7 @@ fn make_test_base() -> InvocationBase {
 #[test]
 fn source_to_output_pass() {
 	let base = make_test_base();
-	let cfg = ConfigBuilder::new(&base).source(PassBinding::MainSource).target(PassBinding::Output).build().expect("builds");
+	let cfg = ConfigBuilder::new(&base).source(PassBinding::Source).target(PassBinding::Output).build().expect("builds");
 	assert_eq!(cfg.dest_data as usize, 0x2000);
 	assert_eq!(cfg.outgoing_data.unwrap() as usize, 0x1000);
 	assert_eq!(cfg.width, 1920);
@@ -67,7 +66,7 @@ fn source_to_output_pass() {
 #[test]
 fn dispatch_size_overrides_dest_dims() {
 	let base = make_test_base();
-	let cfg = ConfigBuilder::new(&base).source(PassBinding::MainSource).target(PassBinding::Output).dispatch_size(960, 540).build().expect("builds");
+	let cfg = ConfigBuilder::new(&base).source(PassBinding::Source).target(PassBinding::Output).dispatch_size(960, 540).build().expect("builds");
 	assert_eq!(cfg.width, 960);
 	assert_eq!(cfg.height, 540);
 	assert_eq!(cfg.outgoing_width, 1920);
@@ -76,7 +75,7 @@ fn dispatch_size_overrides_dest_dims() {
 #[test]
 fn missing_dest_is_rejected() {
 	let base = make_test_base();
-	let res = ConfigBuilder::new(&base).source(PassBinding::MainSource).build();
+	let res = ConfigBuilder::new(&base).source(PassBinding::Source).build();
 	assert_eq!(res.unwrap_err(), ConfigBuildError::MissingDest);
 }
 
@@ -99,11 +98,11 @@ fn mip_levels_are_propagated() {
 		bytes_per_pixel: 4,
 		pixel_layout: PixelLayout::Bgra,
 	};
-	base.outgoing_source = Some(pyramid_buf);
+	base.secondary_source = Some(pyramid_buf);
 	let cfg = ConfigBuilder::new(&base)
-		.outgoing(PassBinding::OutgoingSource)
-		.incoming(PassBinding::OutgoingSource)
-		.dest(PassBinding::Inline(pyramid_buf))
+		.source(PassBinding::Inline(pyramid_buf))
+		.input(PassBinding::Inline(pyramid_buf))
+		.target(PassBinding::Inline(pyramid_buf))
 		.dispatch_size(960, 540)
 		.mip_levels(5)
 		.build()

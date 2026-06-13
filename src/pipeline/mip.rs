@@ -135,7 +135,7 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 
 	#[cfg(gpu_backend = "metal")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		let buf = crate::gpu::backends::metal::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(config.device_handle), w, h, bpp, levels, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_mip_source: Metal allocator returned null");
@@ -148,7 +148,7 @@ pub unsafe fn prepare_mip_source(config: &mut Configuration, tag: u32) -> Result
 
 	#[cfg(gpu_backend = "cuda")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		// CUDA `allocate` calls `cuCtxSetCurrent` on whatever pointer it gets, so it
 		// needs the CUcontext (`context_handle`) — `device_handle` is a CUdevice
 		// ordinal here. Routing above guarantees `context_handle.is_some()`.
@@ -209,7 +209,7 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 
 	#[cfg(gpu_backend = "metal")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		let buf = crate::gpu::backends::metal::buffer::get_or_create(DeviceHandleInit::FromPtr(config.device_handle), w, h, bpp, tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_source_copy: Metal allocator returned null");
@@ -222,7 +222,7 @@ pub unsafe fn prepare_source_copy(config: &mut Configuration, tag: u32) -> Resul
 
 	#[cfg(gpu_backend = "cuda")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		let ctx = config.context_handle.expect("CUDA path requires context_handle");
 		let buf = crate::gpu::backends::cuda::buffer::get_or_create(DeviceHandleInit::FromPtr(ctx), w, h, bpp, tag);
 		if buf.buf.raw.is_null() {
@@ -293,7 +293,7 @@ pub unsafe fn prepare_source_snapshot(config: &mut Configuration, tag: u32) -> R
 
 	#[cfg(gpu_backend = "metal")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		let (buf, was_hit) = crate::gpu::backends::metal::buffer::get_or_create_returning_hit(DeviceHandleInit::FromPtr(config.device_handle), w, h, bpp, snapshot_tag);
 		if buf.buf.raw.is_null() {
 			return Err("prepare_source_snapshot: Metal allocator returned null");
@@ -308,7 +308,7 @@ pub unsafe fn prepare_source_snapshot(config: &mut Configuration, tag: u32) -> R
 
 	#[cfg(gpu_backend = "cuda")]
 	unsafe {
-		use crate::DeviceHandleInit;
+		use crate::types::DeviceHandleInit;
 		let ctx = config.context_handle.expect("CUDA path requires context_handle");
 		let (buf, was_hit) = crate::gpu::backends::cuda::buffer::get_or_create_returning_hit(DeviceHandleInit::FromPtr(ctx), w, h, bpp, snapshot_tag);
 		if buf.buf.raw.is_null() {

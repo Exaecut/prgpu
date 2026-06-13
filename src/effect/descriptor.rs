@@ -61,51 +61,17 @@ pub struct ExpansionExtent {
 	pub bottom: i32,
 }
 
-pub enum ExpansionSymmetry {
-	IndependentAxes { horizontal: i32, vertical: i32 },
-	Symmetric(i32),
-}
-
 impl ExpansionExtent {
-	pub const fn none() -> Self {
-		Self {
-			left: 0,
-			top: 0,
-			right: 0,
-			bottom: 0,
-		}
+	pub const NONE: Self = Self { left: 0, top: 0, right: 0, bottom: 0 };
+
+	/// Same inflation on all four sides.
+	pub const fn all(px: i32) -> Self {
+		Self { left: px, top: px, right: px, bottom: px }
 	}
 
-	pub const fn horizontal(px: i32) -> Self {
-		Self {
-			left: px,
-			top: 0,
-			right: px,
-			bottom: 0,
-		}
-	}
-
-	pub const fn vertical(px: i32) -> Self {
-		Self {
-			left: 0,
-			top: px,
-			right: 0,
-			bottom: px,
-		}
-	}
-
-	pub const fn ltrb(left: i32, top: i32, right: i32, bottom: i32) -> Self {
-		Self { left, top, right, bottom }
-	}
-
-	/// Symmetric per-side inflation with independent horizontal and vertical
-	/// extents: `horizontal` on left/right, `vertical` on top/bottom. For effects whose
-	/// X and Y growth differ (e.g. separate horizontal/vertical shake budgets).
-	pub const fn symetric(symetry: ExpansionSymmetry) -> Self {
-		match symetry {
-			ExpansionSymmetry::IndependentAxes { horizontal, vertical } => Self { left: horizontal, top: vertical, right: horizontal, bottom: vertical },
-			ExpansionSymmetry::Symmetric(px) => Self { left: px, top: px, right: px, bottom: px },
-		}
+	/// Independent horizontal (left/right) and vertical (top/bottom) inflation.
+	pub const fn axes(horizontal: i32, vertical: i32) -> Self {
+		Self { left: horizontal, top: vertical, right: horizontal, bottom: vertical }
 	}
 
 	pub fn is_zero(&self) -> bool {

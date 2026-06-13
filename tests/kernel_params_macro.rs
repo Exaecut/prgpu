@@ -50,7 +50,7 @@ fn kernel_params_emits_kernel_params_impl() {
 fn kernel_params_size_is_byte_stable_for_4xu32() {
 	// 4 × 4 bytes, vec4-aligned.
 	assert_eq!(SimpleScalarParams::SIZE, 16);
-	assert_eq!(SimpleScalarParams::ALIGN, 4);
+	assert_eq!(SimpleScalarParams::ALIGN, 16);
 }
 
 #[test]

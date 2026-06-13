@@ -125,8 +125,3 @@ pub unsafe fn cleanup() {
 		log::info!("[CUDA] Module cache cleared");
 	}
 }
-
-pub fn hot_reload() {
-	unsafe { cleanup() };
-	log::info!("[CUDA] Cache cleared.");
-}

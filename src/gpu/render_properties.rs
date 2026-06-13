@@ -63,7 +63,7 @@ impl<'a> GPURenderProperties<'a> {
 		};
 
 		// Use the output frame as source if the first input frame is missing.
-		let main_source = if !outgoing.is_null() {
+		let primary_source = if !outgoing.is_null() {
 			outgoing
 		} else if !out_frame.is_null() {
 			unsafe { *out_frame }
@@ -91,7 +91,7 @@ impl<'a> GPURenderProperties<'a> {
 		} as f32;
 
 		// Prefer a source that actually has GPU data.
-		let mut source = if !incoming.is_null() { incoming } else { main_source };
+		let mut source = if !incoming.is_null() { incoming } else { primary_source };
 		if filter.gpu_device_suite.gpu_ppix_data(source).is_err() {
 			if !out_frame.is_null() {
 				let out = unsafe { *out_frame };

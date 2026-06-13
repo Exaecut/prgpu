@@ -1,8 +1,7 @@
 //! Imperative graph-builder API.
 //!
 //! `RenderGraph<F>` is built once per effect-instance lifetime by an
-//! `Effect::pipeline` callback (Phase 11). The current Phase 4 surface
-//! exposes three declarations:
+//! `Effect::pipeline` callback. The surface exposes three declarations:
 //!
 //! - [`RenderGraph::declare_mip_pyramid`] — register a sized N-level mip
 //!   pyramid sized by a per-frame closure.
@@ -141,7 +140,7 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 					unsafe { kernel.dispatch_cpu_direct(config, params) };
 					Ok(())
 				}
-				crate::types::Backend::Cuda | crate::types::Backend::Metal | crate::types::Backend::OpenCL => unsafe { kernel.dispatch_gpu(config, params) },
+				crate::types::Backend::Cuda | crate::types::Backend::Metal => unsafe { kernel.dispatch_gpu(config, params) },
 			}
 		});
 
@@ -187,7 +186,7 @@ impl<F: Copy + Send + Sync + 'static> RenderGraph<F> {
 					unsafe { kernel.dispatch_cpu_direct(config, params) };
 					Ok(())
 				}
-				crate::types::Backend::Cuda | crate::types::Backend::Metal | crate::types::Backend::OpenCL => unsafe { kernel.dispatch_gpu(config, params) },
+				crate::types::Backend::Cuda | crate::types::Backend::Metal => unsafe { kernel.dispatch_gpu(config, params) },
 			}
 		});
 

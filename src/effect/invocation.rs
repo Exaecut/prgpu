@@ -111,9 +111,8 @@ pub struct InvocationBase {
 	pub ext_x: i32,
 	pub ext_y: i32,
 
-	pub main_source: FrameBinding,
-	pub incoming_source: Option<FrameBinding>,
-	pub outgoing_source: Option<FrameBinding>,
+	pub source: FrameBinding,
+	pub secondary_source: Option<FrameBinding>,
 	pub output: FrameBinding,
 }
 

@@ -19,7 +19,6 @@ pub struct GpuStructConfig {
 pub enum GpuTarget {
     Cuda,
     Metal,
-    OpenCL,
 }
 
 impl Default for GpuStructConfig {
@@ -59,12 +58,11 @@ impl Parse for GpuStructConfigParser {
                         match target.to_string().as_str() {
                             "cuda" => targets.push(GpuTarget::Cuda),
                             "metal" => targets.push(GpuTarget::Metal),
-                            "opencl" => targets.push(GpuTarget::OpenCL),
                             other => {
                                 return Err(syn::Error::new(
                                     target.span(),
-                                    format!("unknown GPU target '{other}'; valid: cuda, metal, opencl"),
-                                ));
+                                    format!("unknown GPU target '{other}'; valid: cuda, metal"),
+                                ))
                             }
                         }
                         if content.peek(Token![,]) {

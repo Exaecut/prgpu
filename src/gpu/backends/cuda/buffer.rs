@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::ffi::c_void;
 
 use crate::types::{compute_length_bytes, compute_row_bytes, mip_buffer_size_bytes, BufferKey, BufferObj, ImageBuffer};
-use crate::{Configuration, DeviceHandleInit};
+use crate::types::{Configuration, DeviceHandleInit};
 use after_effects::log;
 
 const MAX_GPU_BUFFER_ENTRIES: usize = 12;

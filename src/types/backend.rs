@@ -5,7 +5,16 @@ pub enum Backend {
 	Cpu,
 	Cuda,
 	Metal,
-    OpenCL
+}
+
+impl Backend {
+	pub(crate) fn from_premiere_framework(v: u32) -> Option<Backend> {
+		match v {
+			0 => Some(Backend::Cuda),
+			2 => Some(Backend::Metal),
+			_ => None,
+		}
+	}
 }
 
 impl Display for Backend {
@@ -14,7 +23,6 @@ impl Display for Backend {
            Backend::Cpu => "CPU",
            Backend::Cuda => "CUDA",
            Backend::Metal => "Metal",
-           Backend::OpenCL => "OpenCL"
         };
 
         f.write_str(str)

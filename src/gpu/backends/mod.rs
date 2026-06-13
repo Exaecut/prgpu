@@ -23,11 +23,6 @@ pub fn dispatch_kernel<UP>(
         return cuda::run::<UP>(config, user_params, shader_src, entry);
     }
 
-    #[cfg(gpu_backend = "opencl")]
-    {
-        unimplemented!("OpenCL backend not yet implemented");
-    }
-
     #[allow(unreachable_code)]
     Err("no GPU backend enabled")
 }

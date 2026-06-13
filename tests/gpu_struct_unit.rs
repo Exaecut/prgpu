@@ -1,6 +1,25 @@
 use prgpu::gpu_struct;
 
 #[gpu_struct]
+pub struct Vec2 {
+	pub x: f32,
+	pub y: f32,
+}
+
+#[gpu_struct]
+pub struct Vec3 {
+	pub x: f32,
+	pub y: f32,
+	pub z: f32,
+	pub _pad: f32,
+}
+
+#[gpu_struct]
+pub struct Transform {
+	pub m: [[f32; 4]; 4],
+}
+
+#[gpu_struct]
 pub struct Scalars {
     pub a: u32,
     pub b: f32,
@@ -57,8 +76,8 @@ fn test_array_struct() {
 
 #[gpu_struct]
 pub struct VectorFields {
-    pub pos: prgpu::Vec2,
-    pub dir: prgpu::Vec3,
+    pub pos: Vec2,
+    pub dir: Vec3,
 }
 
 #[test]
@@ -173,7 +192,7 @@ fn test_targets_attribute() {
 
 #[gpu_struct]
 pub struct TransformField {
-    pub transform: prgpu::Transform,
+    pub transform: Transform,
 }
 
 #[test]

@@ -9,7 +9,7 @@ pub mod fence;
 pub mod frame_scope;
 pub mod pipeline;
 
-use crate::{Configuration, FrameParams};
+use crate::types::{Configuration, FrameParams};
 
 #[inline]
 fn check(res: cuda::CUresult, what: &str) -> Result<(), &'static str> {

@@ -30,18 +30,6 @@
 ///
 /// Fields without `= ...` are zero-initialized padding; frame-level state belongs
 /// in `FrameParams`, not per-pass kernel params.
-///
-/// ```ignore
-/// prgpu::kernel_params! {
-///     VignetteParams for crate::params::Params {
-///         tint_r:     f32 = [color_r(Tint) / 255.0];
-///         scale_x:    f32 = [float(ScaleX)];
-///         anchor_x:   f32 = [point_pct_x(Anchor)];
-///         noise_phase:f32 = [angle(NoiseTimeOffset) * prgpu::params::DEG_TO_RAD];
-///         _pad0:      f32;
-///     }
-/// }
-/// ```
 #[macro_export]
 macro_rules! kernel_params {
     (
@@ -50,7 +38,7 @@ macro_rules! kernel_params {
         }
     ) => {
         // align = 16: kernel params are bound as a GPU ConstantBuffer, which
-        // Slang rounds up to 16 bytes on every backend (Metal/CUDA/OpenCL). The
+        // Slang rounds up to 16 bytes on every backend (Metal/CUDA). The
         // host upload must be that same size or Metal aborts in
         // validateComputeFunctionArguments. Without this floor an all-scalar
         // struct only gets 4-byte struct alignment, so any field count that
@@ -78,43 +66,44 @@ macro_rules! kernel_params {
             }
         };
 
-        impl $name {
-            pub fn from_gpu(
-                __filter: &::premiere::GpuFilterData,
-                __rp: &::premiere::RenderParams,
-                __width: f32,
-                __height: f32,
-            ) -> Self {
-                Self {
-                    $( $field: $crate::kernel_params!(@gpu $P, __filter, __rp, __width, __height $(, $($spec)+)?), )*
-                    // Zeroes any padding the gpu_struct alignment floor injects
-                    // (e.g. `_prgpu_pad_tail`); user fields above take precedence.
-                    ..<Self as ::bytemuck::Zeroable>::zeroed()
-                }
-            }
+		impl $name {
+			#[doc(hidden)]
+			pub fn from_gpu(
+				__filter: &::premiere::GpuFilterData,
+				__rp: &::premiere::RenderParams,
+				__width: f32,
+				__height: f32,
+			) -> Self {
+				Self {
+					$( $field: $crate::kernel_params!(@gpu $P, __filter, __rp, __width, __height $(, $($spec)+)?), )*
+					..<Self as ::bytemuck::Zeroable>::zeroed()
+				}
+			}
 
-            pub fn from_cpu(
-                __params: &::after_effects::Parameters<'_, $P>,
-                __width: f32,
-                __height: f32,
-                __is_premiere: bool,
-            ) -> ::core::result::Result<Self, ::after_effects::Error> {
-                use $crate::params::CpuParams as _;
-                Ok(Self {
-                    $( $field: $crate::kernel_params!(@cpu $P, __params, __width, __height, __is_premiere $(, $($spec)+)?), )*
-                    ..<Self as ::bytemuck::Zeroable>::zeroed()
-                })
-            }
+			#[doc(hidden)]
+			pub fn from_cpu(
+				__params: &::after_effects::Parameters<'_, $P>,
+				__width: f32,
+				__height: f32,
+				__is_premiere: bool,
+			) -> ::core::result::Result<Self, ::after_effects::Error> {
+				use $crate::params::CpuParams as _;
+				Ok(Self {
+					$( $field: $crate::kernel_params!(@cpu $P, __params, __width, __height, __is_premiere $(, $($spec)+)?), )*
+					..<Self as ::bytemuck::Zeroable>::zeroed()
+				})
+			}
 
-            /// Host-agnostic extraction. Picks `from_cpu` (AE) or `from_gpu`
-            /// (Premiere GPU) based on the active `FrameDataContext`.
-            pub fn from_context(
-                __ctx: &$crate::effect::FrameDataContext<'_, $P>,
-            ) -> ::core::result::Result<Self, ::after_effects::Error> {
-                __ctx.extract_kernel_params(Self::from_cpu, Self::from_gpu)
-            }
-        }
-    };
+			/// Host-agnostic extraction. Picks `from_cpu` (AE) or `from_gpu`
+			/// (Premiere GPU) based on the active `FrameDataContext`.
+			#[doc(hidden)]
+			pub fn from_context(
+				__ctx: &$crate::effect::FrameDataContext<'_, $P>,
+			) -> ::core::result::Result<Self, ::after_effects::Error> {
+				__ctx.extract_kernel_params(Self::from_cpu, Self::from_gpu)
+			}
+		}
+	};
 
 
     (@gpu $P:path, $f:ident, $rp:ident, $w:ident, $h:ident, $ext:ident($v:ident) / $($t:tt)+) => {
@@ -248,10 +237,9 @@ macro_rules! kernel_params {
 /// Declare a GPU kernel (CUDA + Metal) and its CPU fallback dispatch.
 ///
 /// `declare_kernel!(vignette, VignetteParams);` emits a per-kernel module
-/// (`vignette::*`) plus deprecated top-level aliases for backward compat:
+/// (`vignette::*`) containing the supported entry points:
 ///
 /// ```ignore
-/// // New API:
 /// vignette::SHADER_SRC          // shader bytes for the active backend
 /// vignette::ENTRY_POINT         // entry-point name
 /// vignette::gpu(cfg, params)    // GPU dispatch
@@ -259,11 +247,6 @@ macro_rules! kernel_params {
 /// vignette::CPU_DISPATCH        // raw C ABI fn pointer (per-pixel)
 /// vignette::CPU_DISPATCH_TILE   // raw C ABI fn pointer (tile)
 /// vignette::kernel()            // returns Kernel<VignetteParams>
-///
-/// // Legacy (deprecated, will be removed):
-/// vignette(cfg, params)
-/// vignette_cpu(...)
-/// VIGNETTE_CPU_DISPATCH / VIGNETTE_CPU_DISPATCH_TILE
 /// ```
 ///
 /// The generated `kernel()` constructor returns a [`crate::kernel::Kernel`] that
@@ -289,6 +272,7 @@ macro_rules! declare_kernel {
 			pub const ENTRY_POINT: &str = stringify!($name);
 
 			$crate::paste::paste! {
+				#[doc(hidden)]
 				unsafe extern "C" {
 					pub fn [<$name _cpu_dispatch>](
 						gid_x: u32,
@@ -309,7 +293,9 @@ macro_rules! declare_kernel {
 					);
 				}
 
+				#[doc(hidden)]
 				pub const CPU_DISPATCH: $crate::cpu::render::CpuDispatchFn = [<$name _cpu_dispatch>];
+				#[doc(hidden)]
 				pub const CPU_DISPATCH_TILE: $crate::cpu::render::CpuDispatchTileFn = [<$name _cpu_dispatch_tile>];
 			}
 
@@ -317,13 +303,15 @@ macro_rules! declare_kernel {
 			/// `config` must satisfy the prgpu `Configuration` buffer/pitch contract
 			/// (non-null `dest_data`, valid GPU handles, dimensions consistent with
 			/// the bound buffers). Caller is responsible for synchronisation.
+			#[doc(hidden)]
 			pub unsafe fn gpu(
 				config: &$crate::types::Configuration,
 				user_params: $user_params_ty,
 			) -> Result<(), &'static str> {
-				$crate::backends::dispatch_kernel::<$user_params_ty>(config, user_params, SHADER_SRC, ENTRY_POINT)
+				$crate::gpu::backends::dispatch_kernel::<$user_params_ty>(config, user_params, SHADER_SRC, ENTRY_POINT)
 			}
 
+			#[doc(hidden)]
 			pub fn cpu(
 				in_data: &after_effects::InData,
 				in_layer: &after_effects::Layer,
@@ -355,37 +343,6 @@ macro_rules! declare_kernel {
 					gpu,
 					cpu,
 				)
-			}
-		}
-
-		$crate::paste::paste! {
-			#[allow(non_upper_case_globals)]
-			pub const [<$name:upper _CPU_DISPATCH>]: $crate::cpu::render::CpuDispatchFn = $name::CPU_DISPATCH;
-
-			#[allow(non_upper_case_globals)]
-			pub const [<$name:upper _CPU_DISPATCH_TILE>]: $crate::cpu::render::CpuDispatchTileFn = $name::CPU_DISPATCH_TILE;
-		}
-
-		#[deprecated(note = "use `<name>::gpu` or `<name>::kernel()` for graph execution")]
-		#[allow(dead_code)]
-		pub unsafe fn $name(
-			config: &$crate::types::Configuration,
-			user_params: $user_params_ty,
-		) -> Result<(), &'static str> {
-			unsafe { $name::gpu(config, user_params) }
-		}
-
-		$crate::paste::paste! {
-			#[deprecated(note = "use `<name>::cpu` or `<name>::kernel()` for graph execution")]
-			#[allow(dead_code)]
-			pub fn [<$name _cpu>](
-				in_data: &after_effects::InData,
-				in_layer: &after_effects::Layer,
-				out_layer: &mut after_effects::Layer,
-				config: &$crate::types::Configuration,
-				user_params: $user_params_ty,
-			) -> Result<(), after_effects::Error> {
-				$name::cpu(in_data, in_layer, out_layer, config, user_params)
 			}
 		}
 	};

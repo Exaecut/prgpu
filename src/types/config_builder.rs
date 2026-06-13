@@ -6,9 +6,7 @@
 //! `cfg.outgoing_data = ...; cfg.dest_pitch_px = ...;` etc. across every
 //! kernel call.
 //!
-//! For now this is a thin builder over the existing [`Configuration`] ABI;
-//! Phase 4-5 (the graph executor) is the primary consumer. Manual
-//! construction stays available via `Configuration::cpu` /
+//! Manual construction stays available via `Configuration::cpu` /
 //! `Configuration::effect` for code that hasn't migrated yet.
 
 use crate::effect::{FrameBinding, InvocationBase, PixelLayout};
@@ -26,9 +24,7 @@ pub enum ConfigBuildError {
 #[derive(Debug, Clone, Copy)]
 pub enum PassBinding {
 	Output,
-	MainSource,
-	OutgoingSource,
-	IncomingSource,
+	Source,
 	Inline(FrameBinding),
 	Null,
 }
@@ -70,31 +66,19 @@ impl<'a> ConfigBuilder<'a> {
 		}
 	}
 
-	pub fn outgoing(mut self, binding: PassBinding) -> Self {
+	pub fn source(mut self, binding: PassBinding) -> Self {
 		self.outgoing = Some(binding);
 		self
 	}
 
-	pub fn incoming(mut self, binding: PassBinding) -> Self {
+	pub fn input(mut self, binding: PassBinding) -> Self {
 		self.incoming = Some(binding);
 		self
 	}
 
-	pub fn dest(mut self, binding: PassBinding) -> Self {
+	pub fn target(mut self, binding: PassBinding) -> Self {
 		self.dest = Some(binding);
 		self
-	}
-
-	pub fn source(self, binding: PassBinding) -> Self {
-		self.outgoing(binding)
-	}
-
-	pub fn input(self, binding: PassBinding) -> Self {
-		self.incoming(binding)
-	}
-
-	pub fn target(self, binding: PassBinding) -> Self {
-		self.dest(binding)
 	}
 
 	pub fn dispatch_size(mut self, width: u32, height: u32) -> Self {
@@ -157,8 +141,8 @@ impl<'a> ConfigBuilder<'a> {
 			outgoing_mip_levels,
 			canvas_width: self.base.output.width,
 			canvas_height: self.base.output.height,
-			layer_width: self.base.main_source.width,
-			layer_height: self.base.main_source.height,
+			layer_width: self.base.source.width,
+			layer_height: self.base.source.height,
 			ext_x: self.base.ext_x,
 			ext_y: self.base.ext_y,
 		})
@@ -167,9 +151,7 @@ impl<'a> ConfigBuilder<'a> {
 	fn resolve(&self, binding: PassBinding) -> FrameBinding {
 		match binding {
 			PassBinding::Output => self.base.output,
-			PassBinding::MainSource => self.base.main_source,
-			PassBinding::OutgoingSource => self.base.outgoing_source.unwrap_or(self.base.main_source),
-			PassBinding::IncomingSource => self.base.incoming_source.unwrap_or(self.base.main_source),
+			PassBinding::Source => self.base.source,
 			PassBinding::Inline(b) => b,
 			PassBinding::Null => FrameBinding::null(self.base.bytes_per_pixel, PixelLayout::Bgra),
 		}

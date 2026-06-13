@@ -34,7 +34,10 @@ include = [
 [features]
 default = ["cargo-clippy"]
 cargo-clippy = []
-shader_hotreload = ["cudarc/nvrtc"]
+# Kept as a no-op in Phase 1 so other workspace effects still resolve.
+# The underlying functionality was removed; the feature will be deleted once
+# all effects stop referencing it.
+shader_hotreload = []
 build = ["dep:cc", "dep:serde", "dep:serde_json", "dep:ureq", "dep:tar", "dep:flate2", "dep:fs2"]
 timing = []
 bench = ["dep:criterion"]
@@ -64,7 +67,6 @@ objc = "0.2.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
-opencl3 = "0.12.1"
 
 [build-dependencies]
 cc = "1"
@@ -77,14 +79,12 @@ fs2 = "0.4"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }
-opencl3 = "0.12.1"
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
-opencl3 = "0.12.1"
 
 [dev-dependencies]
 trybuild = "1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(shader_hotreload)", "cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

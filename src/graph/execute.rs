@@ -49,12 +49,11 @@ impl AllocatedResource {
 /// render to surface as an effect-level error rather than producing a
 /// partial output.
 ///
-/// Source-snapshot policy is evaluated up front: the default `Auto` copies
-/// `main_source` into a private buffer when the host signals
-/// `Capability::SourceOutputMayAlias` and a pass reads `MainSource` while
+/// `Source` into a private buffer when the host signals
+/// `Capability::SourceOutputMayAlias` and a pass reads `Source` while
 /// writing `Output`; `SnapshotIfAliased { tag }` does the same with a caller
 /// tag; `AlwaysSnapshot` skips the capability check; `Direct` never copies.
-/// When a snapshot is taken the executor rebinds `base.main_source` to it for
+/// When a snapshot is taken the executor rebinds `base.source` to it for
 /// the rest of the graph.
 pub fn execute<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
 where
@@ -70,29 +69,29 @@ where
 		let desc = (decl.desc_fn)(&ctx);
 		let buffer = match local_base.backend {
 			Backend::Cpu => cpu_buffer::get_or_create_with_mips(desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag),
-			Backend::Cuda | Backend::Metal | Backend::OpenCL => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(local_base.device_handle), desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
+			Backend::Cuda | Backend::Metal => unsafe { crate::gpu::buffer::get_or_create_with_mips(DeviceHandleInit::FromPtr(local_base.device_handle), desc.base_width, desc.base_height, local_base.bytes_per_pixel, desc.levels.max(1), desc.tag) },
 		};
 		if buffer.buf.raw.is_null() {
 			return Err(GraphError::ResourceAllocFailed { name: decl.name });
 		}
 
-		if desc.populate_from_source && !local_base.main_source.is_null() {
+		if desc.populate_from_source && !local_base.source.is_null() {
 			let mut tmp_cfg = Configuration {
 				device_handle: local_base.device_handle,
 				context_handle: local_base.context_handle,
 				command_queue_handle: local_base.command_queue_handle,
-				outgoing_data: Some(local_base.main_source.data),
-				incoming_data: Some(local_base.main_source.data),
+				outgoing_data: Some(local_base.source.data),
+				incoming_data: Some(local_base.source.data),
 				dest_data: buffer.buf.raw,
-				outgoing_pitch_px: local_base.main_source.pitch_px,
-				incoming_pitch_px: local_base.main_source.pitch_px,
+				outgoing_pitch_px: local_base.source.pitch_px,
+				incoming_pitch_px: local_base.source.pitch_px,
 				dest_pitch_px: buffer.pitch_px as i32,
 				width: desc.base_width,
 				height: desc.base_height,
-				outgoing_width: local_base.main_source.width,
-				outgoing_height: local_base.main_source.height,
-				incoming_width: local_base.main_source.width,
-				incoming_height: local_base.main_source.height,
+				outgoing_width: local_base.source.width,
+				outgoing_height: local_base.source.height,
+				incoming_width: local_base.source.width,
+				incoming_height: local_base.source.height,
 				bytes_per_pixel: local_base.bytes_per_pixel,
 				time: local_base.time,
 				progress: local_base.progress,
@@ -103,8 +102,8 @@ where
 				outgoing_mip_levels: desc.levels,
 				canvas_width: local_base.output.width,
 				canvas_height: local_base.output.height,
-				layer_width: local_base.main_source.width,
-				layer_height: local_base.main_source.height,
+				layer_width: local_base.source.width,
+				layer_height: local_base.source.height,
 				ext_x: local_base.ext_x,
 				ext_y: local_base.ext_y,
 			};
@@ -155,9 +154,8 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 		render_generation: base.render_generation,
 		ext_x: base.ext_x,
 		ext_y: base.ext_y,
-		main_source: base.main_source,
-		incoming_source: base.incoming_source,
-		outgoing_source: base.outgoing_source,
+		source: base.source,
+		secondary_source: base.secondary_source,
 		output: base.output,
 	}
 }
@@ -169,7 +167,7 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 fn graph_samples_source_into_output<F: Copy + Send + Sync + 'static>(graph: &RenderGraph<F>) -> bool {
 	graph.passes.iter().any(|pass| match pass {
 		PassDecl::Single(p) => {
-			let reads_source = matches!(p.source, Slot::MainSource) || matches!(p.input, Some(Slot::MainSource));
+			let reads_source = matches!(p.source, Slot::Source) || matches!(p.input, Some(Slot::Source));
 			reads_source && matches!(p.target, Slot::Output)
 		}
 		PassDecl::MipChain(_) => false,
@@ -194,7 +192,7 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 		SourcePolicy::AlwaysSnapshot { tag } => tag,
 	};
 
-	if base.main_source.is_null() {
+	if base.source.is_null() {
 		return Ok(None);
 	}
 
@@ -202,18 +200,18 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 		device_handle: base.device_handle,
 		context_handle: base.context_handle,
 		command_queue_handle: base.command_queue_handle,
-		outgoing_data: Some(base.main_source.data),
-		incoming_data: Some(base.main_source.data),
+		outgoing_data: Some(base.source.data),
+		incoming_data: Some(base.source.data),
 		dest_data: base.output.data,
-		outgoing_pitch_px: base.main_source.pitch_px,
-		incoming_pitch_px: base.main_source.pitch_px,
+		outgoing_pitch_px: base.source.pitch_px,
+		incoming_pitch_px: base.source.pitch_px,
 		dest_pitch_px: base.output.pitch_px,
-		width: base.main_source.width,
-		height: base.main_source.height,
-		outgoing_width: base.main_source.width,
-		outgoing_height: base.main_source.height,
-		incoming_width: base.main_source.width,
-		incoming_height: base.main_source.height,
+		width: base.source.width,
+		height: base.source.height,
+		outgoing_width: base.source.width,
+		outgoing_height: base.source.height,
+		incoming_width: base.source.width,
+		incoming_height: base.source.height,
 		bytes_per_pixel: base.bytes_per_pixel,
 		time: base.time,
 		progress: base.progress,
@@ -224,15 +222,15 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 		outgoing_mip_levels: 0,
 		canvas_width: base.output.width,
 		canvas_height: base.output.height,
-		layer_width: base.main_source.width,
-		layer_height: base.main_source.height,
+		layer_width: base.source.width,
+		layer_height: base.source.height,
 		ext_x: base.ext_x,
 		ext_y: base.ext_y,
 	};
 
 	let snapshot = unsafe { mip::prepare_source_copy(&mut tmp_cfg, tag) }.map_err(|m| GraphError::KernelDispatch { pass: "source_snapshot", message: m })?;
 
-	base.main_source = FrameBinding {
+	base.source = FrameBinding {
 		data: snapshot.buf.raw,
 		pitch_px: snapshot.pitch_px as i32,
 		width: snapshot.width,
@@ -246,12 +244,6 @@ fn apply_source_policy(base: &mut InvocationBase, policy: SourcePolicy, auto_sna
 }
 
 /// Backwards-compat alias kept for tests written before the unified executor.
-pub fn execute_cpu<F>(graph: &RenderGraph<F>, frame_data: &F, base: &InvocationBase) -> Result<(), GraphError>
-where
-	F: Copy + Send + Sync + 'static,
-{
-	execute(graph, frame_data, base)
-}
 
 fn execute_single<F>(pass: &SinglePassDecl<F>, frame_data: &F, base: &InvocationBase, resources: &[AllocatedResource]) -> Result<(), GraphError>
 where
@@ -304,9 +296,9 @@ where
 		let dst_h = (binding.height >> dst_lod).max(1);
 
 		let config = ConfigBuilder::new(base)
-			.outgoing(PassBinding::Inline(binding))
-			.incoming(PassBinding::Inline(binding))
-			.dest(PassBinding::Inline(binding))
+			.source(PassBinding::Inline(binding))
+			.input(PassBinding::Inline(binding))
+			.target(PassBinding::Inline(binding))
 			.dispatch_size(dst_w, dst_h)
 			.mip_levels(levels)
 			.build()
@@ -320,7 +312,7 @@ where
 
 fn resolve_slot(slot: Slot, base: &InvocationBase, resources: &[AllocatedResource], pass_name: Option<&'static str>) -> Result<FrameBinding, GraphError> {
 	match slot {
-		Slot::MainSource => Ok(base.main_source),
+		Slot::Source => Ok(base.source),
 		Slot::Output => Ok(base.output),
 		Slot::Inline(b) => Ok(b),
 		Slot::ResourceWhole(id) => {

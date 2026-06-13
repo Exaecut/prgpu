@@ -5,11 +5,6 @@
 //! flips and AEGP dynamic-stream toggles inside `handle_command`. The adapter
 //! evaluates the registered predicates on every UI tick and pushes the
 //! resulting `INVISIBLE` / `Hidden` flags through both surfaces.
-//!
-//! The current Phase 8 surface is intentionally minimal — it lets effects
-//! declare `(parameter, predicate)` pairs and `(parameter, on_click)` pairs.
-//! The Effect-trait wiring (Phase 11) hands a `&mut ParamApi<P>` to
-//! `Effect::params` so authors can call the builder methods.
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -19,27 +14,17 @@ use after_effects::{InData, OutData, Parameters};
 use crate::effect::HostCapabilities;
 use crate::params::SetupParams;
 
-/// Click-action callback signature. The `ActionContext` carries side-effects
-/// the action wants to trigger — currently just a `hot_reload_shaders` flag
-/// and an opaque error channel; it'll grow as more side-effects need to be
-/// representable in a host-agnostic way.
+/// Click-action callback signature. The `ActionContext` carries adapter-managed
+/// side effects; more can be added as the API grows.
 pub type ActionCallback = Box<dyn Fn(&mut ActionContext) -> Result<(), &'static str> + Send + Sync + 'static>;
 
 /// Side-effects an action callback can request from the adapter.
-pub struct ActionContext {
-	pub(crate) hot_reload_shaders: bool,
-}
+/// Currently empty; reserved for future adapter-managed side effects.
+pub struct ActionContext;
 
 impl ActionContext {
 	pub(crate) fn new() -> Self {
-		Self { hot_reload_shaders: false }
-	}
-
-	/// Request a GPU shader hot-reload after the action returns. Adapter
-	/// inspects this flag and calls `prgpu::gpu::pipeline::hot_reload()`
-	/// if set; effect authors stop calling it directly.
-	pub fn hot_reload_shaders(&mut self) {
-		self.hot_reload_shaders = true;
+		Self
 	}
 }
 

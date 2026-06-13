@@ -127,7 +127,7 @@ pub unsafe fn load_kernel(device: *mut Object, metallib_bytes: &[u8], fname: &st
         guard.insert(key, Pipeline { pso });
     }
 
-    log::info!("[Metal] Built pipeline for device={device:p} entry='{fname}'");
+	log::info!("[Metal] Built pipeline for device={device:p} entry='{fname}'");
     Ok(pso)
 }
 
@@ -141,9 +141,4 @@ pub unsafe fn cleanup() {
         }
         log::info!("[Metal] Pipeline cache cleared");
     }
-}
-
-pub fn hot_reload() {
-    unsafe { cleanup() };
-    log::info!("[Metal] Cache cleared.");
 }

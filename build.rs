@@ -22,9 +22,9 @@ fn main() {
 	let backend = if is_apple {
 		"metal"
 	} else if is_windows {
-		if env::var_os("CARGO_FEATURE_OPENCL").is_some() { "opencl" } else { "cuda" }
+		"cuda"
 	} else {
-		"other"
+		"none"
 	};
 
 	let backend = if let Ok(overridden) = env::var("GPU_BACKEND") {
@@ -33,17 +33,10 @@ fn main() {
 		backend
 	};
 
-	println!("cargo:rustc-check-cfg=cfg(gpu_backend, values(\"metal\", \"cuda\", \"opencl\", \"other\"))");
-	println!("cargo:rustc-cfg=with_premiere");
+	println!("cargo:rustc-check-cfg=cfg(gpu_backend, values(\"metal\", \"cuda\", \"none\"))");
 	println!("cargo:rustc-cfg=gpu_backend=\"{}\"", backend);
 
-	// Shader hot-reload Cargo feature gates the cudarc/nvrtc dep, so it must be checked here.
-	if env::var_os("CARGO_FEATURE_SHADER_HOTRELOAD").is_some() {
-		println!("cargo:rustc-cfg=shader_hotreload");
-	}
-
 	println!("cargo:rerun-if-env-changed=GPU_BACKEND");
-	println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENCL");
 	println!("cargo:rerun-if-changed=build.rs");
 
 	// Compile prgpu's built-in shaders into OUT_DIR; metallib/ptx is picked up by include_shader!, CPU bridge is linked into prgpu_slang_cpu.a.

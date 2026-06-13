@@ -139,6 +139,6 @@ pub unsafe fn cleanup() {
                 let _: () = msg_send![p.pso, release];
             }
         }
-        log::info!("[Metal] Pipeline cache cleared");
+        log::debug!("[Metal] Pipeline cache cleared");
     }
 }

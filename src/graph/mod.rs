@@ -1,8 +1,5 @@
-//! Declarative render-graph layer.
-//!
-//! `Graph<P>` lets an effect describe its multi-pass pipeline once in terms
-//! of resources (mip pyramids), single passes, and mip-chain sweeps. The
-//! executor runs the graph against a per-frame `Ctx<P>`.
+//! Declarative multi-pass graph. [`Graph::pass`](Graph::pass) declares a
+//! kernel invocation; [`Graph::mip_chain`](Graph::mip_chain) sweeps a pyramid.
 
 pub mod execute;
 pub mod pass;

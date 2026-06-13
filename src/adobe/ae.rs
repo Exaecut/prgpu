@@ -573,56 +573,56 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 					return Ok(());
 				}
 
-				log::info!(
-					"Quality: {:?} | Bit depth: {} | Resolution: {}x{}x{}(stride) | World Type: {:?} | Pixel Format: {:?}",
-					in_data.quality(),
-					out_layer.bit_depth(),
-					out_layer.width(),
-					out_layer.height(),
-					out_layer.buffer_stride(),
-					out_layer.world_type(),
-					out_layer.pixel_format()
-				);
+		log::debug!(
+			"Quality: {:?} | Bit depth: {} | Resolution: {}x{}x{}(stride) | World Type: {:?} | Pixel Format: {:?}",
+			in_data.quality(),
+			out_layer.bit_depth(),
+			out_layer.width(),
+			out_layer.height(),
+			out_layer.buffer_stride(),
+			out_layer.world_type(),
+			out_layer.pixel_format()
+		);
 
-				{
-					let dbg_bpp =
-						crate::cpu::render::compute_bpp(&in_data, &out_layer).unwrap_or(0);
-					let dbg_layout =
-						crate::cpu::render::pixel_layout_from_format(&in_data, &in_layer);
-					let pr_fmt = in_layer.pr_pixel_format();
-					let src_pitch_px = if dbg_bpp > 0 {
-						in_layer.buffer_stride() as i32 / dbg_bpp as i32
-					} else {
-						0
-					};
-					let dst_pitch_px = if dbg_bpp > 0 {
-						out_layer.buffer_stride() as i32 / dbg_bpp as i32
-					} else {
-						0
-					};
-					let t_sec = canonical_time_seconds(&in_data);
-					let local_t_sec = if in_data.time_scale() != 0 {
-						in_data.current_time() as f32 / in_data.time_scale() as f32
-					} else {
-						0.0
-					};
-					let head = {
-						let buf = in_layer.buffer();
-						let n = (dbg_bpp as usize).min(buf.len());
-						buf[..n]
-							.iter()
-							.map(|b| format!("{:02x}", *b))
-							.collect::<Vec<_>>()
-							.join(" ")
-					};
-					log::info!(
-						"[CPU] computed bpp={dbg_bpp} layout={dbg_layout}(0=RGBA,1=BGRA) flip_y={fy} pr_pixel_format={pr_fmt:?} src_pitch_px={src_pitch_px} dst_pitch_px={dst_pitch_px} t_sec={t_sec:.4} local_t_sec={local_t_sec:.4} current_time={ct} time_step={ts} time_scale={tsc} first_px_bytes=[{head}]",
-						fy = in_data.is_premiere() as u32,
-						ct = in_data.current_time(),
-						ts = in_data.time_step(),
-						tsc = in_data.time_scale(),
-					);
-				}
+		if log::log_enabled!(log::Level::Debug) {
+			let dbg_bpp =
+				crate::cpu::render::compute_bpp(&in_data, &out_layer).unwrap_or(0);
+			let dbg_layout =
+				crate::cpu::render::pixel_layout_from_format(&in_data, &in_layer);
+			let pr_fmt = in_layer.pr_pixel_format();
+			let src_pitch_px = if dbg_bpp > 0 {
+				in_layer.buffer_stride() as i32 / dbg_bpp as i32
+			} else {
+				0
+			};
+			let dst_pitch_px = if dbg_bpp > 0 {
+				out_layer.buffer_stride() as i32 / dbg_bpp as i32
+			} else {
+				0
+			};
+			let t_sec = canonical_time_seconds(&in_data);
+			let local_t_sec = if in_data.time_scale() != 0 {
+				in_data.current_time() as f32 / in_data.time_scale() as f32
+			} else {
+				0.0
+			};
+			let head = {
+				let buf = in_layer.buffer();
+				let n = (dbg_bpp as usize).min(buf.len());
+				buf[..n]
+					.iter()
+					.map(|b| format!("{:02x}", *b))
+					.collect::<Vec<_>>()
+					.join(" ")
+			};
+			log::debug!(
+				"[CPU] computed bpp={dbg_bpp} layout={dbg_layout}(0=RGBA,1=BGRA) flip_y={fy} pr_pixel_format={pr_fmt:?} src_pitch_px={src_pitch_px} dst_pitch_px={dst_pitch_px} t_sec={t_sec:.4} local_t_sec={local_t_sec:.4} current_time={ct} time_step={ts} time_scale={tsc} first_px_bytes=[{head}]",
+				fy = in_data.is_premiere() as u32,
+				ct = in_data.current_time(),
+				ts = in_data.time_step(),
+				tsc = in_data.time_scale(),
+			);
+		}
 
 				let frame_state = in_data
 					.frame_data::<FrameState<E::Params>>()

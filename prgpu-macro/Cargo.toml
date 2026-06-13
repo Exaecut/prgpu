@@ -1,6 +1,6 @@
 [package]
 name = "prgpu-macro"
-version = "0.1.18"
+version = "0.2.0"
 edition = "2024"
 authors = ["Marvin Cano <marvin.cano@exaecut.io>"]
 description = "Procedural macros for prgpu — GPU struct layout / ABI codegen"

@@ -1,9 +1,5 @@
-//! Effect-side public API.
-//!
-//! Effect authors implement [`Effect`] once and let the adapters (AE / Premiere)
-//! handle host-specific wiring. The prelude collects the symbols needed for a
-//! typical effect definition; the submodules expose the normalised host-capability
-//! and invocation surface the adapters and graph executor build on.
+//! Effect authoring surface: implement [`Effect`], call
+//! [`register_effect!`](crate::register_effect), done.
 
 pub mod host;
 pub use host::{Capability, Host, HostCapabilities, RenderKind};

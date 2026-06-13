@@ -282,7 +282,7 @@ impl<E: Effect, L: LicenseGate> pr::GpuFilter for GpuFilterAdapter<E, L> {
 			_ => "?",
 		};
 
-		log::info!(
+		log::debug!(
 			"[GPU] frame {frame_index} t_sec={time_seconds:.4} frame.time={frame_time} canvas={w}x{h} layer={lw}x{lh} ext=({ex},{ey}) bpp={bpp} storage={storage_tag}({storage_label}) layout={layout}(0=RGBA,1=BGRA) pixel_format={pf:?} half_precision={half} src_pitch_px={src_pitch} dst_pitch_px={dst_pitch} seq_time={seq} clip_time={clip} ticks_per_frame={tpf} quality={quality:?}",
 			frame_time = base_cfg.time,
 			lw = base_cfg.layer_width,

@@ -92,6 +92,19 @@ pub fn resolve_include_dirs(
 		include_dirs.push(extra.to_path_buf());
 	}
 
+	// vekl bundled inside the consuming crate itself. A published crate ships
+	// its own copy (prgpu's `include` list bundles vekl/**), and this is the
+	// layout `cargo publish` verify sees at target/package/<crate>-<ver>/vekl.
+	// Must be checked before the sibling/prgpu-build-relative fallbacks because
+	// during verify CARGO_MANIFEST_DIR is the extracted tarball, not a workspace.
+	if let Ok(consumer_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+		let bundled = PathBuf::from(&consumer_dir).join("vekl");
+		if bundled.is_dir() {
+			include_dirs.push(bundled);
+			return Ok(include_dirs);
+		}
+	}
+
 	// 1. Consumer workspace sibling: CARGO_MANIFEST_DIR at build-script runtime
 	//    is the consuming crate's manifest dir.
 	if let Ok(consumer_dir) = std::env::var("CARGO_MANIFEST_DIR") {

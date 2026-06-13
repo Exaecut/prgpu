@@ -1,11 +1,8 @@
-name: Publish prgpu + prgpu-macro to crates.io
+name: Publish prgpu crates to crates.io
 
 on:
   push:
     branches: [main, master]
-    paths:
-      - 'Cargo.toml'
-      - 'prgpu-macro/Cargo.toml'
   workflow_dispatch:
 
 concurrency:
@@ -20,7 +17,7 @@ jobs:
     # #[cfg(target_os)]-gated to macOS + Windows only — verify fails on Linux.
     runs-on: macos-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,83 +40,111 @@ jobs:
           git clone --depth 1 https://github.com/Exaecut/vekl.git vekl
           rm -rf vekl/.git
 
+      - name: Bump workspace version from commit message
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Re-runs land on the [skip ci] release commit we pushed last time;
+          # don't bump again — just let the publish step ship those versions.
+          subject="$(git log -1 --pretty=%s)"
+          case "$subject" in
+            "chore(release): "*)
+              echo "HEAD is already a release commit — skipping bump."
+              exit 0
+              ;;
+          esac
+
+          # patch by default; a `minor:`/`major:` commit-subject prefix escalates.
+          case "$subject" in
+            major:*) kind=major ;;
+            minor:*) kind=minor ;;
+            *)       kind=patch ;;
+          esac
+
+          new="$(bash scripts/bump-versions.sh "$kind")"
+
+          # Reconcile the tracked Cargo.lock with the new member versions
+          # without disturbing external dependencies.
+          cargo metadata --no-deps --format-version 1 >/dev/null
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- Cargo.toml Cargo.lock 'prgpu-*/Cargo.toml'
+          git commit -m "chore(release): prgpu v$new [skip ci]"
+          # GITHUB_TOKEN pushes don't retrigger CI; the [skip ci] tag is belt-and-suspenders.
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
       - name: Publish crates whose on-disk version isn't on crates.io yet
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Extract `version = "X.Y.Z"` from a Cargo.toml on disk.
-          version_of() {
-            local file="$1"
-            awk -F'"' '/^version = "/ { print $2; exit }' "$file"
-          }
+          UA='exaecut-publish-ci (marvin.cano@exaecut.io)'
 
-          # Probe crates.io with a User-Agent that their API prefers
-          # (plain curl has been observed to return 403 in some regions).
-          # Returns 0 if the <pkg>@<version> is on crates.io, else 1.
+          # Returns 0 if <pkg>@<version> is already on crates.io, else 1.
+          # crates.io 403s plain curl in some regions, so send a real UA.
+          # `|| true` keeps a transient network blip from aborting the run under
+          # `set -e`; a non-200 just means "treat as not live" and cargo's own
+          # check plus the retry loop catch any false negative.
           already_published() {
-            local pkg="$1" version="$2"
-            local code
-            code=$(curl -s -o /dev/null -w '%{http_code}' \
-              -A 'exaecut-publish-ci (marvin.cano@exaecut.io)' \
-              "https://crates.io/api/v1/crates/$pkg/$version")
+            local pkg="$1" version="$2" code
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A "$UA" \
+              "https://crates.io/api/v1/crates/$pkg/$version" || true)
             [[ "$code" == "200" ]]
           }
 
-          # Try to publish once. Return 0 on success OR if cargo itself says
-          # the version is already live (idempotent success). Return 1 only
-          # on a real transient error.
-          try_publish() {
-            local pkg="$1" version="$2"
-            local output exit_code
-            output=$(cargo publish -p "$pkg" --allow-dirty 2>&1) && exit_code=0 || exit_code=$?
-            printf '%s\n' "$output"
-            if [[ "$exit_code" -eq 0 ]]; then
-              return 0
-            fi
-            if printf '%s' "$output" | grep -q "already exists on crates.io index"; then
-              echo "::notice::$pkg v$version already on crates.io — idempotent success"
-              return 0
-            fi
-            return 1
+          # Emit "name version" for every publishable workspace member.
+          # publish == null means publishable anywhere; an empty array means
+          # `publish = false`. Hardcoding no crate names keeps this generic as
+          # the workspace grows.
+          publishable_members() {
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[]
+                  | select(.publish == null or (.publish | index("crates-io")))
+                  | "\(.name) \(.version)"'
           }
 
-          publish_if_needed() {
-            local pkg="$1" manifest_path="$2"
-            local v
-            v=$(version_of "$manifest_path" || true)
-            if [[ -z "$v" ]]; then
-              echo "::warning::$pkg: no version in $manifest_path, skipping"
-              return 0
-            fi
-            if already_published "$pkg" "$v"; then
-              echo "$pkg v$v: already on crates.io, skipping"
-              return 0
-            fi
-            echo "::notice::Publishing $pkg v$v"
-            local attempt
-            for attempt in 1 2 3 4; do
-              if [[ "$attempt" -gt 1 ]]; then
-                echo "::warning::$pkg v$v attempt $attempt after 60s sleep"
-                sleep 60
+          # Populate the PENDING array with `-p <name>` for each member whose
+          # on-disk version is not yet live. Recomputed every attempt so a
+          # mid-batch failure self-heals: already-uploaded crates drop out.
+          collect_pending() {
+            local name version
+            PENDING=()
+            while read -r name version; do
+              [[ -z "$name" ]] && continue
+              if already_published "$name" "$version"; then
+                echo "$name v$version: already on crates.io, skipping"
+              else
+                echo "::notice::$name v$version queued for publish"
+                PENDING+=( -p "$name" )
               fi
-              if try_publish "$pkg" "$v"; then
-                return 0
-              fi
-            done
-            echo "::error::$pkg v$v publish failed after 4 attempts"
-            return 1
+            done < <(publishable_members)
           }
 
-          # Order: prgpu-macro first (prgpu depends on it).
-          publish_if_needed prgpu-macro prgpu-macro/Cargo.toml
-
-          # Only wait on the index if we actually uploaded something new;
-          # `already_published` or the "already exists" short-circuit skip
-          # this sleep on no-op re-runs.
-          if ! already_published prgpu "$(version_of Cargo.toml)"; then
+          # Cargo (>=1.90) publishes a multi-`-p` set in dependency order and
+          # waits for the crates.io index between uploads, so prgpu-build/
+          # prgpu-macro land and propagate before prgpu's verify resolves them.
+          # No manual ordering or index sleeps required.
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            collect_pending
+            if [[ ${#PENDING[@]} -eq 0 ]]; then
+              echo "All publishable crates are already live — nothing to do."
+              break
+            fi
+            echo "::notice::Publishing (attempt $attempt): ${PENDING[*]}"
+            if cargo publish "${PENDING[@]}" --allow-dirty; then
+              echo "::notice::Published: ${PENDING[*]}"
+              break
+            fi
+            if [[ "$attempt" -ge 4 ]]; then
+              echo "::error::cargo publish failed after $attempt attempts"
+              exit 1
+            fi
+            echo "::warning::publish attempt $attempt failed; retrying in 60s"
             sleep 60
-          fi
-
-          publish_if_needed prgpu Cargo.toml
+          done

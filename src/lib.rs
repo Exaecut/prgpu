@@ -1,3 +1,7 @@
+// Lets the `Popup` derive and `params!` codegen reference `::prgpu::*` even when
+// expanded inside this crate (e.g. on `BlendMode`).
+extern crate self as prgpu;
+
 pub mod kernel;
 pub use kernel::{Kernel, KernelParams};
 
@@ -18,7 +22,9 @@ pub mod effect;
 pub use effect::prelude::*;
 
 pub mod params;
-pub mod ui;
+pub use params::{
+	BlendMode, Color, DEG_TO_RAD, FromParamValue, Param, ParamValue, ParamsSpec, Point2, PopupOptions, Snapshot, SnapshotGeom,
+};
 
 #[cfg(feature = "bench")]
 pub mod bench;
@@ -27,4 +33,4 @@ pub mod bench;
 pub mod testing;
 
 pub use paste;
-pub use prgpu_macro::gpu_struct;
+pub use prgpu_macro::{Popup, gpu_struct, params};

@@ -73,6 +73,10 @@ cudarc = { version = "0.19.3", default-features = false, features = ["std", "dri
 
 [dev-dependencies]
 trybuild = "1"
+# `params!` expansion references after_effects / premiere, so the integration
+# tests that invoke it need both crates in scope.
+exaecut-after-effects = "0.5"
+exaecut-premiere = "0.5"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(does_dialog)", "cfg(with_premiere)", "cfg(threaded_rendering)"] }

@@ -23,6 +23,9 @@ pub use descriptor::{EffectDescriptor, ExpansionExtent};
 pub mod frame_context;
 pub use frame_context::{ExpansionContext, FrameDataContext};
 
+pub mod ctx;
+pub use ctx::{Ctx, Geometry, Timing};
+
 pub mod effect_trait;
 pub use effect_trait::Effect;
 

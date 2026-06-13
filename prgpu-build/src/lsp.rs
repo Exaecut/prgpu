@@ -25,11 +25,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::DynError;
+use crate::DynError;
 
 /// Return the absolute path to the vekl shader module, if it can be found.
 ///
-/// Probed in the same order as [`super::compile_shaders`]: consumer workspace
+/// Probed in the same order as [`crate::compile_shaders`]: consumer workspace
 /// sibling (via `std::env::var("CARGO_MANIFEST_DIR")` at runtime), then
 /// prgpu's own workspace sibling (via `env!` at compile time), then the
 /// vendored copy inside prgpu's directory. Returns `None` if nothing matches.
@@ -67,7 +67,7 @@ pub fn vekl_include_path() -> Option<PathBuf> {
 /// Wire slang-lsp (the Slang VSCode extension) so editing `.slang` files in
 /// this crate gets full autocomplete + hover for vekl imports.
 ///
-/// Call from `build.rs` after [`super::compile_shaders`]:
+/// Call from `build.rs` after [`crate::compile_shaders`]:
 ///
 /// ```ignore
 /// fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

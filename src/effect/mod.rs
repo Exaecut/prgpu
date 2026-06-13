@@ -28,3 +28,6 @@ pub use effect_trait::Effect;
 
 pub mod prelude;
 pub use prelude::*;
+
+pub mod meta;
+pub use meta::EffectMeta;

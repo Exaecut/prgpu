@@ -20,9 +20,6 @@ pub use effect::prelude::*;
 pub mod params;
 pub mod ui;
 
-#[cfg(feature = "build")]
-pub mod build;
-
 #[cfg(feature = "bench")]
 pub mod bench;
 

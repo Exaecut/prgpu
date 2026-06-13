@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "prgpu-macro"]
+members = [".", "prgpu-macro", "prgpu-build"]
 
 [package]
 name = "prgpu"
@@ -38,7 +38,9 @@ cargo-clippy = []
 # The underlying functionality was removed; the feature will be deleted once
 # all effects stop referencing it.
 shader_hotreload = []
-build = ["dep:cc", "dep:serde", "dep:serde_json", "dep:ureq", "dep:tar", "dep:flate2", "dep:fs2"]
+# TRANSITIONAL(plan-02): kept empty so unported effects that still request
+# `prgpu/features = ["build"]` resolve. Delete once all effects use prgpu-build.
+build = []
 timing = []
 bench = ["dep:criterion"]
 testing = ["dep:image", "dep:serde", "dep:serde_json"]
@@ -52,13 +54,8 @@ parking_lot = "0.12.3"
 paste = "1.0.15"
 rayon = "1.10"
 prgpu-macro = { version = "0.1.0", path = "prgpu-macro" }
-cc = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-ureq = { version = "3", optional = true }
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1", optional = true }
-fs2 = { version = "0.4", optional = true }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
@@ -69,16 +66,7 @@ objc = "0.2.7"
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 
 [build-dependencies]
-cc = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-ureq = "3"
-tar = "0.4"
-flate2 = "1"
-fs2 = "0.4"
-
-[target.'cfg(target_os = "windows")'.build-dependencies]
-cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }
+prgpu-build = { version = "0.1.16", path = "prgpu-build" }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }

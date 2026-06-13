@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::reflection::Reflection;
+use crate::reflection::Reflection;
 
 /// Generate a C++ bridge wrapper that translates the Rust `extern "C"` dispatch
 /// convention into Slang's CPU ABI (`ComputeVaryingInput` + `EntryPointParams`).

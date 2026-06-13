@@ -258,16 +258,7 @@ macro_rules! declare_kernel {
 			#[allow(unused_imports)]
 			use super::*;
 
-			pub const SHADER_SRC: &[u8] = {
-				#[cfg(gpu_backend = "metal")]
-				{ $crate::include_shader!($name, metal) }
-
-				#[cfg(gpu_backend = "cuda")]
-				{ $crate::include_shader!($name, cuda) }
-
-				#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
-				{ &[] }
-			};
+			pub const SHADER_SRC: &[u8] = $crate::include_shader!($name);
 
 			pub const ENTRY_POINT: &str = stringify!($name);
 

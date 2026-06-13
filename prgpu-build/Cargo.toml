@@ -1,0 +1,21 @@
+[package]
+name = "prgpu-build"
+version = "0.1.16"
+edition = "2024"
+description = "Build-time tooling for prgpu effects"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Exaecut/prgpu"
+
+[dependencies]
+cc = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "3"
+tar = "0.4"
+flate2 = "1"
+fs2 = "0.4"
+toml = "0.5"
+exaecut-pipl = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13010"] }

@@ -1,4 +1,4 @@
-use super::reflection::{Param, Reflection};
+use crate::reflection::{Param, Reflection};
 
 pub fn generate_bindings(reflection: &Reflection, target_name: &str) -> String {
 	let mut out = String::new();

@@ -1,30 +1,22 @@
 use after_effects as ae;
+use std::marker::PhantomData;
 
 use crate::cpu::render::{CpuDispatchFn, CpuDispatchTileFn};
 use crate::kernel::params::KernelParams;
 use crate::types::Configuration;
 
-/// GPU dispatch entry: hands `(config, user_params)` to the active backend
-/// (`backends::dispatch_kernel`) using the shader bytes the kernel was built with.
-pub type GpuDispatchFn<P> = unsafe fn(&Configuration, P) -> Result<(), &'static str>;
-
-/// CPU render entry: writes the destination AE layer using the static C++
-/// dispatch fns Slang produced for this kernel.
-pub type CpuRenderFn<P> = fn(&ae::InData, &ae::Layer, &mut ae::Layer, &Configuration, P) -> Result<(), ae::Error>;
-
-/// Typed, dispatch-ready kernel descriptor produced by `declare_kernel!`.
+/// Typed, dispatch-ready kernel descriptor produced by `kernel!`.
 ///
-/// Holds every entry point the graph executor needs (`shader_src`, entry
-/// point name, CPU dispatch fns, GPU/CPU adapters) so a render pass can be
-/// executed against the active backend without per-effect wiring code.
+/// Holds every entry point the graph executor needs (shader bytes, entry
+/// point name, CPU dispatch fns) so a render pass can be executed against
+/// the active backend without per-effect wiring code.
 pub struct Kernel<P: KernelParams> {
 	name: &'static str,
 	shader_src: &'static [u8],
 	entry_point: &'static str,
 	cpu_dispatch: CpuDispatchFn,
 	cpu_dispatch_tile: CpuDispatchTileFn,
-	gpu_dispatch: GpuDispatchFn<P>,
-	cpu_render: CpuRenderFn<P>,
+	_phantom: PhantomData<P>,
 }
 
 impl<P: KernelParams> Kernel<P> {
@@ -34,8 +26,6 @@ impl<P: KernelParams> Kernel<P> {
 		entry_point: &'static str,
 		cpu_dispatch: CpuDispatchFn,
 		cpu_dispatch_tile: CpuDispatchTileFn,
-		gpu_dispatch: GpuDispatchFn<P>,
-		cpu_render: CpuRenderFn<P>,
 	) -> Self {
 		Self {
 			name,
@@ -43,8 +33,7 @@ impl<P: KernelParams> Kernel<P> {
 			entry_point,
 			cpu_dispatch,
 			cpu_dispatch_tile,
-			gpu_dispatch,
-			cpu_render,
+			_phantom: PhantomData,
 		}
 	}
 
@@ -79,7 +68,9 @@ impl<P: KernelParams> Kernel<P> {
 	/// dispatch, GPU device handles match the active context.
 	#[inline]
 	pub unsafe fn dispatch_gpu(&self, config: &Configuration, params: P) -> Result<(), &'static str> {
-		unsafe { (self.gpu_dispatch)(config, params) }
+		unsafe {
+			crate::gpu::backends::dispatch_kernel::<P>(config, params, self.shader_src, self.entry_point)
+		}
 	}
 
 	#[inline]
@@ -91,7 +82,16 @@ impl<P: KernelParams> Kernel<P> {
 		config: &Configuration,
 		params: P,
 	) -> Result<(), ae::Error> {
-		(self.cpu_render)(in_data, in_layer, out_layer, config, params)
+		crate::cpu::render::render_cpu(
+			self.name,
+			in_data,
+			in_layer,
+			out_layer,
+			config,
+			self.cpu_dispatch,
+			self.cpu_dispatch_tile,
+			&params,
+		)
 	}
 
 	/// AE-host-free CPU dispatch for resource→resource passes (mip chain

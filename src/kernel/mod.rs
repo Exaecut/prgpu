@@ -8,9 +8,12 @@
 
 mod descriptor;
 pub mod params;
-pub use descriptor::{CpuRenderFn, GpuDispatchFn, Kernel};
+pub use descriptor::Kernel;
 pub use params::KernelParams;
 
 pub mod builtin;
 
 mod macros;
+
+mod from_ctx;
+pub use from_ctx::FromCtx;

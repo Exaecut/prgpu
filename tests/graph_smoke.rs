@@ -85,8 +85,7 @@ fn auto_policy_runs_clean_on_non_aliasing_host() {
 		tol_a: 0.0,
 		smooth_a: 0.0,
 		smooth_b: 0.0,
-		_pad0: 0,
-		_pad1: 0,
+		..Default::default()
 	});
 	let mut src = vec![2u8; 8 * 8 * 4];
 	let mut dst = vec![0u8; 8 * 8 * 4];
@@ -169,8 +168,7 @@ fn mip_chain_iterates_levels_minus_one_steps() {
 			tol_a: 0.0,
 			smooth_a: 0.0,
 			smooth_b: 0.0,
-			_pad0: level,
-			_pad1: 0,
+			..Default::default()
 		}
 	});
 
@@ -183,8 +181,7 @@ fn mip_chain_iterates_levels_minus_one_steps() {
 			tol_a: 0.0,
 			smooth_a: 0.0,
 			smooth_b: 0.0,
-			_pad0: level,
-			_pad1: 0,
+			..Default::default()
 		}
 	});
 
@@ -218,8 +215,7 @@ fn slot_inline_can_be_used_directly() {
 		tol_a: 0.0,
 		smooth_a: 0.0,
 		smooth_b: 0.0,
-		_pad0: 0,
-		_pad1: 0,
+		..Default::default()
 	});
 
 	assert_eq!(graph.pass_count(), 1);

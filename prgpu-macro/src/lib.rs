@@ -2,6 +2,8 @@ use proc_macro::TokenStream;
 
 mod diagnostics;
 mod generate;
+mod kernel_gen;
+mod kernel_parse;
 mod layout;
 mod params_gen;
 mod params_parse;
@@ -21,6 +23,17 @@ pub fn params(item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     params_gen::generate(input).into()
+}
+
+/// `kernel! { name { field: type [= expr], ... } }` — declares a kernel module
+/// with GPU-laid-out params, `FromCtx` extraction, ABI check, and dispatch wiring.
+#[proc_macro]
+pub fn kernel(item: TokenStream) -> TokenStream {
+    let input = match syn::parse::<kernel_parse::KernelInput>(item) {
+        Ok(i) => i,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    kernel_gen::generate(&input.decls).into()
 }
 
 /// `#[derive(prgpu::Popup)]` on a `#[repr(u32)]` enum with `#[option("..")]`.
@@ -81,6 +94,21 @@ pub fn gpu_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
+
+    for field in fields {
+        let field_name = field.ident.as_ref().unwrap();
+        if field_name.to_string().starts_with("_pad") {
+            return syn::Error::new(
+                field_name.span(),
+                format!(
+                    "manual padding field `{field_name}` — #[gpu_struct] injects padding \
+                     automatically; construct with `..Default::default()` instead",
+                ),
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
 
     let mut resolved_fields: Vec<(syn::Ident, GpuType, proc_macro2::Span)> = Vec::new();
     for field in fields {

@@ -3,7 +3,7 @@
 extern crate self as prgpu;
 
 pub mod kernel;
-pub use kernel::{Kernel, KernelParams};
+pub use kernel::{FromCtx, Kernel, KernelParams};
 
 mod pipeline;
 
@@ -33,4 +33,4 @@ pub mod bench;
 pub mod testing;
 
 pub use paste;
-pub use prgpu_macro::{Popup, gpu_struct, params};
+pub use prgpu_macro::{Popup, gpu_struct, kernel, params};

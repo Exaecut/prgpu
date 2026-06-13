@@ -16,6 +16,6 @@ include = ["src/**/*.rs", "Cargo.toml", "README.md"]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"

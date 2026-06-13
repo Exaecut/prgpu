@@ -73,10 +73,12 @@ pub unsafe fn generate_mips(config: &Configuration) -> Result<(), &'static str> 
 		};
 
 		if pass_cfg.context_handle.is_some() {
-			unsafe { mip_downsample::gpu(&pass_cfg, params)? };
+			let k = mip_downsample::kernel();
+			unsafe { k.dispatch_gpu(&pass_cfg, params)? };
 		} else {
+			let k = mip_downsample::kernel();
 			unsafe {
-				crate::cpu::render::render_cpu_direct("mip_downsample", &pass_cfg, mip_downsample::CPU_DISPATCH_TILE, &params);
+				k.dispatch_cpu_direct(&pass_cfg, params);
 			}
 		}
 	}

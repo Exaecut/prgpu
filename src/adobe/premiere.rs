@@ -3,54 +3,50 @@
 //! Effects declare:
 //!
 //! ```ignore
-//! pub type PremiereGPU = prgpu::adobe::premiere::GpuFilterAdapter<MyEffect>;
+//! pub type PremiereGPU = prgpu::adobe::premiere::GpuFilterAdapter<MyEffect, prgpu::NoLicense>;
 //! pr::define_gpu_filter!(PremiereGPU);
 //! ```
 //!
-//! The adapter normalises the `GpuFilterData` + `RenderParams` + `PPixHand`
-//! frames into an `InvocationBase`, builds `FrameData` via
-//! `Effect::frame_data`, applies the source-snapshot policy through the
-//! graph executor, then runs the cached `RenderGraph`.
+//! The adapter snapshots parameters via `E::Params::snapshot_gpu()`, builds a
+//! `Ctx<E::Params>`, resolves expansion, then runs the cached `Graph<E::Params>`.
 
 use std::sync::OnceLock;
 
 use after_effects::log;
 use premiere::{self as pr};
 
-use crate::effect::frame_context::{FrameDataContext, HostBackend};
-use crate::effect::host::{Host, RenderKind};
+use crate::effect::ctx::{Ctx, Geometry, Timing};
+use crate::effect::host::{Host, HostCapabilities, RenderKind};
 use crate::effect::{Effect, FrameBinding, InvocationBase, LicenseGate, PixelLayout};
 use crate::gpu::pipeline;
 use crate::gpu::render_properties::GPURenderProperties;
-use crate::graph::{RenderGraph, execute::execute as run_graph};
-use crate::types::{Backend, Configuration};
+use crate::graph::{Graph, execute::execute as run_graph};
+use crate::params::{ParamsSpec, SnapshotGeom};
+use crate::types::{Backend, Configuration, FrameScopeDesc};
 
-pub struct GpuFilterAdapter<E: Effect> {
-	license: E::License,
-	graph: OnceLock<RenderGraph<E::FrameData>>,
+pub struct GpuFilterAdapter<E: Effect, L: LicenseGate> {
+	license: L,
+	graph: OnceLock<Graph<E::Params>>,
 }
 
-impl<E: Effect> Default for GpuFilterAdapter<E> {
+impl<E: Effect, L: LicenseGate> Default for GpuFilterAdapter<E, L> {
 	fn default() -> Self {
 		Self {
-			license: E::License::default(),
+			license: L::default(),
 			graph: OnceLock::new(),
 		}
 	}
 }
 
-impl<E: Effect> GpuFilterAdapter<E> {
-	fn graph(&self) -> &RenderGraph<E::FrameData> {
+impl<E: Effect, L: LicenseGate> GpuFilterAdapter<E, L> {
+	fn graph(&self) -> &Graph<E::Params> {
 		self.graph.get_or_init(|| {
-			let mut g = RenderGraph::new();
+			let mut g = Graph::new();
 			E::pipeline(&mut g);
 			g
 		})
 	}
 
-	/// License gate consulted before render. Debug builds log the failing state
-	/// label so a blank Premiere render is traceable; release inlines to the
-	/// bare `is_valid()`.
 	#[inline]
 	fn license_valid(&self) -> bool {
 		let ok = self.license.is_valid();
@@ -64,9 +60,6 @@ impl<E: Effect> GpuFilterAdapter<E> {
 	fn build_invocation(props: &GPURenderProperties<'_>, base_cfg: &Configuration, bpp: u32) -> Result<InvocationBase, pr::Error> {
 		let pixel_layout = PixelLayout::from_u32(base_cfg.pixel_layout);
 
-		// Source carries the clip's own extent; output carries the canvas
-		// (sequence size on the pure GPU-filter path). They differ when
-		// Premiere hands a sequence-sized outFrame for a smaller clip.
 		let main = FrameBinding {
 			data: base_cfg.outgoing_data.unwrap_or(std::ptr::null_mut()),
 			pitch_px: base_cfg.outgoing_pitch_px,
@@ -103,14 +96,12 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			}
 		};
 
-		// CUDA needs the context handle as the device handle for buffer alloc;
-		// CUDA: device handle = CUcontext (contextPV). Metal: device handle = MTLDevice (devicePV).
 		#[cfg(gpu_backend = "cuda")]
 		let device_handle = base_cfg.context_handle.unwrap_or(std::ptr::null_mut());
 		#[cfg(gpu_backend = "metal")]
 		let device_handle = base_cfg.device_handle;
 		#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
-		let device_handle: *mut c_void = std::ptr::null_mut();
+		let device_handle: *mut std::ffi::c_void = std::ptr::null_mut();
 
 		Ok(InvocationBase {
 			host: Host::Premiere,
@@ -122,7 +113,7 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			bytes_per_pixel: bpp,
 			pixel_layout,
 			storage: base_cfg.storage,
-			flip_y: 0, // Premiere GPU PPix is top-down
+			flip_y: 0,
 			time: base_cfg.time,
 			progress: base_cfg.progress,
 			render_generation: base_cfg.render_generation,
@@ -133,9 +124,92 @@ impl<E: Effect> GpuFilterAdapter<E> {
 			output,
 		})
 	}
+
+	fn backend() -> Backend {
+		#[cfg(gpu_backend = "metal")]
+		{
+			Backend::Metal
+		}
+		#[cfg(gpu_backend = "cuda")]
+		{
+			Backend::Cuda
+		}
+		#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
+		{
+			Backend::Cpu
+		}
+	}
+
+	fn expand_to_canvas(filter: &pr::GpuFilterData, render_params: &pr::RenderParams, frames: *const pr::sys::PPixHand, out_frame: *mut pr::sys::PPixHand) -> bool {
+		let first = if !frames.is_null() {
+			unsafe { Some(*frames) }
+		} else {
+			None
+		};
+		let clip = first.unwrap_or(std::ptr::null_mut());
+		let clip_ppix = if !clip.is_null() {
+			clip
+		} else {
+			unsafe { *out_frame }
+		};
+
+		let clip_w = if !clip_ppix.is_null() {
+			filter.ppix_suite.row_bytes(clip_ppix).map(|rb| {
+				let bpp = filter
+					.ppix_suite
+					.pixel_format(clip_ppix)
+					.map(|pf| crate::gpu::gpu_bytes_per_pixels(pf))
+					.unwrap_or(0);
+				if bpp > 0 { (rb / bpp) as u32 } else { 0 }
+			}).unwrap_or(0)
+		} else {
+			0
+		};
+		let clip_h = if !clip_ppix.is_null() {
+			filter
+				.gpu_device_suite
+				.gpu_ppix_size(clip_ppix)
+				.map(|s| {
+					let rb = filter.ppix_suite.row_bytes(clip_ppix).unwrap_or(1);
+					(s / rb as usize) as u32
+				})
+				.unwrap_or(0)
+		} else {
+			0
+		};
+		if clip_w == 0 || clip_h == 0 {
+			return false;
+		}
+
+		let frame_index = if render_params.render_ticks_per_frame() != 0 {
+			(render_params.sequence_time() / render_params.render_ticks_per_frame()) as u32
+		} else {
+			0
+		};
+		let time_seconds = crate::adobe::ticks_to_seconds(render_params.sequence_time());
+
+		let geom = SnapshotGeom {
+			layer_w: clip_w,
+			layer_h: clip_h,
+			output_w: clip_w,
+			output_h: clip_h,
+			ext_x: 0,
+			ext_y: 0,
+		};
+		let snapshot = E::Params::snapshot_gpu(filter, render_params, &geom);
+		let ctx = Ctx::new(
+			&snapshot,
+			Geometry { layer_w: clip_w, layer_h: clip_h, output_w: clip_w, output_h: clip_h, ext_x: 0, ext_y: 0 },
+			Timing { frame_index, time_seconds, progress: 0.0 },
+			HostCapabilities::new(Host::Premiere, Self::backend()),
+			false,
+		);
+
+		!E::expansion(&ctx).is_zero()
+	}
 }
 
-impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
+impl<E: Effect, L: LicenseGate> pr::GpuFilter for GpuFilterAdapter<E, L> {
 	fn global_init() {}
 
 	fn global_destroy() {
@@ -172,81 +246,7 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 			return Ok(());
 		}
 
-		// Before the potentially-destructive canvas swap in GPURenderProperties,
-		// call Effect::expansion() to decide whether the user requested expansion.
-		// Only when the expansion extent is non-zero do we allocate a canvas PPix
-		// (the WonderGlow pattern); otherwise the clip-sized in-place path stays.
-		let expand_to_canvas = {
-			// Safely read the first frame handle.
-			let first = if !frames.is_null() {
-				unsafe { Some(*frames) }
-			} else {
-				None
-			};
-			let clip = first.unwrap_or(std::ptr::null_mut());
-			let clip_ppix = if !clip.is_null() {
-				clip
-			} else {
-				unsafe { *out_frame }
-			};
-			let clip_w = if !clip_ppix.is_null() {
-				filter.ppix_suite.row_bytes(clip_ppix).map(|rb| {
-					let bpp = filter
-						.ppix_suite
-						.pixel_format(clip_ppix)
-						.map(|pf| crate::gpu::gpu_bytes_per_pixels(pf))
-						.unwrap_or(0);
-					if bpp > 0 { (rb / bpp) as u32 } else { 0 }
-				}).unwrap_or(0)
-			} else {
-				0
-			};
-			let clip_h = if !clip_ppix.is_null() {
-				filter
-					.gpu_device_suite
-					.gpu_ppix_size(clip_ppix)
-					.map(|s| {
-						let rb = filter.ppix_suite.row_bytes(clip_ppix).unwrap_or(1);
-						(s / rb as usize) as u32
-					})
-					.unwrap_or(0)
-			} else {
-				0
-			};
-			if clip_w == 0 || clip_h == 0 {
-				false // Can't determine clip dims — don't expand.
-			} else {
-				let exp_ctx = crate::effect::frame_context::FrameDataContext {
-					host: crate::effect::host::Host::Premiere,
-					backend: {
-						#[cfg(gpu_backend = "cuda")]
-						{ crate::types::Backend::Cuda }
-						#[cfg(gpu_backend = "metal")]
-						{ crate::types::Backend::Metal }
-						#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
-						{ crate::types::Backend::Cpu }
-					},
-					render_kind: crate::effect::host::RenderKind::PremiereGpuEffect,
-					inner: crate::effect::frame_context::HostBackend::Gpu {
-						filter,
-						render_params: &render_params,
-					},
-					layer_width: clip_w,
-					layer_height: clip_h,
-					output_width: clip_w,
-					output_height: clip_h,
-					ext_x: 0,
-					ext_y: 0,
-					frame_index: 0,
-					time_seconds: 0.0,
-					progress: 0.0,
-				};
-				match E::expansion(exp_ctx) {
-					Ok(ext) => !ext.is_zero(),
-					Err(_) => false,
-				}
-			}
-		};
+		let expand_to_canvas = Self::expand_to_canvas(filter, &render_params, frames, out_frame);
 
 		let props = unsafe { GPURenderProperties::new(filter, render_params.clone(), frames, frame_count, out_frame, expand_to_canvas) }?;
 		let base_cfg = unsafe { Configuration::effect(&props, out_frame)? };
@@ -258,10 +258,6 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		}
 		let bpp = props.bytes_per_pixel as u32;
 
-		// Source pitch must cover the source width. Both now come from the same
-		// native PPix (`GPURenderProperties` derives dims from the output buffer),
-		// so this only trips on a genuinely malformed frame rather than on
-		// legitimately small stills (a 400x400 image in a 1080p sequence).
 		let expected_pitch_bytes = base_cfg.outgoing_width.saturating_mul(bpp);
 		let src_pitch_bytes = (base_cfg.outgoing_pitch_px as u32).saturating_mul(bpp);
 		if src_pitch_bytes < expected_pitch_bytes {
@@ -274,14 +270,9 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 		} else {
 			0
 		};
-		// Canonical time already lives in base_cfg.time (sequence seconds, set by
-		// Configuration::effect); reuse it so frame_data and the shader agree.
 		let time_seconds = base_cfg.time;
 		let quality = render_params.quality();
 
-		// Dispatch-boundary evidence. `storage` is what vekl will use to decode the
-		// buffer; `frame.time` is the value that actually reaches the shader (distinct
-		// from the seconds value handed to `frame_data`).
 		let storage_tag = base_cfg.storage;
 		let storage_label = match storage_tag {
 			0 => "Unorm8x4",
@@ -308,7 +299,6 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 			tpf = render_params.render_ticks_per_frame(),
 		);
 
-		// Regression guard: a half-float host format must resolve to Float16x4.
 		if props.half_precision && storage_tag != crate::types::PIXEL_STORAGE_FLOAT16X4 {
 			log::warn!(
 				"[GPU] STORAGE REGRESSION: {pf:?} is half-float (16f) but storage tag is {storage_tag} (expected Float16x4=3); decode will be wrong.",
@@ -316,58 +306,43 @@ impl<E: Effect> pr::GpuFilter for GpuFilterAdapter<E> {
 			);
 		}
 
-		let ctx = FrameDataContext {
-			host: Host::Premiere,
-			backend: {
-				#[cfg(gpu_backend = "cuda")]
-				{
-					Backend::Cuda
-				}
-				#[cfg(gpu_backend = "metal")]
-				{
-					Backend::Metal
-				}
-				#[cfg(not(any(gpu_backend = "metal", gpu_backend = "cuda")))]
-				{
-					Backend::Cpu
-				}
-			},
-			render_kind: RenderKind::PremiereGpuEffect,
-			inner: HostBackend::Gpu {
-				filter,
-				render_params: &render_params,
-			},
-			layer_width: base_cfg.layer_width,
-			layer_height: base_cfg.layer_height,
-			output_width: base_cfg.canvas_width,
-			output_height: base_cfg.canvas_height,
+		let geom = SnapshotGeom {
+			layer_w: base_cfg.layer_width,
+			layer_h: base_cfg.layer_height,
+			output_w: base_cfg.canvas_width,
+			output_h: base_cfg.canvas_height,
 			ext_x: base_cfg.ext_x,
 			ext_y: base_cfg.ext_y,
-			frame_index,
-			time_seconds,
-			progress: base_cfg.progress,
 		};
+		let snapshot = E::Params::snapshot_gpu(filter, &render_params, &geom);
 
-		let frame_data = E::frame_data(ctx).map_err(|e| {
-			log::error!("[adapter] frame_data failed: {e:?}");
-			pr::Error::Fail
-		})?;
+		let backend = Self::backend();
+		let debug_view = false;
+		let ctx = Ctx::new(
+			&snapshot,
+			Geometry {
+				layer_w: base_cfg.layer_width,
+				layer_h: base_cfg.layer_height,
+				output_w: base_cfg.canvas_width,
+				output_h: base_cfg.canvas_height,
+				ext_x: base_cfg.ext_x,
+				ext_y: base_cfg.ext_y,
+			},
+			Timing { frame_index, time_seconds, progress: base_cfg.progress },
+			HostCapabilities::new(Host::Premiere, backend),
+			debug_view,
+		);
 
 		let mut base = Self::build_invocation(&props, &base_cfg, bpp)?;
 		base.render_generation = frame_index as u64;
 
-		// One frame scope: backends enqueue every pass without per-pass syncs;
-		// the single sync in `end` satisfies Adobe's "inputs consumed before
-		// render() returns" contract. The macOS GPU watchdog can kill the
-		// frame-level command buffer on a cold first dispatch — retry the
-		// whole frame once before failing.
 		use crate::gpu::frame_scope;
-		let scope_desc = crate::types::FrameScopeDesc::from_invocation(&base);
+		let scope_desc = FrameScopeDesc::from_invocation(&base);
 		const MAX_FRAME_ATTEMPTS: u32 = 2;
 		for attempt in 1..=MAX_FRAME_ATTEMPTS {
 			frame_scope::begin(&scope_desc);
 
-			let result = run_graph(self.graph(), &frame_data, &base);
+			let result = run_graph(self.graph(), &ctx, &base);
 			let sync = frame_scope::end(&scope_desc);
 
 			if let Err(e) = result {

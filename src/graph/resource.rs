@@ -42,11 +42,10 @@ pub struct MipPyramid;
 
 impl ResourceHandle<MipPyramid> {
 	pub fn mip(self, lod: u32) -> crate::graph::pass::Slot {
-		crate::graph::pass::Slot::ResourceMip(self.id, lod)
-	}
-
-	pub fn whole(self) -> crate::graph::pass::Slot {
-		crate::graph::pass::Slot::ResourceWhole(self.id)
+		crate::graph::pass::Slot::Mip(
+			crate::graph::pass::PyramidHandle { id: self.id },
+			lod,
+		)
 	}
 }
 

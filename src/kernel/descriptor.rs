@@ -10,13 +10,14 @@ use crate::types::Configuration;
 /// Holds every entry point the graph executor needs (shader bytes, entry
 /// point name, CPU dispatch fns) so a render pass can be executed against
 /// the active backend without per-effect wiring code.
+#[derive(Clone)]
 pub struct Kernel<P: KernelParams> {
-	name: &'static str,
-	shader_src: &'static [u8],
-	entry_point: &'static str,
-	cpu_dispatch: CpuDispatchFn,
-	cpu_dispatch_tile: CpuDispatchTileFn,
-	_phantom: PhantomData<P>,
+	pub(crate) name: &'static str,
+	pub(crate) shader_src: &'static [u8],
+	pub(crate) entry_point: &'static str,
+	pub(crate) cpu_dispatch: CpuDispatchFn,
+	pub(crate) cpu_dispatch_tile: CpuDispatchTileFn,
+	pub(crate) _phantom: PhantomData<P>,
 }
 
 impl<P: KernelParams> Kernel<P> {

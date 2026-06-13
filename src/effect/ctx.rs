@@ -59,6 +59,11 @@ impl<'a, P: ParamsSpec> Ctx<'a, P> {
 	}
 
 	#[inline]
+	pub fn capabilities(&self) -> HostCapabilities {
+		self.caps
+	}
+
+	#[inline]
 	pub fn backend(&self) -> Backend {
 		self.caps.backend()
 	}

@@ -1,2 +1,2 @@
-pub use super::{Capability, Ctx, Effect, EffectDescriptor, ExpansionContext, ExpansionExtent, FrameDataContext, Geometry, ParamApi, Timing};
-pub use crate::params::SetupParams;
+pub use super::{Capability, Ctx, Effect, EffectDescriptor, ExpansionExtent, Geometry, HostCapabilities, Timing, Ui};
+pub use crate::params::ParamsSpec;

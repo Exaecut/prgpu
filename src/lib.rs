@@ -8,6 +8,8 @@ pub use kernel::{FromCtx, Kernel, KernelParams};
 mod pipeline;
 
 pub mod graph;
+pub use graph::{Derived, Graph, MipDirection, PyramidHandle, Slot, SourcePolicy};
+
 pub mod adobe;
 
 pub mod cpu;
@@ -20,6 +22,11 @@ pub use types::{Backend, ConfigBuildError, ConfigBuilder, Configuration, FrameSc
 
 pub mod effect;
 pub use effect::prelude::*;
+
+/// Convenience re-export so effects can `use prgpu::prelude::*;`.
+pub mod prelude {
+	pub use crate::effect::prelude::*;
+}
 
 pub mod params;
 pub use params::{
@@ -34,3 +41,5 @@ pub mod testing;
 
 pub use paste;
 pub use prgpu_macro::{Popup, gpu_struct, kernel, params};
+
+mod register_effect;

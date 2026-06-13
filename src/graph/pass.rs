@@ -1,29 +1,32 @@
 //! Internal pass representation.
 //!
-//! User-facing builders (`graph.add_pass`, `graph.add_mip_chain`) translate
-//! into these `PassDecl` variants. Each variant carries a type-erased
-//! dispatcher closure built from the typed `Kernel<P>` + the user's
-//! per-frame params closure, so the executor can run every pass through a
-//! uniform interface.
+//! User-facing builders (`Graph::pass`, `Graph::mip_chain`) translate into
+//! these `PassDecl` variants. The executor resolves slots and dispatches
+//! through a uniform interface parameterised on `P: ParamsSpec`.
 
-use crate::effect::FrameBinding;
-use crate::graph::context::PassContext;
-use crate::graph::resource::ResourceId;
+use crate::effect::Ctx;
+use crate::params::ParamsSpec;
 
 /// Source / target binding the executor resolves per-pass.
-///
-/// `Source` / `Output` resolve through the active `InvocationBase`;
-/// `ResourceMip` / `ResourceWhole` resolve through the executor's resource
-/// table; `Inline` carries a pre-built `FrameBinding` (used by the executor
-/// when promoting a snapshot or test fixture).
 #[derive(Debug, Clone, Copy)]
 pub enum Slot {
 	Source,
 	Output,
-	ResourceMip(ResourceId, u32),
-	ResourceWhole(ResourceId),
+	Mip(PyramidHandle, u32),
 	#[doc(hidden)]
-	Inline(FrameBinding),
+	Inline(crate::effect::FrameBinding),
+}
+
+/// Handle returned by `Graph::mip_pyramid`. Wraps an internal resource id.
+#[derive(Debug, Clone, Copy)]
+pub struct PyramidHandle {
+	pub(crate) id: crate::graph::resource::ResourceId,
+}
+
+impl PyramidHandle {
+	pub fn mip(self, level: u32) -> Slot {
+		Slot::Mip(self, level)
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,39 +35,38 @@ pub enum MipDirection {
 	Up,
 }
 
-/// Type-erased single-pass dispatcher: `(ctx, config) → Result<()>`.
-pub type SingleDispatcher<F> = Box<dyn Fn(&PassContext<F>, &crate::types::Configuration) -> Result<(), &'static str> + Send + Sync + 'static>;
+/// Type-erased single-pass dispatcher.
+pub type SingleDispatcher<P> = Box<dyn Fn(&Ctx<P>, &crate::types::Configuration) -> Result<(), &'static str> + Send + Sync + 'static>;
 
-/// Type-erased mip-chain dispatcher: `(level, ctx, config) → Result<()>`.
-pub type MipDispatcher<F> = Box<dyn Fn(u32, &PassContext<F>, &crate::types::Configuration) -> Result<(), &'static str> + Send + Sync + 'static>;
+/// Type-erased mip-chain dispatcher.
+pub type MipDispatcher<P> = Box<dyn Fn(u32, &Ctx<P>, &crate::types::Configuration) -> Result<(), &'static str> + Send + Sync + 'static>;
 
-/// Optional pass predicate signature: returns `true` if the pass should run.
-pub type EnabledPredicate<F> = Box<dyn Fn(&PassContext<F>) -> bool + Send + Sync + 'static>;
+/// Optional pass predicate.
+pub type EnabledPredicate<P> = Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>;
 
-pub(crate) struct SinglePassDecl<F> {
+pub(crate) struct SinglePassDecl<P: ParamsSpec> {
 	pub name: &'static str,
 	pub source: Slot,
 	pub input: Option<Slot>,
 	pub target: Slot,
-	pub dispatcher: SingleDispatcher<F>,
-	pub enabled_when: Option<EnabledPredicate<F>>,
+	pub dispatcher: SingleDispatcher<P>,
+	pub enabled_when: Option<EnabledPredicate<P>>,
 }
 
-pub(crate) struct MipChainPassDecl<F> {
+pub(crate) struct MipChainPassDecl<P: ParamsSpec> {
 	pub name: &'static str,
-	pub resource: ResourceId,
+	pub resource: crate::graph::resource::ResourceId,
 	pub direction: MipDirection,
-	pub dispatcher: MipDispatcher<F>,
-	pub enabled_when: Option<EnabledPredicate<F>>,
+	pub dispatcher: MipDispatcher<P>,
+	pub enabled_when: Option<EnabledPredicate<P>>,
 }
 
-pub(crate) enum PassDecl<F> {
-	Single(SinglePassDecl<F>),
-	MipChain(MipChainPassDecl<F>),
+pub(crate) enum PassDecl<P: ParamsSpec> {
+	Single(SinglePassDecl<P>),
+	MipChain(MipChainPassDecl<P>),
 }
 
-impl<F> PassDecl<F> {
-	#[allow(dead_code)]
+impl<P: ParamsSpec> PassDecl<P> {
 	pub fn name(&self) -> &'static str {
 		match self {
 			PassDecl::Single(p) => p.name,

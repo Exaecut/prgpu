@@ -45,9 +45,8 @@ pub trait LicenseGate: Default + 'static {
 }
 
 /// Default [`LicenseGate`] implementation that always succeeds. Effects
-/// without a licence check use this through `Effect::License = NoLicenseGate`
-/// (which is the trait's default associated type).
+/// without a licence check use `NoLicense` in `register_effect!`.
 #[derive(Default)]
-pub struct NoLicenseGate;
+pub struct NoLicense;
 
-impl LicenseGate for NoLicenseGate {}
+impl LicenseGate for NoLicense {}

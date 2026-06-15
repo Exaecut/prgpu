@@ -5,7 +5,7 @@ pub mod host;
 pub use host::{Capability, Host, HostCapabilities, RenderKind};
 
 pub mod invocation;
-pub use invocation::{FrameBinding, InvocationBase, PixelLayout};
+pub use invocation::{FrameBinding, InvocationBase, MAX_AUX_LAYERS, PixelLayout};
 
 pub mod license;
 pub use license::{LicenseGate, NoLicense};

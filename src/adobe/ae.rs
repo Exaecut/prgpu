@@ -308,7 +308,7 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
 			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
 			source: main,
-			secondary_source: None,
+			layers: [None; crate::effect::invocation::MAX_AUX_LAYERS],
 			output,
 		})
 	}
@@ -399,9 +399,64 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			ext_x: ((out_w as i32 - in_w as i32) / 2).max(0),
 			ext_y: ((out_h as i32 - in_h as i32) / 2).max(0),
 			source: main,
-			secondary_source: None,
+			layers: [None; crate::effect::invocation::MAX_AUX_LAYERS],
 			output,
 		})
+	}
+
+	/// SmartPreRender checkout id for the k-th `#[layer]` param. Id 0 is the
+	/// main input; aux layers start at 1 and are re-used at SmartRender.
+	#[inline]
+	fn aux_checkout_id(k: usize) -> i32 {
+		1 + k as i32
+	}
+
+	/// Check out each declared layer param's pixels (already requested in
+	/// SmartPreRender) and build a `FrameBinding` per slot. Returns the kept
+	/// `Layer` worlds (their buffers must outlive the graph run) alongside the
+	/// per-slot bindings. `gpu_suite` is `Some` on the GPU path (device-pointer
+	/// extraction), `None` on the CPU path (host raster pointer).
+	fn checkout_aux_layers(
+		in_data: &InData,
+		cb: &ae::pf::SmartRenderCallbacks,
+		bpp: u32,
+		pixel_layout: PixelLayout,
+		gpu_suite: Option<&ae::pf::suites::GPUDevice>,
+	) -> (Vec<(usize, ae::Layer)>, [Option<FrameBinding>; crate::effect::invocation::MAX_AUX_LAYERS]) {
+		let mut bindings = [None; crate::effect::invocation::MAX_AUX_LAYERS];
+		let mut worlds: Vec<(usize, ae::Layer)> = Vec::new();
+		for k in 0..E::Params::LAYER_PARAMS.len().min(crate::effect::invocation::MAX_AUX_LAYERS) {
+			let Ok(Some(mut layer)) = cb.checkout_layer_pixels(Self::aux_checkout_id(k) as u32) else {
+				continue;
+			};
+			let w = layer.width() as u32;
+			let h = layer.height() as u32;
+			if w == 0 || h == 0 {
+				continue;
+			}
+			let data = match gpu_suite {
+				Some(suite) => match suite.gpu_world_data(in_data.effect_ref(), &mut layer) {
+					Ok(ptr) => ptr,
+					Err(_) => continue,
+				},
+				None => layer.buffer().as_ptr() as *mut c_void,
+			};
+			if data.is_null() {
+				continue;
+			}
+			let pitch_px = if bpp > 0 { layer.buffer_stride() as i32 / bpp as i32 } else { 0 };
+			bindings[k] = Some(FrameBinding {
+				data,
+				pitch_px,
+				width: w,
+				height: h,
+				mip_levels: 0,
+				bytes_per_pixel: bpp,
+				pixel_layout,
+			});
+			worlds.push((k, layer));
+		}
+		(worlds, bindings)
 	}
 
 	fn run_graph(&self, ctx: &Ctx<E::Params>, base: &InvocationBase) -> Result<(), ae::Error> {
@@ -712,6 +767,23 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 					}
 					extra.set_gpu_render_possible(true);
 
+					// Request each declared `#[layer]` param so AE renders it
+					// upstream; the pixels are claimed at SmartRender via the
+					// matching checkout id. Errors (unassigned layer) are
+					// ignored — the pipeline falls back to the main source.
+					for (k, layer_id) in E::Params::LAYER_PARAMS.iter().enumerate().take(crate::effect::invocation::MAX_AUX_LAYERS) {
+						if let Some(param_idx) = params.index(*layer_id) {
+							let _ = extra.callbacks().checkout_layer(
+								param_idx as i32,
+								Self::aux_checkout_id(k),
+								&src_request,
+								in_data.current_time(),
+								in_data.time_step(),
+								in_data.time_scale(),
+							);
+						}
+					}
+
 					let out_w = result_rect.width().max(1) as u32;
 					let out_h = result_rect.height().max(1) as u32;
 					let src_w = layer_result.width().max(1) as u32;
@@ -748,11 +820,23 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 							.pre_render_data::<FrameState<E::Params>>()
 							.ok_or(ae::Error::Generic)?;
 						let mut input_world = input_world;
-						let base = Self::build_invocation_cpu(
+						let mut base = Self::build_invocation_cpu(
 							&in_data,
 							&input_world,
 							&mut output_world,
 						)?;
+
+						// Secondary layer params: claim the pixels requested in
+						// SmartPreRender. `_aux_worlds` must outlive run_graph
+						// (the bindings hold raw pointers into their buffers).
+						let (_aux_worlds, aux_bindings) = Self::checkout_aux_layers(
+							&in_data,
+							&cb,
+							base.bytes_per_pixel,
+							base.pixel_layout,
+							None,
+						);
+						base.layers = aux_bindings;
 
 						let host = host_from_in_data(&in_data);
 						let backend = Backend::Cpu;
@@ -774,15 +858,19 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 							ext_x: frame_state.geom.ext_x,
 							ext_y: frame_state.geom.ext_y,
 						};
-						let ctx = Ctx::new(
+						let mut ctx = Ctx::new(
 							&frame_state.snapshot,
 							geom,
 							timing,
 							caps,
 							false,
 						);
+						ctx.set_layers_present(base.layer_presence());
 						let _ = &mut input_world;
 						self.run_graph(&ctx, &base)?;
+						for (k, _) in &_aux_worlds {
+							let _ = cb.checkin_layer_pixels(Self::aux_checkout_id(*k) as u32);
+						}
 					}
 					Ok(())
 				})();
@@ -802,12 +890,24 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 						let frame_state = extra
 							.pre_render_data::<FrameState<E::Params>>()
 							.ok_or(ae::Error::Generic)?;
-						let base = Self::build_invocation_gpu(
+						let mut base = Self::build_invocation_gpu(
 							&in_data,
 							&mut input_world,
 							&mut output_world,
 							&extra,
 						)?;
+
+						// Secondary layer params (GPU worlds → device pointers).
+						// `_aux_worlds` must outlive run_graph.
+						let gpu_suite = ae::pf::suites::GPUDevice::new()?;
+						let (_aux_worlds, aux_bindings) = Self::checkout_aux_layers(
+							&in_data,
+							&cb,
+							base.bytes_per_pixel,
+							base.pixel_layout,
+							Some(&gpu_suite),
+						);
+						base.layers = aux_bindings;
 
 						let host = host_from_in_data(&in_data);
 						let backend = base.backend;
@@ -829,14 +929,18 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 							ext_x: frame_state.geom.ext_x,
 							ext_y: frame_state.geom.ext_y,
 						};
-						let ctx = Ctx::new(
+						let mut ctx = Ctx::new(
 							&frame_state.snapshot,
 							geom,
 							timing,
 							caps,
 							false,
 						);
+						ctx.set_layers_present(base.layer_presence());
 						self.run_graph(&ctx, &base)?;
+						for (k, _) in &_aux_worlds {
+							let _ = cb.checkin_layer_pixels(Self::aux_checkout_id(*k) as u32);
+						}
 					}
 					Ok(())
 				})();

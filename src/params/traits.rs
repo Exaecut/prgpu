@@ -104,6 +104,10 @@ pub trait ParamsSpec: Copy + Eq + Hash + Debug + Into<usize> + Send + Sync + 'st
 	/// The `#[checkbox(debug_only)]` param (if any), so a later phase can wire
 	/// `Ctx::debug_view` to it.
 	const DEBUG_PARAM: Option<Self>;
+	/// Layer params (`#[layer]`) in declaration order. The adapter checks each
+	/// out into the matching `InvocationBase::layers` slot; the index here
+	/// equals the marker's `LAYER_INDEX`. Empty for effects with no aux inputs.
+	const LAYER_PARAMS: &'static [Self] = &[];
 	type Snapshot: Snapshot<Self> + Send + Sync + 'static;
 
 	fn register(params: &mut Parameters<Self>) -> Result<(), after_effects::Error>;

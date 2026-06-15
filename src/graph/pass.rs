@@ -13,6 +13,13 @@ pub enum Slot {
 	Source,
 	Output,
 	Mip(PyramidHandle, u32),
+	/// A secondary image input (AE layer param / Premiere track frame),
+	/// indexed by the per-effect layer-param order exposed as
+	/// `<Marker>::LAYER_INDEX`. Resolves to `InvocationBase::layers[idx]`, and
+	/// falls back to `Source` when the host did not deliver that layer — so a
+	/// pass reading an unassigned layer still gets valid pixels. Gate the pass
+	/// with `Ctx::layer_present` when "no layer" should mean "skip".
+	Layer(u32),
 	#[doc(hidden)]
 	Inline(crate::effect::FrameBinding),
 }

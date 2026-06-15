@@ -6,6 +6,7 @@
 //! swaps the trait/graph over and this replaces it.
 
 use crate::effect::host::{Capability, HostCapabilities};
+use crate::effect::invocation::MAX_AUX_LAYERS;
 use crate::params::{FromParamValue, Param, ParamsSpec, Snapshot};
 use crate::types::Backend;
 
@@ -32,6 +33,7 @@ pub struct Ctx<'a, P: ParamsSpec> {
 	time: Timing,
 	caps: HostCapabilities,
 	debug_view: bool,
+	layers_present: [bool; MAX_AUX_LAYERS],
 }
 
 impl<'a, P: ParamsSpec> Ctx<'a, P> {
@@ -42,7 +44,25 @@ impl<'a, P: ParamsSpec> Ctx<'a, P> {
 			time,
 			caps,
 			debug_view,
+			layers_present: [false; MAX_AUX_LAYERS],
 		}
+	}
+
+	/// Reflect the adapter's secondary-input checkout into the read context so
+	/// pipeline closures (`.when` / `.params`) can branch on whether an AE
+	/// layer param was actually delivered. Set from
+	/// [`crate::effect::InvocationBase::layer_presence`] on the render paths;
+	/// defaults to all-absent (Premiere, expansion/visibility contexts).
+	#[inline]
+	pub fn set_layers_present(&mut self, layers_present: [bool; MAX_AUX_LAYERS]) {
+		self.layers_present = layers_present;
+	}
+
+	/// Whether the secondary input at `index` (a `<Marker>::LAYER_INDEX`) was
+	/// delivered by the host this frame.
+	#[inline]
+	pub fn layer_present(&self, index: u32) -> bool {
+		self.layers_present.get(index as usize).copied().unwrap_or(false)
 	}
 
 	/// The read API. Fully typed via the marker: `ctx.get(Strength) -> f32`,

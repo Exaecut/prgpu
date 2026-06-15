@@ -73,6 +73,14 @@ pub enum Kind {
 	Button {
 		on_click: Option<Path>,
 	},
+	/// Secondary image input (`PF_ADD_LAYER`). Carries no readable snapshot
+	/// value — presence is resolved by the adapter at checkout and surfaced via
+	/// `Ctx::layer_present`. Inert in Premiere (layer params are unsupported
+	/// there). `default_myself` maps to `PF_LayerDefault_MYSELF`; otherwise the
+	/// default is `NONE` (unassigned).
+	Layer {
+		default_myself: bool,
+	},
 	Custom {
 		setup: Path,
 	},
@@ -154,7 +162,7 @@ impl Parse for ParamsInput {
 							});
 						}
 					},
-					"slider" | "checkbox" | "color" | "angle" | "point" | "popup" | "blend_mode" | "button" | "custom" => {
+					"slider" | "checkbox" | "color" | "angle" | "point" | "popup" | "blend_mode" | "button" | "layer" | "custom" => {
 						if kind_attr.is_some() {
 							return Err(Error::new_spanned(&attr, "more than one parameter-kind attribute on a variant"));
 						}
@@ -163,7 +171,7 @@ impl Parse for ParamsInput {
 					other => {
 						return Err(Error::new_spanned(
 							&attr,
-							format!("unknown attribute `{other}`; expected one of slider/checkbox/color/angle/point/popup/blend_mode/button/custom/group"),
+							format!("unknown attribute `{other}`; expected one of slider/checkbox/color/angle/point/popup/blend_mode/button/layer/custom/group"),
 						));
 					}
 				}
@@ -361,6 +369,23 @@ fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, boo
 				None => None,
 			},
 		},
+		"layer" => {
+			// `default = myself` -> PF_LayerDefault_MYSELF; `default = none`
+			// (or omitted) -> unassigned. Anything else is rejected.
+			let default_myself = match kv.get("default") {
+				Some(e) => {
+					let p = path_expr(e)?;
+					let id = p.get_ident().map(|i| i.to_string()).unwrap_or_default();
+					match id.as_str() {
+						"myself" => true,
+						"none" => false,
+						_ => return Err(Error::new_spanned(e, "layer `default` must be `myself` or `none`")),
+					}
+				}
+				None => false,
+			};
+			Kind::Layer { default_myself }
+		}
 		"custom" => Kind::Custom {
 			setup: path_expr(kv.get("setup").ok_or_else(|| Error::new_spanned(ident, "custom needs `setup = path`"))?)?,
 		},

@@ -120,7 +120,12 @@ impl<E: Effect, L: LicenseGate> GpuFilterAdapter<E, L> {
 			ext_x: base_cfg.ext_x,
 			ext_y: base_cfg.ext_y,
 			source: main,
-			secondary_source: None,
+			// Premiere layer params are inert (no AE-style layer dropdown);
+			// secondary inputs would require the track-dependency model
+			// (get_frame_dependencies). Until that lands, aux layers are absent
+			// and pipelines fall back to the main source — see
+			// docs/prgpu-audit/08-layer-mask-inputs.md.
+			layers: [None; crate::effect::invocation::MAX_AUX_LAYERS],
 			output,
 		})
 	}

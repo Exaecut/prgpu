@@ -64,6 +64,12 @@ pub struct FrameBinding {
 unsafe impl Send for FrameBinding {}
 unsafe impl Sync for FrameBinding {}
 
+/// Maximum number of secondary image inputs (AE layer params / Premiere
+/// track-matte frames) an effect may bind through [`crate::graph::pass::Slot::Layer`].
+/// Kept small and fixed so [`InvocationBase`] stays `Copy`-cloneable without a
+/// heap allocation; bump alongside any effect that needs more aux layers.
+pub const MAX_AUX_LAYERS: usize = 4;
+
 impl FrameBinding {
 	pub const fn null(bytes_per_pixel: u32, pixel_layout: PixelLayout) -> Self {
 		Self {
@@ -112,12 +118,30 @@ pub struct InvocationBase {
 	pub ext_y: i32,
 
 	pub source: FrameBinding,
-	pub secondary_source: Option<FrameBinding>,
+	/// Secondary image inputs resolved by the adapter (AE layer params via
+	/// `checkout_layer_pixels`; Premiere leaves these `None` — layer params are
+	/// inert there). Indexed by the per-effect layer-param order, which the
+	/// `params!` macro exposes as `<Marker>::LAYER_INDEX` and the pipeline binds
+	/// via [`crate::graph::pass::Slot::Layer`]. A `None` slot means "not
+	/// assigned / checkout failed"; pipelines fall back to `source`.
+	pub layers: [Option<FrameBinding>; MAX_AUX_LAYERS],
 	pub output: FrameBinding,
 }
 
 impl InvocationBase {
 	pub fn capabilities(&self) -> crate::effect::host::HostCapabilities {
 		crate::effect::host::HostCapabilities::new(self.host, self.backend)
+	}
+
+	/// Per-slot presence flags derived from the actual checkout result. This is
+	/// the source of truth a pipeline's `Ctx::layer_present` reflects, so a
+	/// layer the host failed to deliver is treated as absent (fallback to
+	/// `source`) rather than read as garbage.
+	pub fn layer_presence(&self) -> [bool; MAX_AUX_LAYERS] {
+		let mut out = [false; MAX_AUX_LAYERS];
+		for (i, slot) in self.layers.iter().enumerate() {
+			out[i] = slot.map(|b| !b.is_null()).unwrap_or(false);
+		}
+		out
 	}
 }

@@ -37,9 +37,26 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 		}
 	};
 
+	// Declaration-order index of each layer param, used both for the marker's
+	// inherent `LAYER_INDEX` const (pipelines bind `Slot::Layer(LAYER_INDEX)`)
+	// and to slot the param into `InvocationBase::layers` at checkout.
+	let mut layer_ordinal = 0u32;
 	let markers = params.iter().map(|p| {
 		let id = &p.ident;
 		let vty = value_ty(&p.kind);
+		let layer_const = if matches!(p.kind, Kind::Layer { .. }) {
+			let idx = lit_u32(layer_ordinal);
+			layer_ordinal += 1;
+			quote! {
+				impl #id {
+					/// Secondary-input slot index for `Slot::Layer(..)` and
+					/// `Ctx::layer_present(..)`.
+					pub const LAYER_INDEX: u32 = #idx;
+				}
+			}
+		} else {
+			quote! {}
+		};
 		quote! {
 			#[derive(Clone, Copy)]
 			#vis struct #id;
@@ -48,8 +65,14 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 				type Value = #vty;
 				const ID: #enum_ident = #enum_ident::#id;
 			}
+			#layer_const
 		}
-	});
+	}).collect::<Vec<_>>();
+
+	// Layer params in declaration order, so the adapter checks each out into the
+	// matching `InvocationBase::layers` slot.
+	let layer_params: Vec<&Ident> = params.iter().filter(|p| matches!(p.kind, Kind::Layer { .. })).map(|p| &p.ident).collect();
+	let layer_params_tokens = quote! { &[ #( #enum_ident::#layer_params ),* ] };
 
 	let snapshot = quote! {
 		#[doc(hidden)]
@@ -89,6 +112,7 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 		impl ::prgpu::ParamsSpec for #enum_ident {
 			const COUNT: usize = #count;
 			const DEBUG_PARAM: ::core::option::Option<Self> = #debug_param;
+			const LAYER_PARAMS: &'static [Self] = #layer_params_tokens;
 			type Snapshot = __Snapshot;
 
 			#[allow(unused_variables)]
@@ -288,6 +312,18 @@ fn reg_stmt(p: &ParamDef, enum_ident: &Ident) -> TokenStream {
 				})?;
 			}
 		}
+		Kind::Layer { default_myself } => {
+			let default_stmt = if *default_myself {
+				quote! { f.set_default_to_this_layer(); }
+			} else {
+				quote! {}
+			};
+			quote! {
+				params.add(#enum_ident::#id, #label, ::after_effects::LayerDef::setup(|f| {
+					#default_stmt
+				}))?;
+			}
+		}
 		Kind::Custom { setup } => {
 			quote! { (#setup)(params, #enum_ident::#id)?; }
 		}
@@ -303,7 +339,7 @@ fn cpu_stmt(p: &ParamDef, enum_ident: &Ident) -> Option<TokenStream> {
 		Kind::Color { .. } => quote! { ::prgpu::params::convert::cpu_color(params, #enum_ident::#id)? },
 		Kind::Point { .. } => quote! { ::prgpu::params::convert::cpu_point(params, #enum_ident::#id, geom.layer_w, geom.layer_h)? },
 		Kind::Popup { .. } => quote! { ::prgpu::params::convert::cpu_popup(params, #enum_ident::#id)? },
-		Kind::Button { .. } | Kind::Custom { .. } => return None,
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => return None,
 	};
 	Some(quote! { ::prgpu::Snapshot::set(&mut snapshot, #enum_ident::#id, #call); })
 }
@@ -316,7 +352,7 @@ fn gpu_stmt(p: &ParamDef, enum_ident: &Ident) -> Option<TokenStream> {
 		Kind::Color { .. } => quote! { ::prgpu::params::convert::gpu_color(filter, render_params, #enum_ident::#id) },
 		Kind::Point { .. } => quote! { ::prgpu::params::convert::gpu_point(filter, render_params, #enum_ident::#id) },
 		Kind::Popup { .. } => quote! { ::prgpu::params::convert::gpu_popup(filter, render_params, #enum_ident::#id) },
-		Kind::Button { .. } | Kind::Custom { .. } => return None,
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => return None,
 	};
 	Some(quote! { ::prgpu::Snapshot::set(&mut snapshot, #enum_ident::#id, #call); })
 }
@@ -329,7 +365,7 @@ fn value_ty(kind: &Kind) -> TokenStream {
 		Kind::Point { .. } => quote! { ::prgpu::Point2 },
 		Kind::Popup { value_ty: PopupTy::U32, .. } => quote! { u32 },
 		Kind::Popup { value_ty: PopupTy::Enum(path), .. } => quote! { #path },
-		Kind::Button { .. } | Kind::Custom { .. } => quote! { () },
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => quote! { () },
 	}
 }
 
@@ -375,4 +411,8 @@ fn i16lit(v: i16) -> TokenStream {
 
 fn lit_usize(v: usize) -> TokenStream {
 	format!("{v}usize").parse().unwrap()
+}
+
+fn lit_u32(v: u32) -> TokenStream {
+	format!("{v}u32").parse().unwrap()
 }

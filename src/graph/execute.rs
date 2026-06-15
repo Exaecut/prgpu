@@ -154,7 +154,7 @@ fn clone_base(base: &InvocationBase) -> InvocationBase {
 		ext_x: base.ext_x,
 		ext_y: base.ext_y,
 		source: base.source,
-		secondary_source: base.secondary_source,
+		layers: base.layers,
 		output: base.output,
 	}
 }
@@ -299,6 +299,17 @@ fn resolve_slot(slot: Slot, base: &InvocationBase, resources: &[AllocatedResourc
 		Slot::Source => Ok(base.source),
 		Slot::Output => Ok(base.output),
 		Slot::Inline(b) => Ok(b),
+		Slot::Layer(idx) => {
+			// Source of truth is the actual checkout; a missing/null aux layer
+			// falls back to the main source so a pass never reads a dangling
+			// pointer. Pipelines that must branch on presence gate themselves
+			// with `Ctx::layer_present` (same flags as `base.layer_presence`).
+			let binding = base.layers.get(idx as usize).copied().flatten();
+			match binding {
+				Some(b) if !b.is_null() => Ok(b),
+				_ => Ok(base.source),
+			}
+		}
 		Slot::Mip(handle, level) => {
 			let r = resources.get(handle.id.0 as usize).ok_or_else(|| GraphError::UnknownResource(pass_name.unwrap_or("?")))?;
 			let max = r.desc.levels;

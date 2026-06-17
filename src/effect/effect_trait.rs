@@ -4,6 +4,8 @@
 //! drive every selector via these methods so authors stop hand-writing
 //! host-specific selectors.
 
+use premiere as pr;
+
 use crate::effect::ctx::Ctx;
 use crate::effect::descriptor::{EffectDescriptor, ExpansionExtent};
 use crate::effect::ui::Ui;
@@ -43,4 +45,12 @@ pub trait Effect: Sized + Send + Sync + 'static {
 	/// Declared once per effect lifetime; closures re-evaluate per frame
 	/// against each frame's `Ctx<P>`.
 	fn pipeline(_g: &mut Graph<Self::Params>);
+
+	/// Per-frame GPU hook with raw filter access. Runs on the host GPU thread
+	/// after the snapshot + `Ctx` are built and before graph execution.
+	/// This is the only authoring hook where an effect can reach
+	/// `pr::GpuFilterData` — `video_segment_suite`, `timeline_id()`,
+	/// `node_id()`, `ppix_suite`, `gpu_device_suite` are all live here.
+	/// Default no-op. Never called on the CPU path.
+	fn on_gpu_frame(_filter: &pr::GpuFilterData, _render_params: &pr::RenderParams, _ctx: &Ctx<Self::Params>) {}
 }

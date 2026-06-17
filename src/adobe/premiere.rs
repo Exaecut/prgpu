@@ -341,6 +341,8 @@ impl<E: Effect, L: LicenseGate> pr::GpuFilter for GpuFilterAdapter<E, L> {
 		let mut base = Self::build_invocation(&props, &base_cfg, bpp)?;
 		base.render_generation = frame_index as u64;
 
+		E::on_gpu_frame(filter, &render_params, &ctx);
+
 		use crate::gpu::frame_scope;
 		let scope_desc = FrameScopeDesc::from_invocation(&base);
 		const MAX_FRAME_ATTEMPTS: u32 = 2;

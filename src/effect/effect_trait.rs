@@ -73,4 +73,21 @@ pub trait Effect: Sized + Send + Sync + 'static {
 	) -> Result<(), after_effects::Error> {
 		Ok(())
 	}
+
+	/// Low-level escape hatch. Called at the top of every PF command dispatch,
+	/// before prgpu's own handling, with the raw Adobe SDK [`Command`] plus
+	/// `InData`/`OutData`/`Parameters`. Use it to hook host-specific commands or
+	/// events the declarative API doesn't model — e.g. acquiring a private
+	/// Premiere host suite at `UpdateParamsUi`/`SequenceSetup`. Default no-op;
+	/// prgpu always proceeds with its normal handling afterwards.
+	///
+	/// [`Command`]: after_effects::Command
+	fn on_raw_command(
+		_command: &after_effects::Command,
+		_in_data: &after_effects::InData,
+		_out_data: &mut after_effects::OutData,
+		_params: &mut after_effects::Parameters<Self::Params>,
+	) -> Result<(), after_effects::Error> {
+		Ok(())
+	}
 }

@@ -109,53 +109,6 @@ fn host_from_in_data(in_data: &InData) -> Host {
 	}
 }
 
-/// RE probe: try to acquire the private PICA suites Warp Stabilizer uses, across
-/// versions 1..=8, and log whether Premiere vends them to a third-party effect.
-/// Pure diagnostics — each successful acquire is released immediately. Results
-/// land under the `[private_suite]` tag.
-fn probe_private_suites(in_data: &InData) {
-	let sp = in_data.pica_basic_suite_ptr();
-	if sp.is_null() {
-		log::warn!("[private_suite] SPBasicSuite ptr is null; cannot probe");
-		return;
-	}
-	let acquire = match unsafe { (*sp).AcquireSuite } {
-		Some(f) => f,
-		None => {
-			log::warn!("[private_suite] AcquireSuite fn ptr is null");
-			return;
-		}
-	};
-	let release = unsafe { (*sp).ReleaseSuite };
-
-	// The four privates discovered in Stabilizer.aex. Versions unknown for most,
-	// so sweep a small range and report every hit (name, version, pointer).
-	const NAMES: &[&str] = &[
-		"AE Private Effect UI Suite",
-		"PF AE Private Effect Suite",
-		"AE Private Utility Suite",
-		"AE Plugin Helper Suite",
-	];
-	for name in NAMES {
-		let Ok(cname) = std::ffi::CString::new(*name) else { continue };
-		let mut hits = 0u32;
-		for version in 1..=8i32 {
-			let mut out: *const c_void = std::ptr::null();
-			let err = unsafe { acquire(cname.as_ptr(), version, &mut out as *mut *const c_void) };
-			if err == 0 && !out.is_null() {
-				log::info!("[private_suite] OK   '{name}' v{version} -> {out:p}");
-				hits += 1;
-				if let Some(rel) = release {
-					unsafe { rel(cname.as_ptr(), version) };
-				}
-			} else {
-				log::info!("[private_suite] miss '{name}' v{version} (err={err})");
-			}
-		}
-		log::info!("[private_suite] '{name}': {hits} version(s) available");
-	}
-}
-
 /// AE PF adapter. Implements [`AdobePluginGlobal`] over the [`Effect`] trait
 /// so `ae::define_effect!(Plugin, (), Params)` can register a plugin whose
 /// only declarative content lives in `impl Effect for MyEffect`.
@@ -783,6 +736,10 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		mut out_data: OutData,
 		params: &mut Parameters<E::Params>,
 	) -> Result<(), ae::Error> {
+		// Low-level escape hatch for effects that need raw SDK command/event
+		// access (the borrow ends before the match moves `command`).
+		E::on_raw_command(&command, &in_data, &mut out_data, params)?;
+
 		match command {
 			Command::GlobalSetup => {
 				#[cfg(target_os = "windows")]
@@ -790,8 +747,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				#[cfg(target_os = "macos")]
 				let _ = ae::oslog::OsLogger::new(env!("CARGO_PKG_NAME")).init();
 				ae::log::set_max_level(ae::log::LevelFilter::Info);
-
-				probe_private_suites(&in_data);
 
 				install_descriptor_pixel_formats(&in_data, self.descriptor())?;
 

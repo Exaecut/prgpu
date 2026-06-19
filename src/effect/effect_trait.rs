@@ -19,13 +19,19 @@ use crate::params::ParamsSpec;
 pub trait Effect: Sized + Send + Sync + 'static {
 	type Params: ParamsSpec;
 
+	/// Opt into the background-task idle pump. When `true`, the adapter
+	/// registers an AE idle hook at GlobalSetup that drives
+	/// [`prgpu::tasks`](crate::effect::tasks) on the main thread. Leave `false`
+	/// for effects that never spawn background work.
+	const USES_BACKGROUND_TASKS: bool = false;
+
 	/// Override points on the build-metadata descriptor (match name, version,
 	/// flags come from `[package.metadata.prgpu]` via `register_effect!`).
 	fn descriptor(_d: EffectDescriptor) -> EffectDescriptor {
 		_d
 	}
 
-	/// Raw SDK access for cases `params!` doesn't cover (Ground rule 9).
+	/// Raw SDK access for cases `params!` doesn't cover.
 	fn extra_params(
 		_p: &mut after_effects::Parameters<Self::Params>,
 	) -> Result<(), after_effects::Error> {
@@ -53,4 +59,18 @@ pub trait Effect: Sized + Send + Sync + 'static {
 	/// `node_id()`, `ppix_suite`, `gpu_device_suite` are all live here.
 	/// Default no-op. Never called on the CPU path.
 	fn on_gpu_frame(_filter: &pr::GpuFilterData, _render_params: &pr::RenderParams, _ctx: &Ctx<Self::Params>) {}
+
+	/// Custom-UI event hook. Called by the AE adapter on `PF_Cmd_EVENT` for
+	/// params with `PF_PUI_CONTROL` (e.g. `#[label]`). Default no-op.
+	///
+	/// Label params (`P::LABEL_PARAMS`) are drawn automatically by the adapter
+	/// via Drawbot `draw_string` using the text stashed by `Ui::set_label`;
+	/// override this only if you need fully custom drawing.
+	fn on_event(
+		_in_data: &after_effects::InData,
+		_params: &mut after_effects::Parameters<Self::Params>,
+		_event: &mut after_effects::EventExtra,
+	) -> Result<(), after_effects::Error> {
+		Ok(())
+	}
 }

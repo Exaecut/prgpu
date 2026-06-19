@@ -1,8 +1,9 @@
 //! Codegen for `params!`: the discriminant enum, one marker per param, the
 //! `ParamsSpec` (host registration + per-frame `Snapshot`), the `Snapshot`
-//! storage, and the transitional `SetupParams` bridge.
+//! storage, the auto-generated `Router` enum + per-instance route store, and
+//! the transitional `SetupParams` bridge.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::Ident;
 
@@ -12,13 +13,42 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	let ParamsInput {
 		vis,
 		enum_ident,
-		variants,
-		params,
+		mut variants,
+		mut params,
 		nodes,
+		routes,
+		initial_route,
 	} = input;
+
+	// Auto-inject a hidden, per-instance popup that stores the active route.
+	// Added last so existing params keep their discriminants/indices.
+	let has_routes = !routes.is_empty();
+	let route_ident = Ident::new("__Route", Span::call_site());
+	let initial_index = initial_route
+		.as_ref()
+		.and_then(|r| routes.iter().position(|x| x == r))
+		.unwrap_or(0) as u32;
+	if has_routes {
+		let route_names: Vec<String> = routes.iter().map(|r| r.to_string()).collect();
+		variants.push(route_ident.clone());
+		params.push(ParamDef {
+			ident: route_ident.clone(),
+			label: String::new(),
+			kind: Kind::RouteStore { routes: route_names, initial: initial_index },
+			debug_only: false,
+		});
+	}
 
 	let n = variants.len();
 	let count = lit_usize(n);
+
+	// `ALL` is for iterate-and-toggle visibility; only real, non-route leaf
+	// params, never group markers or the hidden route store.
+	let all_param_idents: Vec<&Ident> = params
+		.iter()
+		.filter(|p| !matches!(p.kind, Kind::RouteStore { .. }))
+		.map(|p| &p.ident)
+		.collect();
 
 	let first = &variants[0];
 	let rest = &variants[1..];
@@ -74,6 +104,52 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	let layer_params: Vec<&Ident> = params.iter().filter(|p| matches!(p.kind, Kind::Layer { .. })).map(|p| &p.ident).collect();
 	let layer_params_tokens = quote! { &[ #( #enum_ident::#layer_params ),* ] };
 
+	let label_params: Vec<&Ident> = params.iter().filter(|p| matches!(p.kind, Kind::Label { .. })).map(|p| &p.ident).collect();
+	let label_params_tokens = quote! { &[ #( #enum_ident::#label_params ),* ] };
+
+	// `#[button(text = expr)]` → buttons whose caption is rewritten live via
+	// PF_UpdateParamUI (the Warp Stabilizer pattern), as opposed to custom-draw
+	// `#[label]` text.
+	let name_driven_params: Vec<&Ident> = params
+		.iter()
+		.filter(|p| matches!(&p.kind, Kind::Button { text: Some(_), .. }))
+		.map(|p| &p.ident)
+		.collect();
+	let name_driven_params_tokens = quote! { &[ #( #enum_ident::#name_driven_params ),* ] };
+
+	// `#[label(text = expr)]` and `#[button(text = expr)]` → declarative text
+	// bindings. Both flow through the same `label_rules`; the adapter routes
+	// name-driven buttons to `set_name`+`update_param_ui` and labels to the
+	// draw stash.
+	let label_text_bindings: Vec<TokenStream> = params
+		.iter()
+		.filter_map(|p| {
+			let expr = match &p.kind {
+				Kind::Label { text: Some(expr) } => expr,
+				Kind::Button { text: Some(expr), .. } => expr,
+				_ => return None,
+			};
+			let id = &p.ident;
+			Some(quote! {
+				ui.set_label_id(
+					#enum_ident::#id,
+					|_ctx| ::core::convert::Into::<::std::string::String>::into(#expr),
+				);
+			})
+		})
+		.collect();
+
+	// `(group-start marker, route index)` for every routed group.
+	let mut routed_groups: Vec<TokenStream> = Vec::new();
+	collect_routed_groups(&nodes, &routes, &enum_ident, &mut routed_groups);
+	let route_param_tokens = if has_routes {
+		quote! { ::core::option::Option::Some(#enum_ident::#route_ident) }
+	} else {
+		quote! { ::core::option::Option::None }
+	};
+
+	let router_def = router_def(&vis, &routes, &initial_route);
+
 	let snapshot = quote! {
 		#[doc(hidden)]
 		#[derive(Clone, Copy)]
@@ -96,6 +172,13 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	};
 
 	let register_stmts: Vec<TokenStream> = nodes.iter().map(|node| emit_node(node, &enum_ident, &params)).collect();
+	// The injected route store isn't in the group tree; register it explicitly.
+	let route_reg = if has_routes {
+		let route_param = params.iter().find(|p| matches!(p.kind, Kind::RouteStore { .. })).unwrap();
+		reg_stmt(route_param, &enum_ident)
+	} else {
+		quote! {}
+	};
 	let cpu_stmts: Vec<TokenStream> = params.iter().filter_map(|p| cpu_stmt(p, &enum_ident)).collect();
 	let gpu_stmts: Vec<TokenStream> = params.iter().filter_map(|p| gpu_stmt(p, &enum_ident)).collect();
 
@@ -109,14 +192,22 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 
 		#snapshot
 
+		#router_def
+
 		impl ::prgpu::ParamsSpec for #enum_ident {
 			const COUNT: usize = #count;
+			const ALL: &'static [Self] = &[ #( #enum_ident::#all_param_idents ),* ];
 			const DEBUG_PARAM: ::core::option::Option<Self> = #debug_param;
 			const LAYER_PARAMS: &'static [Self] = #layer_params_tokens;
+			const LABEL_PARAMS: &'static [Self] = #label_params_tokens;
+			const NAME_DRIVEN_PARAMS: &'static [Self] = #name_driven_params_tokens;
+			const ROUTED_GROUPS: &'static [(Self, u32)] = &[ #( #routed_groups ),* ];
+			const ROUTE_PARAM: ::core::option::Option<Self> = #route_param_tokens;
 			type Snapshot = __Snapshot;
 
 			#[allow(unused_variables)]
 			fn register(params: &mut ::after_effects::Parameters<Self>) -> ::core::result::Result<(), ::after_effects::Error> {
+				#route_reg
 				#( #register_stmts )*
 				Ok(())
 			}
@@ -135,8 +226,13 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 				snapshot
 			}
 
-			fn buttons() -> &'static [(Self, fn())] {
+			fn buttons() -> &'static [(Self, fn(&mut ::prgpu::ActionCtx<Self>))] {
 				#buttons
+			}
+
+			#[allow(unused_variables)]
+			fn contribute_labels(ui: &mut ::prgpu::Ui<Self>) {
+				#( #label_text_bindings )*
 			}
 		}
 
@@ -150,10 +246,93 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	}
 }
 
+/// Emit the `pub enum Router` + `impl Router` + `impl prgpu::Route`. Empty when
+/// no group declares a `route`.
+fn router_def(vis: &syn::Visibility, routes: &[Ident], initial: &Option<Ident>) -> TokenStream {
+	if routes.is_empty() {
+		return quote! {};
+	}
+	let names: Vec<String> = routes.iter().map(|r| r.to_string()).collect();
+	let indices: Vec<u32> = (0..routes.len() as u32).collect();
+	let initial_variant = initial.clone().unwrap_or_else(|| routes[0].clone());
+	let count = routes.len();
+	let count_lit = lit_usize(count);
+	quote! {
+		#[repr(u32)]
+		#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+		#vis enum Router {
+			#( #routes = #indices, )*
+		}
+
+		impl Router {
+			/// Number of routes.
+			pub const COUNT: usize = #count_lit;
+
+			/// Active route for the instance being processed.
+			pub fn current() -> Router {
+				<Router as ::prgpu::Route>::from_index(::prgpu::effect::route::current_index())
+			}
+			/// Request a route change. Applied after the current handler returns.
+			pub fn set(route: Router) {
+				::prgpu::effect::route::request_index(<Router as ::prgpu::Route>::to_index(route));
+			}
+			/// The route's variant name.
+			pub fn name(self) -> &'static str {
+				<Router as ::prgpu::Route>::name(self)
+			}
+			/// Zero-based position of this route.
+			pub fn index(self) -> u32 {
+				self as u32
+			}
+			/// Next route, wrapping.
+			pub fn next(self) -> Router {
+				<Router as ::prgpu::Route>::from_index((self as u32 + 1) % (#count_lit as u32))
+			}
+			/// Previous route, wrapping.
+			pub fn prev(self) -> Router {
+				let n = #count_lit as u32;
+				<Router as ::prgpu::Route>::from_index((self as u32 + n - 1) % n)
+			}
+		}
+
+		impl ::prgpu::Route for Router {
+			const ALL: &'static [Router] = &[ #( Router::#routes ),* ];
+			const INITIAL: Router = Router::#initial_variant;
+			fn to_index(self) -> u32 { self as u32 }
+			fn from_index(index: u32) -> Self {
+				match index {
+					#( #indices => Router::#routes, )*
+					_ => Router::#initial_variant,
+				}
+			}
+			fn name(self) -> &'static str {
+				match self {
+					#( Router::#routes => #names, )*
+				}
+			}
+		}
+	}
+}
+
+fn collect_routed_groups(nodes: &[Node], routes: &[Ident], enum_ident: &Ident, out: &mut Vec<TokenStream>) {
+	for node in nodes {
+		if let Node::Group { idx, route, children, .. } = node {
+			if let Some(r) = route {
+				if let Some(ri) = routes.iter().position(|x| x == r) {
+					let marker = marker_start(*idx);
+					let ri = lit_u32(ri as u32);
+					out.push(quote! { (#enum_ident::#marker, #ri) });
+				}
+			}
+			collect_routed_groups(children, routes, enum_ident, out);
+		}
+	}
+}
+
 fn emit_node(node: &Node, enum_ident: &Ident, params: &[ParamDef]) -> TokenStream {
 	match node {
 		Node::Param(i) => reg_stmt(&params[*i], enum_ident),
-		Node::Group { idx, name, collapsed, children } => {
+		Node::Group { idx, name, collapsed, children, .. } => {
 			let start = marker_start(*idx);
 			let end = marker_end(*idx);
 			let kids = children.iter().map(|c| emit_node(c, enum_ident, params));
@@ -327,6 +506,44 @@ fn reg_stmt(p: &ParamDef, enum_ident: &Ident) -> TokenStream {
 		Kind::Custom { setup } => {
 			quote! { (#setup)(params, #enum_ident::#id)?; }
 		}
+		Kind::Label { .. } => {
+			quote! {
+				// Premiere only sends PF_Event_DRAW to custom-UI params that are
+				// ARBITRARY (or null) — and empirically only the arbitrary form
+				// actually fires (Custom_ECW_UI.cpp uses PF_ADD_ARBITRARY2 on its
+				// Premiere branch). The payload is a throwaway LabelArb; the text
+				// is drawn from the label stash. CONTROL + ui dims give it a
+				// drawable control area.
+				params.add_customized(#enum_ident::#id, "",
+					::after_effects::ArbitraryDef::setup(|f| {
+						let _ = f.set_default::<::prgpu::LabelArb>(::core::default::Default::default());
+					}),
+					|p| {
+						p.set_flag(::after_effects::ParamFlag::SUPERVISE, true);
+						p.set_ui_flag(::after_effects::ParamUIFlags::CONTROL, true);
+						// Don't let the host erase (black-fill) the control area;
+						// we paint only the text, leaving the panel background.
+						p.set_ui_flag(::after_effects::ParamUIFlags::DO_NOT_ERASE_CONTROL, true);
+						p.set_ui_width(200);
+						p.set_ui_height(20);
+						-1
+					})?;
+			}
+		}
+		Kind::RouteStore { routes, initial } => {
+			let opts: Vec<&String> = routes.iter().collect();
+			let default1 = lit_i32(*initial as i32 + 1);
+			quote! {
+				params.add_customized(#enum_ident::#id, "", ::after_effects::PopupDef::setup(|f| {
+					f.set_options(&[ #(#opts),* ]);
+					f.set_default(#default1);
+					f.set_value(#default1);
+				}), |p| {
+					p.set_ui_flag(::after_effects::ParamUIFlags::INVISIBLE, true);
+					-1
+				})?;
+			}
+		}
 	}
 }
 
@@ -339,7 +556,7 @@ fn cpu_stmt(p: &ParamDef, enum_ident: &Ident) -> Option<TokenStream> {
 		Kind::Color { .. } => quote! { ::prgpu::params::convert::cpu_color(params, #enum_ident::#id)? },
 		Kind::Point { .. } => quote! { ::prgpu::params::convert::cpu_point(params, #enum_ident::#id, geom.layer_w, geom.layer_h)? },
 		Kind::Popup { .. } => quote! { ::prgpu::params::convert::cpu_popup(params, #enum_ident::#id)? },
-		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => return None,
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } | Kind::Label { .. } | Kind::RouteStore { .. } => return None,
 	};
 	Some(quote! { ::prgpu::Snapshot::set(&mut snapshot, #enum_ident::#id, #call); })
 }
@@ -352,7 +569,7 @@ fn gpu_stmt(p: &ParamDef, enum_ident: &Ident) -> Option<TokenStream> {
 		Kind::Color { .. } => quote! { ::prgpu::params::convert::gpu_color(filter, render_params, #enum_ident::#id) },
 		Kind::Point { .. } => quote! { ::prgpu::params::convert::gpu_point(filter, render_params, #enum_ident::#id) },
 		Kind::Popup { .. } => quote! { ::prgpu::params::convert::gpu_popup(filter, render_params, #enum_ident::#id) },
-		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => return None,
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } | Kind::Label { .. } | Kind::RouteStore { .. } => return None,
 	};
 	Some(quote! { ::prgpu::Snapshot::set(&mut snapshot, #enum_ident::#id, #call); })
 }
@@ -365,19 +582,29 @@ fn value_ty(kind: &Kind) -> TokenStream {
 		Kind::Point { .. } => quote! { ::prgpu::Point2 },
 		Kind::Popup { value_ty: PopupTy::U32, .. } => quote! { u32 },
 		Kind::Popup { value_ty: PopupTy::Enum(path), .. } => quote! { #path },
-		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } => quote! { () },
+		Kind::Button { .. } | Kind::Layer { .. } | Kind::Custom { .. } | Kind::Label { .. } | Kind::RouteStore { .. } => quote! { () },
 	}
 }
 
 fn buttons(params: &[ParamDef], enum_ident: &Ident) -> TokenStream {
 	let entries: Vec<TokenStream> = params
 		.iter()
-		.filter_map(|p| match &p.kind {
-			Kind::Button { on_click: Some(path) } => {
-				let id = &p.ident;
-				Some(quote! { (#enum_ident::#id, #path as fn()) })
+		.filter_map(|p| {
+			let id = &p.ident;
+			match &p.kind {
+				// Context-aware handler: passed through directly.
+				Kind::Button { on_action: Some(path), .. } => Some(quote! {
+					(#enum_ident::#id, #path as fn(&mut ::prgpu::ActionCtx<#enum_ident>))
+				}),
+				// Legacy fn() handler: wrapped to ignore the context.
+				Kind::Button { on_click: Some(path), on_action: None, .. } => Some(quote! {
+					(#enum_ident::#id, {
+						fn __wrap(_cx: &mut ::prgpu::ActionCtx<#enum_ident>) { #path(); }
+						__wrap as fn(&mut ::prgpu::ActionCtx<#enum_ident>)
+					})
+				}),
+				_ => None,
 			}
-			_ => None,
 		})
 		.collect();
 	quote! { &[ #(#entries),* ] }
@@ -407,6 +634,10 @@ fn u8lit(v: u8) -> TokenStream {
 
 fn i16lit(v: i16) -> TokenStream {
 	format!("{v}i16").parse().unwrap()
+}
+
+fn lit_i32(v: i32) -> TokenStream {
+	format!("{v}i32").parse().unwrap()
 }
 
 fn lit_usize(v: usize) -> TokenStream {

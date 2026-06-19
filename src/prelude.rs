@@ -2,8 +2,9 @@
 //! `use prgpu::prelude::*;` as their single import.
 
 pub use crate::effect::{
-    Capability, Ctx, Effect, EffectDescriptor, ExpansionExtent, LicenseGate, Ui,
+    ActionCtx, Capability, Ctx, Effect, EffectDescriptor, ExpansionExtent, LabelArb, LicenseGate, Route, Ui,
 };
+pub use crate::effect::tasks;
 pub use crate::graph::{
     Derived, Graph, MipDirection, MipPyramidDesc, PyramidHandle, Slot, SourcePolicy,
 };

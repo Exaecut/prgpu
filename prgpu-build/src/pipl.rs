@@ -7,6 +7,9 @@ pub fn derive_flags(m: &EffectMetadata) -> (OutFlags, OutFlags2) {
 	if m.expansion {
 		f |= OutFlags::IExpandBuffer | OutFlags::UseOutputExtent;
 	}
+	if m.custom_ui {
+		f |= OutFlags::CustomUI;
+	}
 	let mut f2 = OutFlags2::SupportsThreadedRendering
 		| OutFlags2::SupportsSmartRender
 		| OutFlags2::SupportsGetFlattenedSequenceData

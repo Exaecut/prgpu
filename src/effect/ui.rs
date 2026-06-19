@@ -1,5 +1,5 @@
-//! Snapshot-driven visibility rules. `Effect::ui` collects rules once; the
-//! adapter evaluates them against each frame's `Ctx<P>`.
+//! Snapshot-driven visibility + label rules. `Effect::ui` collects rules
+//! once; the adapter evaluates them against each frame's `Ctx<P>`.
 //!
 //! Replaces `ParamApi`/`VisibilityBuilder`/`ActionBuilder` — action callbacks
 //! live on `params!` `#[button(on_click = ...)]` attributes (phase 3).
@@ -10,11 +10,14 @@ use crate::params::{Param, ParamsSpec};
 pub struct Ui<P: ParamsSpec> {
 	/// Each rule: (param, predicate). Predicate is evaluated against `Ctx<P>`.
 	pub(crate) rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>)>,
+	/// Each label rule: (param, label_fn). Returns the new label text for the
+	/// param's UI row, evaluated on every UpdateParamsUi.
+	pub(crate) label_rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> String + Send + Sync + 'static>)>,
 }
 
 impl<P: ParamsSpec> Ui<P> {
 	pub fn new() -> Self {
-		Self { rules: Vec::new() }
+		Self { rules: Vec::new(), label_rules: Vec::new() }
 	}
 
 	pub fn show<M: Param<Spec = P>>(
@@ -33,6 +36,29 @@ impl<P: ParamsSpec> Ui<P> {
 		for m in _ms {
 			self.rules.push((M::ID, Box::new(pred.clone())));
 		}
+	}
+
+	/// Dynamically relabel a param's UI row. The closure receives the current
+	/// `Ctx<P>` and returns the new label. Evaluated on every UpdateParamsUi /
+	/// UserChangedParam, same cadence as `show`. For ctx-independent text,
+	/// prefer the declarative `#[label(text = …)]` form in `params!`.
+	pub fn set_label<M: Param<Spec = P>>(
+		&mut self,
+		_m: M,
+		label_fn: impl Fn(&Ctx<P>) -> String + Send + Sync + 'static,
+	) {
+		self.label_rules.push((M::ID, Box::new(label_fn)));
+	}
+
+	/// Marker-free variant of [`set_label`](Self::set_label), used by the
+	/// macro-generated `#[label(text = …)]` bindings.
+	#[doc(hidden)]
+	pub fn set_label_id(
+		&mut self,
+		id: P,
+		label_fn: impl Fn(&Ctx<P>) -> String + Send + Sync + 'static,
+	) {
+		self.label_rules.push((id, Box::new(label_fn)));
 	}
 }
 

@@ -14,11 +14,16 @@ pub struct ParamsInput {
 	pub variants: Vec<Ident>,
 	pub params: Vec<ParamDef>,
 	pub nodes: Vec<Node>,
+	/// Distinct route names (declaration order) collected from `route = X` on
+	/// groups. Empty ⇒ no `Router` generated.
+	pub routes: Vec<Ident>,
+	/// Route marked `initial`, else the first route, else `None`.
+	pub initial_route: Option<Ident>,
 }
 
 pub enum Node {
 	Param(usize),
-	Group { idx: usize, name: String, collapsed: bool, children: Vec<Node> },
+	Group { idx: usize, name: String, collapsed: bool, route: Option<Ident>, children: Vec<Node> },
 }
 
 pub struct ParamDef {
@@ -72,6 +77,12 @@ pub enum Kind {
 	},
 	Button {
 		on_click: Option<Path>,
+		on_action: Option<Path>,
+		/// Optional dynamic caption. When present, the adapter rewrites the
+		/// button's `name` to this expression's value via `PF_UpdateParamUI` on
+		/// each refresh (the Warp Stabilizer live-progress button). `None` ⇒ the
+		/// static `label` is the caption.
+		text: Option<Expr>,
 	},
 	/// Secondary image input (`PF_ADD_LAYER`). Carries no readable snapshot
 	/// value — presence is resolved by the adapter at checkout and surfaced via
@@ -83,6 +94,21 @@ pub enum Kind {
 	},
 	Custom {
 		setup: Path,
+	},
+	/// Drawbot-drawn text label rendered in the ECW control area via
+	/// `PF_Event_DRAW` + `surface.draw_string`. `text` is an optional Rust
+	/// expression (static `"…"` or dynamic `format!(…)`) evaluated each refresh;
+	/// `None` ⇒ bind the text via `Ui::set_label` instead. No snapshot value.
+	Label {
+		text: Option<Expr>,
+	},
+	/// Auto-injected hidden popup that stores the active route per instance.
+	/// Not user-writable in `params!`; synthesized by codegen when groups
+	/// declare `route = X`. `routes` are the option labels (route names),
+	/// `initial` the default 0-based index.
+	RouteStore {
+		routes: Vec<String>,
+		initial: u32,
 	},
 }
 
@@ -98,6 +124,7 @@ struct GroupFrame {
 	idx: usize,
 	name: String,
 	collapsed: bool,
+	route: Option<Ident>,
 	children: Vec<Node>,
 }
 
@@ -109,7 +136,7 @@ fn push_node(stack: &mut [GroupFrame], root: &mut Vec<Node>, node: Node) {
 }
 
 enum GroupAttr {
-	Open { name: String, collapsed: bool },
+	Open { name: String, collapsed: bool, route: Option<Ident>, initial: bool },
 	End,
 }
 
@@ -128,6 +155,8 @@ impl Parse for ParamsInput {
 		let mut root: Vec<Node> = Vec::new();
 		let mut stack: Vec<GroupFrame> = Vec::new();
 		let mut group_count = 0usize;
+		let mut routes: Vec<Ident> = Vec::new();
+		let mut initial_route: Option<Ident> = None;
 
 		while !content.is_empty() {
 			let attrs = content.call(Attribute::parse_outer)?;
@@ -146,11 +175,20 @@ impl Parse for ParamsInput {
 								idx: frame.idx,
 								name: frame.name,
 								collapsed: frame.collapsed,
+								route: frame.route,
 								children: frame.children,
 							};
 							push_node(&mut stack, &mut root, node);
 						}
-						GroupAttr::Open { name, collapsed } => {
+						GroupAttr::Open { name, collapsed, route, initial } => {
+							if let Some(r) = &route {
+								if !routes.iter().any(|x| x == r) {
+									routes.push(r.clone());
+								}
+								if initial {
+									initial_route = Some(r.clone());
+								}
+							}
 							let idx = group_count;
 							group_count += 1;
 							variants.push(marker_start(idx));
@@ -158,11 +196,12 @@ impl Parse for ParamsInput {
 								idx,
 								name,
 								collapsed,
+								route,
 								children: Vec::new(),
 							});
 						}
 					},
-					"slider" | "checkbox" | "color" | "angle" | "point" | "popup" | "blend_mode" | "button" | "layer" | "custom" => {
+					"slider" | "checkbox" | "color" | "angle" | "point" | "popup" | "blend_mode" | "button" | "layer" | "custom" | "label" => {
 						if kind_attr.is_some() {
 							return Err(Error::new_spanned(&attr, "more than one parameter-kind attribute on a variant"));
 						}
@@ -171,7 +210,7 @@ impl Parse for ParamsInput {
 					other => {
 						return Err(Error::new_spanned(
 							&attr,
-							format!("unknown attribute `{other}`; expected one of slider/checkbox/color/angle/point/popup/blend_mode/button/layer/custom/group"),
+							format!("unknown attribute `{other}`; expected one of slider/checkbox/color/angle/point/popup/blend_mode/button/layer/custom/label/group"),
 						));
 					}
 				}
@@ -211,12 +250,19 @@ impl Parse for ParamsInput {
 			return Err(Error::new(Span::call_site(), "`params!` needs at least one parameter"));
 		}
 
+		// Default the initial route to the first declared one when unmarked.
+		if initial_route.is_none() {
+			initial_route = routes.first().cloned();
+		}
+
 		Ok(ParamsInput {
 			vis,
 			enum_ident,
 			variants,
 			params,
 			nodes: root,
+			routes,
+			initial_route,
 		})
 	}
 }
@@ -225,20 +271,34 @@ fn parse_group_attr(attr: &Attribute) -> syn::Result<GroupAttr> {
 	attr.parse_args_with(|input: ParseStream<'_>| {
 		if input.peek(LitStr) {
 			let name: LitStr = input.parse()?;
-			let mut collapsed = true;
-			if input.peek(Token![,]) {
+			// Groups are expanded by default; opt into collapse explicitly.
+			let mut collapsed = false;
+			let mut route: Option<Ident> = None;
+			let mut initial = false;
+			while input.peek(Token![,]) {
 				input.parse::<Token![,]>()?;
 				let key: Ident = input.parse()?;
-				if key != "collapsed" {
-					return Err(Error::new_spanned(&key, "expected `collapsed`"));
-				}
-				if input.peek(Token![=]) {
-					input.parse::<Token![=]>()?;
-					let b: LitBool = input.parse()?;
-					collapsed = b.value;
+				match key.to_string().as_str() {
+					"collapsed" => {
+						collapsed = true;
+						if input.peek(Token![=]) {
+							input.parse::<Token![=]>()?;
+							let b: LitBool = input.parse()?;
+							collapsed = b.value;
+						}
+					}
+					"route" => {
+						input.parse::<Token![=]>()?;
+						route = Some(input.parse::<Ident>()?);
+					}
+					"initial" => initial = true,
+					_ => return Err(Error::new_spanned(&key, "expected `collapsed`, `route = Name`, or `initial`")),
 				}
 			}
-			Ok(GroupAttr::Open { name: name.value(), collapsed })
+			if initial && route.is_none() {
+				return Err(Error::new_spanned(&name, "`initial` is only valid together with `route = Name`"));
+			}
+			Ok(GroupAttr::Open { name: name.value(), collapsed, route, initial })
 		} else {
 			let id: Ident = input.parse()?;
 			if id == "end" {
@@ -368,6 +428,11 @@ fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, boo
 				Some(e) => Some(path_expr(e)?),
 				None => None,
 			},
+			on_action: match kv.get("on_action") {
+				Some(e) => Some(path_expr(e)?),
+				None => None,
+			},
+			text: kv.get("text").cloned(),
 		},
 		"layer" => {
 			// `default = myself` -> PF_LayerDefault_MYSELF; `default = none`
@@ -389,10 +454,13 @@ fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, boo
 		"custom" => Kind::Custom {
 			setup: path_expr(kv.get("setup").ok_or_else(|| Error::new_spanned(ident, "custom needs `setup = path`"))?)?,
 		},
+		"label" => Kind::Label {
+			text: kv.get("text").cloned(),
+		},
 		_ => unreachable!(),
 	};
 
-	let label = if matches!(kind, Kind::Custom { .. }) {
+	let label = if matches!(kind, Kind::Custom { .. } | Kind::Label { .. }) {
 		String::new()
 	} else {
 		require_label()?

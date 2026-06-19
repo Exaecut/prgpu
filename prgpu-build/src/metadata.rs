@@ -11,6 +11,7 @@ pub struct EffectMetadata {
 	pub support_url: Option<&'static str>,
 	pub expansion: bool,
 	pub gpu: bool,
+	pub custom_ui: bool,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +42,8 @@ struct RawEffectMetadata {
 	support_url: Option<String>,
 	expansion: Option<bool>,
 	gpu: Option<bool>,
+	#[serde(rename = "custom-ui")]
+	custom_ui: Option<bool>,
 }
 
 impl EffectMetadata {
@@ -81,6 +84,7 @@ impl EffectMetadata {
 			support_url: support_url.map(|s| Box::leak(s.into_boxed_str()) as &'static str),
 			expansion: raw.expansion.unwrap_or(false),
 			gpu: raw.gpu.unwrap_or(true),
+			custom_ui: raw.custom_ui.unwrap_or(false),
 		})
 	}
 }

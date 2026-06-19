@@ -101,6 +101,8 @@ pub trait Snapshot<P: ParamsSpec>: Copy + Default {
 /// Implemented by a `params!` enum: registration + per-frame snapshot layout.
 pub trait ParamsSpec: Copy + Eq + Hash + Debug + Into<usize> + Send + Sync + 'static {
 	const COUNT: usize;
+	/// All variants in declaration order. Used to iterate and bulk-hide/show.
+	const ALL: &'static [Self];
 	/// The `#[checkbox(debug_only)]` param (if any), so a later phase can wire
 	/// `Ctx::debug_view` to it.
 	const DEBUG_PARAM: Option<Self>;
@@ -108,10 +110,36 @@ pub trait ParamsSpec: Copy + Eq + Hash + Debug + Into<usize> + Send + Sync + 'st
 	/// out into the matching `InvocationBase::layers` slot; the index here
 	/// equals the marker's `LAYER_INDEX`. Empty for effects with no aux inputs.
 	const LAYER_PARAMS: &'static [Self] = &[];
+	/// Label params (`#[label]`) in declaration order. The AE adapter draws
+	/// their text via Drawbot in `PF_Event_DRAW`; empty for effects with none.
+	const LABEL_PARAMS: &'static [Self] = &[];
+	/// Name-driven params (`#[button(text = …)]`) whose caption is rewritten
+	/// live by pushing the evaluated text into the param `name` and calling
+	/// `PF_UpdateParamUI` — the native Warp Stabilizer pattern (the cancel
+	/// button caption that reads "… (frame x of y)"). The adapter updates these
+	/// on every UpdateParamsUi/UserChangedParam/Event instead of custom-drawing.
+	const NAME_DRIVEN_PARAMS: &'static [Self] = &[];
+	/// `(group-start marker, route index)` for every `#[group(route = X)]`. The
+	/// adapter hides each group whose route ≠ the active route. Empty ⇒ the
+	/// effect declares no routes.
+	const ROUTED_GROUPS: &'static [(Self, u32)] = &[];
+	/// The auto-injected hidden popup that stores the active route per instance
+	/// (project-persisted). `Some` ⇒ the effect declares routes; the adapter
+	/// reads/writes it to seed/flush the route thread-local.
+	const ROUTE_PARAM: Option<Self> = None;
 	type Snapshot: Snapshot<Self> + Send + Sync + 'static;
 
 	fn register(params: &mut Parameters<Self>) -> Result<(), after_effects::Error>;
 	fn snapshot_cpu(params: &Parameters<Self>, geom: &SnapshotGeom) -> Result<Self::Snapshot, after_effects::Error>;
 	fn snapshot_gpu(filter: &pr::GpuFilterData, render_params: &pr::RenderParams, geom: &SnapshotGeom) -> Self::Snapshot;
-	fn buttons() -> &'static [(Self, fn())];
+	/// Button click handlers. Each takes an [`ActionCtx`](crate::effect::ActionCtx)
+	/// for route navigation + background-task control. `#[button(on_click = f)]`
+	/// (`fn()`) is adapted to this shape by the macro; `#[button(on_action = f)]`
+	/// receives the context directly.
+	fn buttons() -> &'static [(Self, fn(&mut crate::effect::ActionCtx<Self>))];
+
+	/// Push `#[label(text = …)]` text bindings into the UI rule set. The macro
+	/// generates this; the adapter calls it alongside `Effect::ui`. Default
+	/// no-op for effects with no static-text labels.
+	fn contribute_labels(_ui: &mut crate::effect::Ui<Self>) {}
 }

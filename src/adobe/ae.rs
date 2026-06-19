@@ -109,6 +109,53 @@ fn host_from_in_data(in_data: &InData) -> Host {
 	}
 }
 
+/// RE probe: try to acquire the private PICA suites Warp Stabilizer uses, across
+/// versions 1..=8, and log whether Premiere vends them to a third-party effect.
+/// Pure diagnostics — each successful acquire is released immediately. Results
+/// land under the `[private_suite]` tag.
+fn probe_private_suites(in_data: &InData) {
+	let sp = in_data.pica_basic_suite_ptr();
+	if sp.is_null() {
+		log::warn!("[private_suite] SPBasicSuite ptr is null; cannot probe");
+		return;
+	}
+	let acquire = match unsafe { (*sp).AcquireSuite } {
+		Some(f) => f,
+		None => {
+			log::warn!("[private_suite] AcquireSuite fn ptr is null");
+			return;
+		}
+	};
+	let release = unsafe { (*sp).ReleaseSuite };
+
+	// The four privates discovered in Stabilizer.aex. Versions unknown for most,
+	// so sweep a small range and report every hit (name, version, pointer).
+	const NAMES: &[&str] = &[
+		"AE Private Effect UI Suite",
+		"PF AE Private Effect Suite",
+		"AE Private Utility Suite",
+		"AE Plugin Helper Suite",
+	];
+	for name in NAMES {
+		let Ok(cname) = std::ffi::CString::new(*name) else { continue };
+		let mut hits = 0u32;
+		for version in 1..=8i32 {
+			let mut out: *const c_void = std::ptr::null();
+			let err = unsafe { acquire(cname.as_ptr(), version, &mut out as *mut *const c_void) };
+			if err == 0 && !out.is_null() {
+				log::info!("[private_suite] OK   '{name}' v{version} -> {out:p}");
+				hits += 1;
+				if let Some(rel) = release {
+					unsafe { rel(cname.as_ptr(), version) };
+				}
+			} else {
+				log::info!("[private_suite] miss '{name}' v{version} (err={err})");
+			}
+		}
+		log::info!("[private_suite] '{name}': {hits} version(s) available");
+	}
+}
+
 /// AE PF adapter. Implements [`AdobePluginGlobal`] over the [`Effect`] trait
 /// so `ae::define_effect!(Plugin, (), Params)` can register a plugin whose
 /// only declarative content lives in `impl Effect for MyEffect`.
@@ -118,6 +165,7 @@ pub struct EffectAdapter<E: Effect, L: LicenseGate> {
 	descriptor: OnceLock<EffectDescriptor>,
 	plugin_id: aegp::PluginId,
 	ui_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> bool + Send + Sync + 'static>)>>,
+	label_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> String + Send + Sync + 'static>)>>,
 }
 
 impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
@@ -128,6 +176,7 @@ impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
 			descriptor: OnceLock::new(),
 			plugin_id: aegp::PluginId::default(),
 			ui_rules: OnceLock::new(),
+			label_rules: OnceLock::new(),
 		}
 	}
 }
@@ -183,7 +232,71 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		}
 		let mut ui = Ui::new();
 		E::ui(&mut ui);
+		E::Params::contribute_labels(&mut ui);
+		log::info!("[label] ensure_ui_rules: {} visibility rule(s), {} label rule(s)", ui.rules.len(), ui.label_rules.len());
 		let _ = self.ui_rules.set(ui.rules);
+		let _ = self.label_rules.set(ui.label_rules);
+	}
+
+	/// Seed the route thread-local from this instance's hidden route param so
+	/// `Router::current()` (label exprs, visibility) reads the right value.
+	/// Evaluate a label's text closure against a fresh `Ctx` (live). Used by the
+	/// DRAW handler so the painted text reflects current state, not the last
+	/// stash. Returns `None` if there's no rule for `param_idx` or snapshotting
+	/// fails (then the caller falls back to the stash).
+	fn eval_label_live(&self, in_data: &InData, params: &Parameters<E::Params>, param_idx: usize) -> Option<String> {
+		let label_rules = self.label_rules.get()?;
+		self.seed_route(params);
+		let geom = SnapshotGeom { layer_w: 1, layer_h: 1, output_w: 1, output_h: 1, ext_x: 0, ext_y: 0 };
+		let host = host_from_in_data(in_data);
+		let backend = backend_from_cfg();
+		let time_seconds = canonical_time_seconds(in_data);
+		let state = Self::snapshot_and_ctx(params, &geom, host, backend, time_seconds).ok()?;
+		let ctx = state.ctx(host, backend, 0, 0.0, false);
+		for (pid, f) in label_rules {
+			if params.index(*pid) == Some(param_idx) {
+				return Some(f(&ctx));
+			}
+		}
+		None
+	}
+
+	fn seed_route(&self, params: &Parameters<E::Params>) {
+		// Session authority first: a flushed route (incl. background-initiated)
+		// survives passes even if the popup store didn't persist the write.
+		if let Some(idx) = crate::effect::route::effective_index() {
+			crate::effect::route::set_current_index(idx);
+			return;
+		}
+		if let Some(rp) = E::Params::ROUTE_PARAM {
+			if let Ok(p) = params.get(rp) {
+				if let Ok(popup) = p.as_popup() {
+					let idx = (popup.value() - 1).max(0) as u32;
+					crate::effect::route::set_current_index(idx);
+				}
+			}
+		}
+	}
+
+	/// Flush a route requested during a handler (`Router::set`/`goto`, incl.
+	/// from a background-task worker, e.g. "job done → Complete") to the session
+	/// authority + the per-instance route popup store.
+	fn flush_route(&self, params: &mut Parameters<E::Params>) {
+		if let Some(idx) = crate::effect::route::take_pending_index() {
+			// Best-effort persistence: write the hidden popup store. (May not
+			// commit outside USER_CHANGED_PARAM — EFFECTIVE below is the session
+			// authority that guarantees the flip sticks across passes.)
+			if let Some(rp) = E::Params::ROUTE_PARAM {
+				if let Ok(mut p) = params.get_mut(rp) {
+					if let Ok(mut popup) = p.as_popup_mut() {
+						let _ = popup.set_value(idx as i32 + 1);
+					}
+				}
+			}
+			crate::effect::route::set_effective_index(idx);
+			crate::effect::route::set_current_index(idx);
+			log::info!("[route] flush -> index {idx}");
+		}
 	}
 
 	fn apply_visibility(
@@ -206,6 +319,12 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			ext_x: 0,
 			ext_y: 0,
 		};
+		// Apply any route requested since the last pass (incl. from a
+		// background-task worker thread, e.g. "job done → Complete"), then read
+		// the active route — predicates and label exprs call `Router::current()`.
+		self.flush_route(params);
+		self.seed_route(params);
+
 		let state = Self::snapshot_and_ctx(params, &geom, host, backend, time_seconds)?;
 		let ctx = state.ctx(host, backend, 0, 0.0, false);
 
@@ -224,17 +343,64 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			}
 		}
 
-		if in_data.is_after_effects() && self.plugin_id != aegp::PluginId::default() {
+		// Route gating: hide the group-start marker of every route that isn't
+		// active (hiding the marker hides the whole group + children).
+		let current_route = crate::effect::route::current_index();
+		for (marker, route_idx) in E::Params::ROUTED_GROUPS {
+			let visible = *route_idx == current_route;
+			visible_map.push((*marker, visible));
+			if let Ok(mut p) = params.get_mut(*marker) {
+				p.set_ui_flag(ae::ParamUIFlags::INVISIBLE, !visible);
+				let _ = p.update_param_ui();
+			}
+		}
+
+		if let Some(label_rules) = self.label_rules.get() {
+			for (param_id, label_fn) in label_rules {
+				let label = label_fn(&ctx);
+				// Name-driven buttons (`#[button(text = …)]`) push their caption
+				// natively via PF_UpdateParamUI — the Warp Stabilizer cancel-button
+				// pattern (the only documented runtime-mutable field is `name`,
+				// valid in UPDATE_PARAMS_UI/USER_CHANGED_PARAM/EVENT; this runs in
+				// those contexts). Everything else is a custom-draw `#[label]`.
+				if E::Params::NAME_DRIVEN_PARAMS.contains(param_id) {
+					if let Ok(mut p) = params.get_mut(*param_id) {
+						let _ = p.set_name(&label);
+						let _ = p.update_param_ui();
+					}
+				} else if let Some(idx) = params.index(*param_id) {
+					crate::effect::labels::set(idx, &label);
+				}
+			}
+		}
+
+		if self.plugin_id != aegp::PluginId::default() {
 			let effect = in_data.effect();
 			let plugin_id = self.plugin_id;
 			if let Ok(aegp_plugin) = effect.aegp_effect(plugin_id) {
-				for (id, visible) in &visible_map {
-					if let Some(idx) = params.index(*id) {
+				if in_data.is_after_effects() {
+					for (id, visible) in &visible_map {
+						if let Some(idx) = params.index(*id) {
+							if let Ok(stream) = aegp_plugin.new_stream_by_index(plugin_id, idx as _) {
+								let _ = stream.set_dynamic_stream_flag(
+									aegp::DynamicStreamFlags::Hidden,
+									false,
+									!*visible,
+								);
+							}
+						}
+					}
+				}
+				// Elide route group headers (hide the disclosure arrow, keep
+				// children). Attempted on every host (no is_after_effects gate);
+				// ELIDED is documented read-only so this is best-effort.
+				for (marker, _route) in E::Params::ROUTED_GROUPS {
+					if let Some(idx) = params.index(*marker) {
 						if let Ok(stream) = aegp_plugin.new_stream_by_index(plugin_id, idx as _) {
 							let _ = stream.set_dynamic_stream_flag(
-								aegp::DynamicStreamFlags::Hidden,
-								false,
-								!*visible,
+								aegp::DynamicStreamFlags::Elided,
+								true,
+								true,
 							);
 						}
 					}
@@ -242,7 +408,105 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			}
 		}
 
+		// RefreshUi repaints the ECW; ForceRerender invalidates the render
+		// cache so a route gate that changes GPU output actually recomputes the
+		// frame (supervisor pairs both — RefreshUi alone leaves a stale frame).
 		out_data.set_out_flag(ae::OutFlags::RefreshUi, true);
+		out_data.set_out_flag(ae::OutFlags::ForceRerender, true);
+		Ok(())
+	}
+
+	fn handle_event(
+		&self,
+		in_data: &InData,
+		params: &mut Parameters<E::Params>,
+		event: &mut ae::EventExtra,
+	) -> Result<(), ae::Error> {
+		E::on_event(in_data, params, event)?;
+
+		if !matches!(event.event(), ae::Event::Draw(_)) {
+			return Ok(());
+		}
+
+		let param_idx = event.param_index();
+		let area = event.effect_area();
+		let is_label = E::Params::LABEL_PARAMS
+			.iter()
+			.any(|p| params.index(*p) == Some(param_idx));
+		let stashed = crate::effect::labels::get(param_idx);
+		log::info!("[label] DRAW area={area:?} param_idx={param_idx} is_label={is_label} text={stashed:?}");
+
+		if !is_label {
+			return Ok(());
+		}
+		// Labels draw in the title/topic row (TOPIC, no twirl). Accept Control
+		// too, defensively, in case a host routes the draw there.
+		if !matches!(area, ae::EffectArea::Title | ae::EffectArea::Control) {
+			return Ok(());
+		}
+
+		// Retained-mode draw: re-evaluate the label's text closure live so each
+		// host repaint paints current state (route, task progress) without
+		// polling. Falls back to the last stash if eval isn't possible.
+		let live = self.eval_label_live(in_data, params, param_idx);
+		let text = live.or(stashed).unwrap_or_default();
+		if text.is_empty() {
+			log::warn!("[label] param_idx={param_idx} is a label but has no text");
+			return Ok(());
+		}
+
+		let drawbot = event.context_handle().drawing_reference()?;
+		let supplier = drawbot.supplier()?;
+		let surface = drawbot.surface()?;
+
+		// The overlay-theme suite is After-Effects-only; on Premiere it's a
+		// MissingSuite. Fall back to a light foreground so the text is visible
+		// on the dark ECW instead of aborting the whole draw.
+		let color = ae::pf::suites::EffectCustomUIOverlayTheme::new()
+			.and_then(|t| t.preferred_foreground_color())
+			.unwrap_or(ae::drawbot::ColorRgba { red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0 });
+
+		let font_size = supplier.default_font_size()?;
+		let font = supplier.new_default_font(font_size)?;
+		let brush = supplier.new_brush(&color)?;
+
+		let frame = event.current_frame();
+
+		// Fill the control area with #1d1d1d (the host erase leaves it black, or
+		// DO_NOT_ERASE leaves it undefined — either way we paint our own bg).
+		const BG: f32 = 0x1d as f32 / 255.0;
+		let bg = ae::drawbot::ColorRgba { red: BG, green: BG, blue: BG, alpha: 1.0 };
+		let _ = surface.paint_rect(
+			&bg,
+			&ae::drawbot::RectF32 {
+				left:   0.0,
+				top:    0.0,
+				width:  (frame.right - frame.left) as f32,
+				height: (frame.bottom - frame.top) as f32,
+			},
+		);
+
+		// draw_string's origin is the text BASELINE. The surface is
+		// control-relative, so use (0, ascent): x=0 is the left edge, y=font_size
+		// drops the baseline one ascent below the top so glyphs aren't clipped
+		// above. (Testing baseline; tune later for vertical centering.)
+		let origin = ae::drawbot::PointF32 {
+			x: 0.0,
+			y: font_size,
+		};
+		let width = (frame.right - frame.left) as f32;
+		surface.draw_string(
+			&brush,
+			&font,
+			&text,
+			&origin,
+			ae::drawbot::TextAlignment::Left,
+			ae::drawbot::TextTruncation::EndEllipsis,
+			width,
+		)?;
+
+		log::info!("[label] drew '{text}' at param_idx={param_idx}");
+		event.set_event_out_flags(ae::EventOutFlags::HANDLED_EVENT);
 		Ok(())
 	}
 
@@ -498,6 +762,15 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		}
 		E::Params::register(params)?;
 		E::extra_params(params)?;
+		// Custom-UI params (e.g. `#[label]`) only receive PF_Event_DRAW if the
+		// effect registers for EFFECT (ECW) custom events here — without this
+		// the host never asks us to draw and labels stay blank.
+		if !E::Params::LABEL_PARAMS.is_empty() {
+			let r = in_data
+				.interact()
+				.register_ui(ae::CustomUIInfo::new().events(ae::CustomEventFlags::EFFECT));
+			log::info!("[label] params_setup: register_ui(EFFECT) for {} label(s) -> {r:?}", E::Params::LABEL_PARAMS.len());
+		}
 		Ok(())
 	}
 
@@ -518,13 +791,48 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				let _ = ae::oslog::OsLogger::new(env!("CARGO_PKG_NAME")).init();
 				ae::log::set_max_level(ae::log::LevelFilter::Info);
 
+				probe_private_suites(&in_data);
+
 				install_descriptor_pixel_formats(&in_data, self.descriptor())?;
 
 				if let Some(label) = self.descriptor().options_button {
 					let _ = in_data.effect().set_options_button_name(label);
 				}
-				if let Ok(suite) = aegp::suites::Utility::new() {
-					self.plugin_id = suite.register_with_aegp(self.descriptor().display_name)?;
+				match aegp::suites::Utility::new() {
+					Ok(suite) => match suite.register_with_aegp(self.descriptor().display_name) {
+						Ok(id) => {
+							self.plugin_id = id;
+							log::info!("[tasks] register_with_aegp ok plugin_id={id:?}");
+						}
+						Err(e) => log::warn!("[tasks] register_with_aegp failed: {e:?}"),
+					},
+					Err(e) => log::warn!("[tasks] AEGP Utility suite unavailable: {e:?}"),
+				}
+				if E::USES_BACKGROUND_TASKS {
+					// Pick the task driver: AE pumps the idle hook below; Premiere
+					// has no AEGP idle hook (AE_GeneralPlug.h ships only in the AE
+					// SDK), so `spawn` runs tasks on a worker thread instead.
+					let is_ae = in_data.is_after_effects();
+					crate::effect::tasks::set_host(is_ae);
+					log::info!("[tasks] host = {}", if is_ae { "After Effects (idle pump)" } else { "Premiere (worker thread)" });
+
+					// One idle hook per plugin drives the main-thread task pump
+					// (RegisterNonAegp::register_idle_hook — the SDK background_task
+					// pattern). Only fires in After Effects; harmless elsewhere.
+					match aegp::suites::RegisterNonAegp::new() {
+						Ok(reg) => {
+							let r = reg.register_idle_hook::<()>(
+								self.plugin_id,
+								Box::new(|_: &mut (), max_sleep: &mut i32| {
+									crate::effect::tasks::pump(max_sleep);
+									Ok(())
+								}),
+								(),
+							);
+							log::info!("[tasks] register_idle_hook -> {r:?}");
+						}
+						Err(e) => log::warn!("[tasks] RegisterNonAegp suite unavailable: {e:?}"),
+					}
 				}
 				#[cfg(debug_assertions)]
 				match self.license.initialize() {
@@ -539,6 +847,11 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				}
 				#[cfg(not(debug_assertions))]
 				let _ = self.license.initialize();
+
+				if !E::Params::LABEL_PARAMS.is_empty() {
+					out_data.set_out_flag(ae::OutFlags::CustomUi, true);
+				}
+				out_data.set_out_flag2(ae::OutFlags2::ParamGroupStartCollapsedFlag, true);
 			}
 			Command::About => {
 				let msg = format!(
@@ -555,12 +868,38 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			Command::UserChangedParam { param_index } => {
 				self.ensure_ui_rules();
 				let changed = params.type_at(param_index);
+				let mut cx = crate::effect::ActionCtx::<E::Params>::__new();
 				for &(param, callback) in E::Params::buttons() {
 					if param == changed {
-						callback();
+						callback(&mut cx);
 					}
 				}
+				self.flush_route(params);
 				self.apply_visibility(params, &in_data, &mut out_data)?;
+			}
+			Command::Event { mut extra } => {
+				self.handle_event(&in_data, params, &mut extra)?;
+				// Retained-mode refresh. A pending route change (background
+				// Router::set) OR any UI mutation (task progress marks dirty,
+				// which drives a name-driven button caption via PF_UpdateParamUI)
+				// re-runs apply_visibility — it flushes the route, re-applies
+				// show/hide, pushes name-driven captions, and sets REFRESH_UI +
+				// FORCE_RERENDER itself. (A custom-draw `#[label]` repaints from
+				// the same pass.)
+				let pending = crate::effect::route::has_pending();
+				let dirty = crate::effect::labels::take_dirty();
+				if pending || dirty {
+					self.ensure_ui_rules();
+					self.apply_visibility(params, &in_data, &mut out_data)?;
+				}
+			}
+			Command::ArbitraryCallback { mut extra } => {
+				// Service the arb-data lifecycle (new/dispose/copy/…) for every
+				// `#[label]` param. dispatch() self-filters by param id, so
+				// looping all labels is safe.
+				for label in E::Params::LABEL_PARAMS {
+					let _ = extra.dispatch::<crate::effect::labels::LabelArb, E::Params>(*label);
+				}
 			}
 			Command::FrameSetup { in_layer, .. } => {
 				if !self.license_valid() {

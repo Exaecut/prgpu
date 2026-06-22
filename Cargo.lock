@@ -405,9 +405,9 @@ dependencies = [
 
 [[package]]
 name = "exaecut-after-effects"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b64304426efdc469c683a05be522a9983678eb484b4427bfca39160650ac612f"
+checksum = "6362329c20977f33e27bf1eb16efe4d54dcd7f3b842b4b1c95009449de21b136"
 dependencies = [
  "bincode",
  "bitflags",
@@ -431,9 +431,9 @@ dependencies = [
 
 [[package]]
 name = "exaecut-after-effects-sys"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f0ad5def6d7e8645198af7d214512d2ec468ecf246849221995101da10a185b"
+checksum = "c55c73722b5b579dbfe5b8815ef10e21d5b605b140cdb193f33b7b37cb1e9b7f"
 dependencies = [
  "bindgen",
 ]
@@ -453,9 +453,9 @@ dependencies = [
 
 [[package]]
 name = "exaecut-premiere"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02baee11bbad934d6ca1f57cd981c77094c0e0373e57e46f7e467d2fe3878176"
+checksum = "4bc8d4e330ac7a731a49c4b2a2c466e473ac60e1b65730d2674e0a5e7a901ae1"
 dependencies = [
  "base64",
  "bincode",
@@ -469,9 +469,9 @@ dependencies = [
 
 [[package]]
 name = "exaecut-premiere-sys"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2525f614211ee8fe3b426537f08736093dbd9545d1826082f85a999b313069c"
+checksum = "c83134ec124e696f5dc8a1e15eec45c0b412e916c2e9bdc99324cfe2cdfe76ea"
 dependencies = [
  "bindgen",
 ]

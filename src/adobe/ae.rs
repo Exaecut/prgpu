@@ -412,12 +412,17 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		let supplier = drawbot.supplier()?;
 		let surface = drawbot.surface()?;
 
-		// The overlay-theme suite is After-Effects-only; on Premiere it's a
-		// MissingSuite. Fall back to a light foreground so the text is visible
-		// on the dark ECW instead of aborting the whole draw.
-		let color = ae::pf::suites::EffectCustomUIOverlayTheme::new()
-			.and_then(|t| t.preferred_foreground_color())
-			.unwrap_or(ae::drawbot::ColorRgba { red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0 });
+		// The overlay-theme suite is After-Effects-only. On Premiere it doesn't
+		// exist, so don't even attempt to acquire it (the acquire failure logs a
+		// spurious error); use a light foreground visible on the dark ECW.
+		let light = ae::drawbot::ColorRgba { red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0 };
+		let color = if in_data.is_after_effects() {
+			ae::pf::suites::EffectCustomUIOverlayTheme::new()
+				.and_then(|t| t.preferred_foreground_color())
+				.unwrap_or(light)
+		} else {
+			light
+		};
 
 		let font_size = supplier.default_font_size()?;
 		let font = supplier.new_default_font(font_size)?;
@@ -1249,6 +1254,18 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				}
 			}
 			Command::GpuDeviceSetdown { .. } => {}
+			// Host commands prgpu doesn't model (e.g. private/idle selectors an
+			// effect opted into via `on_raw_command`). If there's pending UI work
+			// — a route change or a dirty label/caption — refresh opportunistically
+			// on the same main-thread tick.
+			Command::Other(_) => {
+				let pending = crate::effect::route::has_pending();
+				let dirty = crate::effect::labels::take_dirty();
+				if pending || dirty {
+					self.ensure_ui_rules();
+					self.apply_visibility(params, &in_data, &mut out_data)?;
+				}
+			}
 			_ => {}
 		}
 		Ok(())

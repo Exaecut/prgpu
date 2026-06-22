@@ -138,8 +138,9 @@ pub trait ParamsSpec: Copy + Eq + Hash + Debug + Into<usize> + Send + Sync + 'st
 	/// receives the context directly.
 	fn buttons() -> &'static [(Self, fn(&mut crate::effect::ActionCtx<Self>))];
 
-	/// Push `#[label(text = …)]` text bindings into the UI rule set. The macro
-	/// generates this; the adapter calls it alongside `Effect::ui`. Default
-	/// no-op for effects with no static-text labels.
+	/// Push declarative per-param UI bindings into the rule set: `#[label(text =
+	/// …)]` / `#[button(text = …)]` text and `#[button(disabled = …)]`
+	/// enable/disable. The macro generates this; the adapter calls it alongside
+	/// `Effect::ui`. Default no-op when none are declared.
 	fn contribute_labels(_ui: &mut crate::effect::Ui<Self>) {}
 }

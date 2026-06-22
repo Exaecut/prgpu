@@ -119,6 +119,7 @@ pub struct EffectAdapter<E: Effect, L: LicenseGate> {
 	plugin_id: aegp::PluginId,
 	ui_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> bool + Send + Sync + 'static>)>>,
 	label_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> String + Send + Sync + 'static>)>>,
+	disabled_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> bool + Send + Sync + 'static>)>>,
 }
 
 impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
@@ -130,6 +131,7 @@ impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
 			plugin_id: aegp::PluginId::default(),
 			ui_rules: OnceLock::new(),
 			label_rules: OnceLock::new(),
+			disabled_rules: OnceLock::new(),
 		}
 	}
 }
@@ -186,9 +188,10 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		let mut ui = Ui::new();
 		E::ui(&mut ui);
 		E::Params::contribute_labels(&mut ui);
-		log::info!("[label] ensure_ui_rules: {} visibility rule(s), {} label rule(s)", ui.rules.len(), ui.label_rules.len());
+		log::info!("[label] ensure_ui_rules: {} visibility rule(s), {} label rule(s), {} disable rule(s)", ui.rules.len(), ui.label_rules.len(), ui.disabled_rules.len());
 		let _ = self.ui_rules.set(ui.rules);
 		let _ = self.label_rules.set(ui.label_rules);
+		let _ = self.disabled_rules.set(ui.disabled_rules);
 	}
 
 	/// Seed the route thread-local from this instance's hidden route param so
@@ -321,8 +324,21 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 						let _ = p.set_name(&label);
 						let _ = p.update_param_ui();
 					}
-				} else if let Some(idx) = params.index(*param_id) {
-					crate::effect::labels::set(idx, &label);
+			} else if let Some(idx) = params.index(*param_id) {
+				crate::effect::labels::set(idx, &label);
+				}
+			}
+		}
+
+		// `#[button(disabled = …)]` / `Ui::set_disabled` — toggle PF_PUI_DISABLED
+		// per rule. The AEGP stream Disabled flag is documented unreliable for
+		// this ("check PF_PUI_DISABLED in ParamDef"), so we drive the PF flag only.
+		if let Some(disabled_rules) = self.disabled_rules.get() {
+			for (param_id, pred) in disabled_rules {
+				let disabled = pred(&ctx);
+				if let Ok(mut p) = params.get_mut(*param_id) {
+					p.set_ui_flag(ae::ParamUIFlags::DISABLED, disabled);
+					let _ = p.update_param_ui();
 				}
 			}
 		}

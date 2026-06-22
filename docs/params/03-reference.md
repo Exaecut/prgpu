@@ -158,6 +158,7 @@ A push button. Reads as `()` (no snapshot value). Exactly one of
 | `on_click`  | no       | `path` to `fn()`      | legacy no-arg handler; wrapped to ignore the context |
 | `on_action` | no       | `path` to `fn(&mut ActionCtx<$Name>)` | context-aware handler: route navigation + background tasks |
 | `text`      | no       | Rust expr             | live caption, re-evaluated each UI refresh; `|_ctx| Into::<String>::into(expr)` |
+| `disabled`  | no       | Rust expr (`bool`)    | gray-out the button while `expr` is `true`; re-evaluated each UI refresh; `disabled = true` is the static form |
 
 ```rust
 #[button(label = "Feedback", on_click = open_feedback)]
@@ -166,11 +167,18 @@ Feedback,
 StartBtn,
 #[button(label = "Status", text = format!("Remaining: {}", remaining_count()))]
 StatusLabel,
+#[button(label = "Process", on_action = start_processing, disabled = processing_active())]
+ProcessBtn,
 ```
 
 A `text = ...` button is *name-driven*: the adapter pushes the evaluated
 caption into the param name and calls `PF_UpdateParamUI` (the native
 "frame x of y" pattern). Without `text`, the static `label` is the caption.
+
+A `disabled = ...` button is *disable-driven*: the adapter toggles
+`PF_PUI_DISABLED` on each refresh via `PF_UpdateParamUI` (the SDK lists
+`DISABLED` as runtime-mutable). For ctx-dependent disabling, bind it in
+`Effect::ui` via `Ui::set_disabled(Marker, |ctx| …)` instead.
 
 ### `#[layer(...)]`
 
@@ -313,7 +321,7 @@ The constants and methods the adapters drive:
 | `fn register(&mut Parameters<Self>)` | host registration, in declaration order |
 | `fn snapshot_cpu(...)` / `fn snapshot_gpu(...)` | per-frame snapshot (host quirks resolved here) |
 | `fn buttons()` | `&[(Self, fn(&mut ActionCtx<Self>))]` dispatch table |
-| `fn contribute_labels(&mut Ui<Self>)` | pushes `#[label(text=...)]` and `#[button(text=...)]` bindings |
+| `fn contribute_labels(&mut Ui<Self>)` | pushes `#[label(text=...)]`, `#[button(text=...)]`, and `#[button(disabled=...)]` bindings |
 
 ## Reading values
 

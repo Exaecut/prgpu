@@ -27,8 +27,12 @@ prgpu::params! {
 
 		#[button(label = "Button")]
 		Btn,
+		#[button(label = "Process", disabled = is_busy())]
+		ProcessBtn,
 	}
 }
+
+fn is_busy() -> bool { false }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, prgpu::Popup)]
 #[repr(u32)]
@@ -48,8 +52,8 @@ fn discriminants_and_markers() {
 	assert_eq!(usize::from(P::Flag), 2);
 	assert_eq!(<Strength as prgpu::Param>::ID, P::Strength);
 	assert_eq!(<Btn as prgpu::Param>::ID, P::Btn);
-	// 10 leaf params + 2 synthesized group markers.
-	assert_eq!(<P as ParamsSpec>::COUNT, 12);
+	// 11 leaf params + 2 synthesized group markers.
+	assert_eq!(<P as ParamsSpec>::COUNT, 13);
 }
 
 fn snapshot() -> <P as ParamsSpec>::Snapshot {

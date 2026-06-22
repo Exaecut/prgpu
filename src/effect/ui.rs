@@ -13,11 +13,15 @@ pub struct Ui<P: ParamsSpec> {
 	/// Each label rule: (param, label_fn). Returns the new label text for the
 	/// param's UI row, evaluated on every UpdateParamsUi.
 	pub(crate) label_rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> String + Send + Sync + 'static>)>,
+	/// Each disable rule: (param, predicate). Gray-out the param via
+	/// `PF_PUI_DISABLED` while the predicate returns `true`, same cadence as
+	/// `rules` / `label_rules`.
+	pub(crate) disabled_rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>)>,
 }
 
 impl<P: ParamsSpec> Ui<P> {
 	pub fn new() -> Self {
-		Self { rules: Vec::new(), label_rules: Vec::new() }
+		Self { rules: Vec::new(), label_rules: Vec::new(), disabled_rules: Vec::new() }
 	}
 
 	pub fn show<M: Param<Spec = P>>(
@@ -59,6 +63,28 @@ impl<P: ParamsSpec> Ui<P> {
 		label_fn: impl Fn(&Ctx<P>) -> String + Send + Sync + 'static,
 	) {
 		self.label_rules.push((id, Box::new(label_fn)));
+	}
+
+	/// Toggles `PF_PUI_DISABLED` each UI tick; the param is grayed-out while
+	/// the predicate returns `true`. Ctx-dependent counterpart of the
+	/// declarative `#[button(disabled = …)]` form; mirrors [`set_label`](Self::set_label).
+	pub fn set_disabled<M: Param<Spec = P>>(
+		&mut self,
+		_m: M,
+		pred: impl Fn(&Ctx<P>) -> bool + Send + Sync + 'static,
+	) {
+		self.disabled_rules.push((M::ID, Box::new(pred)));
+	}
+
+	/// Marker-free variant of [`set_disabled`](Self::set_disabled), used by the
+	/// macro-generated `#[button(disabled = …)]` bindings.
+	#[doc(hidden)]
+	pub fn set_disabled_id(
+		&mut self,
+		id: P,
+		pred: impl Fn(&Ctx<P>) -> bool + Send + Sync + 'static,
+	) {
+		self.disabled_rules.push((id, Box::new(pred)));
 	}
 }
 

@@ -139,6 +139,22 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 		})
 		.collect();
 
+	// `#[button(disabled = expr)]` → the adapter toggles `PF_PUI_DISABLED`
+	// each UI tick when the expr is `true`; `disabled = true` is the static form.
+	let disabled_bindings: Vec<TokenStream> = params
+		.iter()
+		.filter_map(|p| {
+			let expr = match &p.kind {
+				Kind::Button { disabled: Some(expr), .. } => expr,
+				_ => return None,
+			};
+			let id = &p.ident;
+			Some(quote! {
+				ui.set_disabled_id(#enum_ident::#id, |_ctx| #expr);
+			})
+		})
+		.collect();
+
 	// `(group-start marker, route index)` for every routed group.
 	let mut routed_groups: Vec<TokenStream> = Vec::new();
 	collect_routed_groups(&nodes, &routes, &enum_ident, &mut routed_groups);
@@ -233,6 +249,7 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 			#[allow(unused_variables)]
 			fn contribute_labels(ui: &mut ::prgpu::Ui<Self>) {
 				#( #label_text_bindings )*
+				#( #disabled_bindings )*
 			}
 		}
 

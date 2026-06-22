@@ -83,6 +83,9 @@ pub enum Kind {
 		/// each refresh (the Warp Stabilizer live-progress button). `None` ⇒ the
 		/// static `label` is the caption.
 		text: Option<Expr>,
+		/// Toggles `PF_PUI_DISABLED` each refresh; grayed-out while the
+		/// expression evaluates `true`. `None` ⇒ always enabled.
+		disabled: Option<Expr>,
 	},
 	/// Secondary image input (`PF_ADD_LAYER`). Carries no readable snapshot
 	/// value — presence is resolved by the adapter at checkout and surfaced via
@@ -433,6 +436,7 @@ fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, boo
 				None => None,
 			},
 			text: kv.get("text").cloned(),
+			disabled: kv.get("disabled").cloned(),
 		},
 		"layer" => {
 			// `default = myself` -> PF_LayerDefault_MYSELF; `default = none`

@@ -28,9 +28,18 @@ pub enum Node {
 
 pub struct ParamDef {
 	pub ident: Ident,
-	pub label: String,
+	pub label: LabelExpr,
 	pub kind: Kind,
 	pub debug_only: bool,
+}
+
+/// Static string-literal label or a dynamic expression evaluated at the
+/// registration/refresh sites. Buttons accept either form; every other
+/// parameter kind requires a string literal (the host needs a stable name
+/// at `PF_ADD_PARAM` time and cannot re-evaluate it).
+pub enum LabelExpr {
+	Str(String),
+	Expr(Expr),
 }
 
 pub enum PopupTy {
@@ -345,15 +354,26 @@ impl KeyVals {
 	}
 }
 
-fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, bool)> {
+fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, LabelExpr, bool)> {
 	let kindname = attr.path().get_ident().unwrap().to_string();
 	let kv: KeyVals = attr.parse_args().unwrap_or(KeyVals(Vec::new()));
 	let debug_only = kv.flag("debug_only");
 
-	let require_label = || -> syn::Result<String> {
-		kv.get("label")
-			.ok_or_else(|| Error::new_spanned(ident, format!("`{ident}` is missing `label = \"...\"`")))
-			.and_then(lit_str)
+	// Every non-button param kind needs a string-literal label: the host
+	// consumes it once at `PF_ADD_PARAM` and never re-evaluates it. Buttons
+	// additionally accept a dynamic expression (`format!(…)`) so their
+	// caption can be refreshed live via `set_name` — matching `text`.
+	let require_label = |allow_expr: bool| -> syn::Result<LabelExpr> {
+		let e = kv
+			.get("label")
+			.ok_or_else(|| Error::new_spanned(ident, format!("`{ident}` is missing `label = \"...\"`")))?;
+		if let Some(s) = lit_str_opt(e) {
+			Ok(LabelExpr::Str(s))
+		} else if allow_expr {
+			Ok(LabelExpr::Expr(e.clone()))
+		} else {
+			Err(Error::new_spanned(e, "expected a string literal"))
+		}
 	};
 
 	let kind = match kindname.as_str() {
@@ -465,19 +485,23 @@ fn parse_kind(attr: &Attribute, ident: &Ident) -> syn::Result<(Kind, String, boo
 	};
 
 	let label = if matches!(kind, Kind::Custom { .. } | Kind::Label { .. }) {
-		String::new()
+		LabelExpr::Str(String::new())
 	} else {
-		require_label()?
+		require_label(matches!(kind, Kind::Button { .. }))?
 	};
 
 	Ok((kind, label, debug_only))
 }
 
 fn lit_str(e: &Expr) -> syn::Result<String> {
+	lit_str_opt(e).ok_or_else(|| Error::new_spanned(e, "expected a string literal"))
+}
+
+fn lit_str_opt(e: &Expr) -> Option<String> {
 	if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = e {
-		Ok(s.value())
+		Some(s.value())
 	} else {
-		Err(Error::new_spanned(e, "expected a string literal"))
+		None
 	}
 }
 

@@ -7,7 +7,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::Ident;
 
-use crate::params_parse::{Kind, Node, ParamDef, ParamsInput, PopupSource, PopupTy, marker_end, marker_start};
+use crate::params_parse::{Kind, LabelExpr, Node, ParamDef, ParamsInput, PopupSource, PopupTy, marker_end, marker_start};
 
 pub fn generate(input: ParamsInput) -> TokenStream {
 	let ParamsInput {
@@ -33,7 +33,7 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 		variants.push(route_ident.clone());
 		params.push(ParamDef {
 			ident: route_ident.clone(),
-			label: String::new(),
+			label: LabelExpr::Str(String::new()),
 			kind: Kind::RouteStore { routes: route_names, initial: initial_index },
 			debug_only: false,
 		});
@@ -107,26 +107,34 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	let label_params: Vec<&Ident> = params.iter().filter(|p| matches!(p.kind, Kind::Label { .. })).map(|p| &p.ident).collect();
 	let label_params_tokens = quote! { &[ #( #enum_ident::#label_params ),* ] };
 
-	// `#[button(text = expr)]` → buttons whose caption is rewritten live via
-	// PF_UpdateParamUI (the Warp Stabilizer pattern), as opposed to custom-draw
-	// `#[label]` text.
+	// `#[button(text = expr)]` or `#[button(label = expr)]` → buttons whose
+	// caption is rewritten live via PF_UpdateParamUI (the Warp Stabilizer
+	// pattern), as opposed to custom-draw `#[label]` text. A dynamic `label`
+	// is treated the same way as `text` — the expression is re-evaluated each
+	// refresh and pushed through `set_name`.
 	let name_driven_params: Vec<&Ident> = params
 		.iter()
-		.filter(|p| matches!(&p.kind, Kind::Button { text: Some(_), .. }))
+		.filter(|p| match (&p.kind, &p.label) {
+			(Kind::Button { text: Some(_), .. }, _) => true,
+			(Kind::Button { .. }, LabelExpr::Expr(_)) => true,
+			_ => false,
+		})
 		.map(|p| &p.ident)
 		.collect();
 	let name_driven_params_tokens = quote! { &[ #( #enum_ident::#name_driven_params ),* ] };
 
-	// `#[label(text = expr)]` and `#[button(text = expr)]` → declarative text
-	// bindings. Both flow through the same `label_rules`; the adapter routes
-	// name-driven buttons to `set_name`+`update_param_ui` and labels to the
-	// draw stash.
+	// `#[label(text = expr)]`, `#[button(text = expr)]`, and
+	// `#[button(label = expr)]` → declarative text bindings. All flow through
+	// the same `label_rules`; the adapter routes name-driven buttons to
+	// `set_name`+`update_param_ui` and labels to the draw stash. `text` wins
+	// over a dynamic `label` when both are present.
 	let label_text_bindings: Vec<TokenStream> = params
 		.iter()
 		.filter_map(|p| {
-			let expr = match &p.kind {
-				Kind::Label { text: Some(expr) } => expr,
-				Kind::Button { text: Some(expr), .. } => expr,
+			let expr = match (&p.kind, &p.label) {
+				(Kind::Label { text: Some(expr) }, _) => expr,
+				(Kind::Button { text: Some(expr), .. }, _) => expr,
+				(Kind::Button { .. }, LabelExpr::Expr(expr)) => expr,
 				_ => return None,
 			};
 			let id = &p.ident;
@@ -365,7 +373,7 @@ fn emit_node(node: &Node, enum_ident: &Ident, params: &[ParamDef]) -> TokenStrea
 
 fn reg_stmt(p: &ParamDef, enum_ident: &Ident) -> TokenStream {
 	let id = &p.ident;
-	let label = &p.label;
+	let label = label_str(&p.label);
 	match &p.kind {
 		Kind::Slider {
 			vmin,
@@ -498,14 +506,24 @@ fn reg_stmt(p: &ParamDef, enum_ident: &Ident) -> TokenStream {
 			}
 		}
 		Kind::Button { .. } => {
-			quote! {
-				params.add_customized(#enum_ident::#id, #label, ::after_effects::ButtonDef::setup(|f| {
-					f.set_label(#label);
-				}), |p| {
-					p.set_flag(::after_effects::ParamFlag::SUPERVISE, true);
-					p.set_flag(::after_effects::ParamFlag::START_COLLAPSED, true);
-					-1
-				})?;
+			let flags = quote! {
+				p.set_flag(::after_effects::ParamFlag::SUPERVISE, true);
+				p.set_flag(::after_effects::ParamFlag::START_COLLAPSED, true);
+				-1
+			};
+			match &p.label {
+				LabelExpr::Str(s) => quote! {
+					params.add_customized(#enum_ident::#id, #s, ::after_effects::ButtonDef::setup(|f| {
+						f.set_label(#s);
+					}), |p| { #flags })?;
+				},
+				LabelExpr::Expr(e) => quote! {
+					let __label: ::std::string::String =
+						::core::convert::Into::<::std::string::String>::into(#e);
+					params.add_customized(#enum_ident::#id, __label.as_str(), ::after_effects::ButtonDef::setup(|f| {
+						f.set_label(__label.as_str());
+					}), |p| { #flags })?;
+				},
 			}
 		}
 		Kind::Layer { default_myself } => {
@@ -663,4 +681,11 @@ fn lit_usize(v: usize) -> TokenStream {
 
 fn lit_u32(v: u32) -> TokenStream {
 	format!("{v}u32").parse().unwrap()
+}
+
+fn label_str(label: &LabelExpr) -> String {
+	match label {
+		LabelExpr::Str(s) => s.clone(),
+		LabelExpr::Expr(_) => String::new(),
+	}
 }

@@ -111,6 +111,34 @@ impl<P: ParamsSpec> Graph<P> {
 		}
 	}
 
+	/// Composite a single line of text onto `Output` in a dedicated pass that
+	/// is dispatched over the text's bounding box only (not the whole frame),
+	/// so the main effect kernels keep their occupancy. `f` returns the text +
+	/// placement from the per-frame `Ctx` (or `None` to draw nothing this
+	/// frame); the SDF atlas is built and uploaded once per device internally.
+	/// GPU-only — a CPU-backend render skips it.
+	pub fn draw_text<F>(&mut self, f: F)
+	where
+		F: Fn(&Ctx<P>) -> Option<crate::text::TextSpec> + Send + Sync + 'static,
+	{
+		let dispatcher: SingleDispatcher<P> = Box::new(move |ctx, config| match f(ctx) {
+			Some(spec) => match ctx.capabilities().backend() {
+				crate::types::Backend::Cpu => Ok(()),
+				_ => crate::text::draw(config, &spec),
+			},
+			None => Ok(()),
+		});
+
+		self.passes.push(crate::graph::pass::PassDecl::Single(crate::graph::pass::SinglePassDecl {
+			name: "text_overlay",
+			source: Slot::Output,
+			input: Some(Slot::Output),
+			target: Slot::Output,
+			dispatcher,
+			enabled_when: None,
+		}));
+	}
+
 	pub fn mip_chain<K>(
 		&mut self,
 		pyramid: PyramidHandle,

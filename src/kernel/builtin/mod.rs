@@ -79,3 +79,43 @@ pub mod mip_downsample {
 		)
 	}
 }
+
+mod text_overlay_struct;
+pub use text_overlay_struct::TextOverlayParams;
+
+prgpu::paste::paste! {
+	unsafe extern "C" {
+		pub fn [<text_overlay _cpu_dispatch>](
+			gid_x: u32,
+			gid_y: u32,
+			buffers: *const *const ::core::ffi::c_void,
+			transition_params: *const ::core::ffi::c_void,
+			user_params: *const ::core::ffi::c_void,
+		);
+
+		pub fn [<text_overlay _cpu_dispatch_tile>](
+			y0: u32,
+			y1: u32,
+			width: u32,
+			buffers: *const *const ::core::ffi::c_void,
+			transition_params: *const ::core::ffi::c_void,
+			user_params: *const ::core::ffi::c_void,
+		);
+	}
+}
+
+pub mod text_overlay {
+	pub const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/text_overlay.shader"));
+
+	pub const ENTRY_POINT: &str = "text_overlay";
+
+	pub fn kernel() -> crate::Kernel<super::TextOverlayParams> {
+		crate::Kernel::new(
+			"text_overlay",
+			SHADER,
+			"text_overlay",
+			super::text_overlay_cpu_dispatch,
+			super::text_overlay_cpu_dispatch_tile,
+		)
+	}
+}

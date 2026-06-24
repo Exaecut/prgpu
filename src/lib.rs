@@ -34,6 +34,7 @@ pub mod params;
 pub mod types;
 pub mod cpu;
 pub mod gpu;
+pub mod text;
 pub mod timing;
 
 pub use paste;

@@ -25,6 +25,14 @@ pub trait Effect: Sized + Send + Sync + 'static {
 	/// for effects that never spawn background work.
 	const USES_BACKGROUND_TASKS: bool = false;
 
+	/// Register for program-monitor (comp) custom-UI events so [`on_event`]
+	/// receives Comp-window `PF_Event_DRAW`/click events. The *render* path
+	/// never receives `PF_Event_DRAW`, so a comp overlay drawn from `on_event`
+	/// is host-only and never appears in exports. Default `false`.
+	///
+	/// [`on_event`]: Effect::on_event
+	const DRAWS_COMP_UI: bool = false;
+
 	/// Override points on the build-metadata descriptor (match name, version,
 	/// flags come from `[package.metadata.prgpu]` via `register_effect!`).
 	fn descriptor(_d: EffectDescriptor) -> EffectDescriptor {

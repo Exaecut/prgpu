@@ -738,12 +738,23 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		E::extra_params(params)?;
 		// Custom-UI params (e.g. `#[label]`) only receive PF_Event_DRAW if the
 		// effect registers for EFFECT (ECW) custom events here — without this
-		// the host never asks us to draw and labels stay blank.
-		if !E::Params::LABEL_PARAMS.is_empty() {
-			let r = in_data
-				.interact()
-				.register_ui(ae::CustomUIInfo::new().events(ae::CustomEventFlags::EFFECT));
-			log::info!("[label] params_setup: register_ui(EFFECT) for {} label(s) -> {r:?}", E::Params::LABEL_PARAMS.len());
+		// the host never asks us to draw and labels stay blank. `DRAWS_COMP_UI`
+		// additionally registers COMP so the effect's `on_event` receives
+		// program-monitor draw events (host-only overlay; never in export).
+		// register_ui sets one CustomUIInfo, so combine the flags into one call.
+		let wants_effect = !E::Params::LABEL_PARAMS.is_empty();
+		let wants_comp = E::DRAWS_COMP_UI;
+		if wants_effect || wants_comp {
+			let flags = match (wants_effect, wants_comp) {
+				(true, true) => ae::CustomEventFlags::EFFECT | ae::CustomEventFlags::COMP,
+				(true, false) => ae::CustomEventFlags::EFFECT,
+				_ => ae::CustomEventFlags::COMP,
+			};
+			let r = in_data.interact().register_ui(ae::CustomUIInfo::new().events(flags));
+			log::info!(
+				"[ui] params_setup: register_ui(effect={wants_effect}, comp={wants_comp}) for {} label(s) -> {r:?}",
+				E::Params::LABEL_PARAMS.len()
+			);
 		}
 		Ok(())
 	}

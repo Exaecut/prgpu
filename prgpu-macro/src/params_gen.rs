@@ -196,7 +196,8 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	};
 
 	let register_stmts: Vec<TokenStream> = nodes.iter().map(|node| emit_node(node, &enum_ident, &params)).collect();
-	// The injected route store isn't in the group tree; register it explicitly.
+	// The injected route store isn't in the group tree; register it explicitly
+	// (emitted after the node walk so its host index matches its discriminant).
 	let route_reg = if has_routes {
 		let route_param = params.iter().find(|p| matches!(p.kind, Kind::RouteStore { .. })).unwrap();
 		reg_stmt(route_param, &enum_ident)
@@ -231,8 +232,15 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 
 			#[allow(unused_variables)]
 			fn register(params: &mut ::after_effects::Parameters<Self>) -> ::core::result::Result<(), ::after_effects::Error> {
-				#route_reg
 				#( #register_stmts )*
+				// The hidden route store must register LAST: its discriminant is
+				// assigned last (see `variants.push` above), and the Premiere GPU
+				// path reads params positionally by discriminant
+				// (`filter.param(disc)`). Registering it first would push every
+				// real param's host index up by one, so GPU param reads would
+				// land on the neighbouring param (e.g. a checkbox reading the
+				// adjacent checkbox's value).
+				#route_reg
 				Ok(())
 			}
 

@@ -33,6 +33,12 @@ void text_overlay(
 
     RWTextureView out = RWTextureView(dst, frame.dstDesc);
     float4 cur = out.Load(px);
-    float4 res = DrawString(cur, float2(px) + 0.5, outgoing, incoming, params);
+
+    // Background band: straight-alpha "over" across the whole dispatch box.
+    float bgA = params.bgColor[3];
+    float3 bgRgb = float3(params.bgColor[0], params.bgColor[1], params.bgColor[2]);
+    float4 banded = float4(lerp(cur.rgb, bgRgb, bgA), max(cur.a, bgA));
+
+    float4 res = DrawString(banded, float2(px) + 0.5, outgoing, incoming, params);
     out.Store(px, res);
 }

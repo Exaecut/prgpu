@@ -14,4 +14,4 @@ mod gpu;
 mod sdf;
 
 pub use atlas::{Atlas, GlyphMetric, build_atlas, build_default_atlas, EMBEDDED_FONT, FIRST_CHAR, GLYPH_COUNT, LAST_CHAR};
-pub use gpu::{draw, TextSpec};
+pub use gpu::{draw, TextLayout, TextSpec};

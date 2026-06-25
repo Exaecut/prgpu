@@ -57,6 +57,8 @@ pub struct Atlas {
 	pub line_height: f32,
 	/// Baseline-to-top (ascent) in base-px, positive.
 	pub ascent: f32,
+	/// Baseline-to-bottom (descent) in base-px, negative.
+	pub descent: f32,
 }
 
 /// The font bytes baked into prgpu (Roboto Regular, Apache-2.0).
@@ -168,6 +170,7 @@ pub fn build_atlas(ttf: &[u8], base_px: f32, spread: f32) -> Atlas {
 		spread,
 		line_height: line.new_line_size,
 		ascent: line.ascent,
+		descent: line.descent,
 	}
 }
 

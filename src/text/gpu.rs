@@ -18,14 +18,25 @@ use crate::types::Configuration;
 /// A single line of text to composite onto the destination frame.
 #[derive(Clone, Debug)]
 pub struct TextSpec {
-	/// Text box top-left in destination pixels.
-	pub x: f32,
-	pub y: f32,
 	/// Cap height of the text in destination pixels.
 	pub px_size: f32,
 	/// Straight (non-premultiplied) RGBA text colour, 0..1.
 	pub color: [f32; 4],
+	/// Placement of the text (and optional background band).
+	pub layout: TextLayout,
 	pub text: String,
+}
+
+/// How [`TextSpec`] is placed in the destination frame.
+#[derive(Clone, Copy, Debug)]
+pub enum TextLayout {
+	/// Free placement: text box top-left at `(x, y)` in destination pixels,
+	/// no background band.
+	At { x: f32, y: f32 },
+	/// A background band sized as a percentage (0..100) of the output canvas
+	/// and centered in it; the text is centered within the band. `background`
+	/// is straight RGBA (alpha 0 = no visible band).
+	Banner { width_pct: f32, height_pct: f32, background: [f32; 4] },
 }
 
 /// Persistent per-device GPU buffers for the font. Raw device handles
@@ -94,61 +105,73 @@ pub fn draw(config: &Configuration, spec: &TextSpec) -> Result<(), &'static str>
 	unsafe { text_overlay::kernel().dispatch_gpu(&cfg, params) }
 }
 
-/// Lay the single line out left-to-right and build the kernel params + bbox.
-/// `(x, y)` is the text box top-left; the baseline sits `ascent*scale` below.
+/// Lay the single line out left-to-right and build the kernel params + dispatch
+/// box. The dispatch box is the text bbox (`At`) or the centered band
+/// (`Banner`); the kernel paints the band background, then the glyphs.
 fn layout(atlas: &Atlas, spec: &TextSpec, frame_w: u32, frame_h: u32) -> Option<TextOverlayParams> {
 	let scale = (spec.px_size / atlas.base_px).max(1e-4);
-	let pen_x0 = spec.x;
-	let pen_y = spec.y + atlas.ascent * scale;
+	let fw = frame_w as f32;
+	let fh = frame_h as f32;
 
-	let mut pen_x = pen_x0;
-	let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+	// Pass 1: pack char codes and measure the advance width.
 	let mut packed = [0u32; 64];
 	let mut count = 0usize;
-
+	let mut text_width = 0.0f32;
 	for ch in spec.text.chars().take(256) {
 		let code = ch as u32;
 		let in_range = (FIRST_CHAR..=LAST_CHAR).contains(&code);
 		let gi = if in_range { (code - FIRST_CHAR) as usize } else { 0 };
 		let stored = if in_range { code } else { FIRST_CHAR };
 		packed[count >> 2] |= (stored & 0xFF) << ((count & 3) * 8);
-
-		let m = atlas.metrics[gi];
-		if m.cell_w > 0.0 && m.cell_h > 0.0 {
-			let cx0 = pen_x + m.left * scale;
-			let cy0 = pen_y + m.top * scale;
-			min_x = min_x.min(cx0);
-			min_y = min_y.min(cy0);
-			max_x = max_x.max(cx0 + m.cell_w * scale);
-			max_y = max_y.max(cy0 + m.cell_h * scale);
-		}
-		pen_x += m.advance * scale;
+		text_width += atlas.metrics[gi].advance * scale;
 		count += 1;
 	}
-
-	if count == 0 || max_x < min_x {
+	if count == 0 {
 		return None;
 	}
 
-	let bx0 = (min_x.floor().max(0.0)) as i64;
-	let by0 = (min_y.floor().max(0.0)) as i64;
-	let bx1 = (max_x.ceil() as i64).min(frame_w as i64);
-	let by1 = (max_y.ceil() as i64).min(frame_h as i64);
-	let bbox_w = (bx1 - bx0).max(0) as u32;
-	let bbox_h = (by1 - by0).max(0) as u32;
+	// Visual height from baseline metrics (descent is negative).
+	let text_h = (atlas.ascent - atlas.descent) * scale;
+	let margin = (atlas.spread * scale).ceil();
+
+	let (bbox_x, bbox_y, bbox_w, bbox_h, pen_x0, baseline_y, bg_color) = match spec.layout {
+		TextLayout::At { x, y } => {
+			let baseline = y + atlas.ascent * scale;
+			let bx0 = (x - margin).floor().max(0.0);
+			let by0 = (y - margin).floor().max(0.0);
+			let bx1 = (x + text_width + margin).ceil().min(fw);
+			let by1 = (y + text_h + margin).ceil().min(fh);
+			(bx0 as u32, by0 as u32, (bx1 - bx0).max(0.0) as u32, (by1 - by0).max(0.0) as u32, x, baseline, [0.0; 4])
+		}
+		TextLayout::Banner { width_pct, height_pct, background } => {
+			let band_w = (width_pct / 100.0).clamp(0.0, 1.0) * fw;
+			let band_h = (height_pct / 100.0).clamp(0.0, 1.0) * fh;
+			let band_x = ((fw - band_w) / 2.0).max(0.0);
+			let band_y = ((fh - band_h) / 2.0).max(0.0);
+			// Center the text in the band on both axes.
+			let pen_x = band_x + (band_w - text_width) / 2.0;
+			let baseline = band_y + (band_h - text_h) / 2.0 + atlas.ascent * scale;
+			(band_x.floor() as u32, band_y.floor() as u32, band_w.ceil().min(fw) as u32, band_h.ceil().min(fh) as u32, pen_x, baseline, background)
+		}
+	};
+
+	if bbox_w == 0 || bbox_h == 0 {
+		return None;
+	}
 
 	Some(TextOverlayParams {
 		color: spec.color,
+		bg_color,
 		pen_x: pen_x0,
-		pen_y,
+		pen_y: baseline_y,
 		scale,
 		spread: atlas.spread,
 		atlas_w: atlas.width,
 		atlas_h: atlas.height,
 		frame_w,
 		frame_h,
-		bbox_x: bx0 as u32,
-		bbox_y: by0 as u32,
+		bbox_x,
+		bbox_y,
 		bbox_w,
 		bbox_h,
 		char_count: count as u32,

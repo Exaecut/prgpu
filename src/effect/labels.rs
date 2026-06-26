@@ -46,6 +46,22 @@ pub fn get(index: usize) -> Option<String> {
 	map().read().get(&index).cloned()
 }
 
+// Optional per-label text color (RGBA 0..1), set by `Ui::set_label_color`. The
+// DRAW handler uses it instead of the default theme foreground.
+static COLORS: OnceLock<RwLock<HashMap<usize, [f32; 4]>>> = OnceLock::new();
+
+fn colors() -> &'static RwLock<HashMap<usize, [f32; 4]>> {
+	COLORS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub fn set_color(index: usize, rgba: [f32; 4]) {
+	colors().write().insert(index, rgba);
+}
+
+pub fn get_color(index: usize) -> Option<[f32; 4]> {
+	colors().read().get(&index).copied()
+}
+
 /// Placeholder arbitrary-data payload for `#[label]` params.
 ///
 /// On Premiere a custom-UI param must be ARBITRARY (or null), not a standard

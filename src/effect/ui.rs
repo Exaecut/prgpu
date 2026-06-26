@@ -17,11 +17,14 @@ pub struct Ui<P: ParamsSpec> {
 	/// `PF_PUI_DISABLED` while the predicate returns `true`, same cadence as
 	/// `rules` / `label_rules`.
 	pub(crate) disabled_rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> bool + Send + Sync + 'static>)>,
+	/// Each color rule: (param, color_fn) → RGBA 0..1 for a `#[label]` row's
+	/// text, evaluated per UI tick like `label_rules`.
+	pub(crate) color_rules: Vec<(P, Box<dyn Fn(&Ctx<P>) -> [f32; 4] + Send + Sync + 'static>)>,
 }
 
 impl<P: ParamsSpec> Ui<P> {
 	pub fn new() -> Self {
-		Self { rules: Vec::new(), label_rules: Vec::new(), disabled_rules: Vec::new() }
+		Self { rules: Vec::new(), label_rules: Vec::new(), disabled_rules: Vec::new(), color_rules: Vec::new() }
 	}
 
 	pub fn show<M: Param<Spec = P>>(
@@ -74,6 +77,17 @@ impl<P: ParamsSpec> Ui<P> {
 		pred: impl Fn(&Ctx<P>) -> bool + Send + Sync + 'static,
 	) {
 		self.disabled_rules.push((M::ID, Box::new(pred)));
+	}
+
+	/// Set a `#[label]` row's text color (RGBA 0..1), evaluated per UI tick like
+	/// [`set_label`](Self::set_label). Only custom-draw `#[label]` params honor
+	/// it; name-driven params (buttons/popups) ignore it.
+	pub fn set_label_color<M: Param<Spec = P>>(
+		&mut self,
+		_m: M,
+		color_fn: impl Fn(&Ctx<P>) -> [f32; 4] + Send + Sync + 'static,
+	) {
+		self.color_rules.push((M::ID, Box::new(color_fn)));
 	}
 
 	/// Marker-free variant of [`set_disabled`](Self::set_disabled), used by the

@@ -120,6 +120,7 @@ pub struct EffectAdapter<E: Effect, L: LicenseGate> {
 	ui_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> bool + Send + Sync + 'static>)>>,
 	label_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> String + Send + Sync + 'static>)>>,
 	disabled_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> bool + Send + Sync + 'static>)>>,
+	color_rules: OnceLock<Vec<(E::Params, Box<dyn Fn(&Ctx<E::Params>) -> [f32; 4] + Send + Sync + 'static>)>>,
 }
 
 impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
@@ -132,6 +133,7 @@ impl<E: Effect, L: LicenseGate> Default for EffectAdapter<E, L> {
 			ui_rules: OnceLock::new(),
 			label_rules: OnceLock::new(),
 			disabled_rules: OnceLock::new(),
+			color_rules: OnceLock::new(),
 		}
 	}
 }
@@ -188,10 +190,11 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		let mut ui = Ui::new();
 		E::ui(&mut ui);
 		E::Params::contribute_labels(&mut ui);
-		log::info!("[label] ensure_ui_rules: {} visibility rule(s), {} label rule(s), {} disable rule(s)", ui.rules.len(), ui.label_rules.len(), ui.disabled_rules.len());
+
 		let _ = self.ui_rules.set(ui.rules);
 		let _ = self.label_rules.set(ui.label_rules);
 		let _ = self.disabled_rules.set(ui.disabled_rules);
+		let _ = self.color_rules.set(ui.color_rules);
 	}
 
 	/// Seed the route thread-local from this instance's hidden route param so
@@ -343,6 +346,15 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			}
 		}
 
+		// `#[label]` text colors — stashed for the DRAW handler to read.
+		if let Some(color_rules) = self.color_rules.get() {
+			for (param_id, color_fn) in color_rules {
+				if let Some(idx) = params.index(*param_id) {
+					crate::effect::labels::set_color(idx, color_fn(&ctx));
+				}
+			}
+		}
+
 		if self.plugin_id != aegp::PluginId::default() {
 			let effect = in_data.effect();
 			let plugin_id = self.plugin_id;
@@ -403,7 +415,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			.iter()
 			.any(|p| params.index(*p) == Some(param_idx));
 		let stashed = crate::effect::labels::get(param_idx);
-		log::info!("[label] DRAW area={area:?} param_idx={param_idx} is_label={is_label} text={stashed:?}");
 
 		if !is_label {
 			return Ok(());
@@ -432,13 +443,21 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		// exist, so don't even attempt to acquire it (the acquire failure logs a
 		// spurious error); use a light foreground visible on the dark ECW.
 		let light = ae::drawbot::ColorRgba { red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0 };
-		let color = if in_data.is_after_effects() {
+		let default_color = if in_data.is_after_effects() {
 			ae::pf::suites::EffectCustomUIOverlayTheme::new()
 				.and_then(|t| t.preferred_foreground_color())
 				.unwrap_or(light)
 		} else {
 			light
 		};
+		// A per-label color (Ui::set_label_color), e.g. a yellow HDR warning,
+		// overrides the theme foreground for this row.
+		let color = crate::effect::labels::get_color(param_idx).map_or(default_color, |c| ae::drawbot::ColorRgba {
+			red:   c[0],
+			green: c[1],
+			blue:  c[2],
+			alpha: c[3],
+		});
 
 		let font_size = supplier.default_font_size()?;
 		let font = supplier.new_default_font(font_size)?;
@@ -479,7 +498,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			width,
 		)?;
 
-		log::info!("[label] drew '{text}' at param_idx={param_idx}");
 		event.set_event_out_flags(ae::EventOutFlags::HANDLED_EVENT);
 		Ok(())
 	}

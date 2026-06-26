@@ -117,6 +117,11 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 		.filter(|p| match (&p.kind, &p.label) {
 			(Kind::Button { text: Some(_), .. }, _) => true,
 			(Kind::Button { .. }, LabelExpr::Expr(_)) => true,
+			// A popup's caption is its param name, so a dynamic `Ui::set_label`
+			// rule on a popup must be pushed via `PF_UpdateParamUI`/set_name (the
+			// custom-draw stash only paints `#[label]` params). Popups without a
+			// label rule are untouched.
+			(Kind::Popup { .. }, _) => true,
 			_ => false,
 		})
 		.map(|p| &p.ident)

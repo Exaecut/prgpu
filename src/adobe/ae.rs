@@ -430,14 +430,30 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		// polling. Falls back to the last stash if eval isn't possible.
 		let live = self.eval_label_live(in_data, params, param_idx);
 		let text = live.or(stashed).unwrap_or_default();
-		if text.is_empty() {
-			log::warn!("[label] param_idx={param_idx} is a label but has no text");
-			return Ok(());
-		}
 
 		let drawbot = event.context_handle().drawing_reference()?;
 		let supplier = drawbot.supplier()?;
 		let surface = drawbot.surface()?;
+		let frame = event.current_frame();
+
+		// Fill the control area with #1d1d1d first (the host erase leaves it black,
+		// or DO_NOT_ERASE leaves it undefined). Painted even for an empty label so
+		// the row reads as the ECW background, not a black box.
+		const BG: f32 = 0x1d as f32 / 255.0;
+		let bg = ae::drawbot::ColorRgba { red: BG, green: BG, blue: BG, alpha: 1.0 };
+		let _ = surface.paint_rect(
+			&bg,
+			&ae::drawbot::RectF32 {
+				left:   0.0,
+				top:    0.0,
+				width:  (frame.right - frame.left) as f32,
+				height: (frame.bottom - frame.top) as f32,
+			},
+		);
+		if text.is_empty() {
+			event.set_event_out_flags(ae::EventOutFlags::HANDLED_EVENT);
+			return Ok(());
+		}
 
 		// The overlay-theme suite is After-Effects-only. On Premiere it doesn't
 		// exist, so don't even attempt to acquire it (the acquire failure logs a
@@ -462,22 +478,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		let font_size = supplier.default_font_size()?;
 		let font = supplier.new_default_font(font_size)?;
 		let brush = supplier.new_brush(&color)?;
-
-		let frame = event.current_frame();
-
-		// Fill the control area with #1d1d1d (the host erase leaves it black, or
-		// DO_NOT_ERASE leaves it undefined — either way we paint our own bg).
-		const BG: f32 = 0x1d as f32 / 255.0;
-		let bg = ae::drawbot::ColorRgba { red: BG, green: BG, blue: BG, alpha: 1.0 };
-		let _ = surface.paint_rect(
-			&bg,
-			&ae::drawbot::RectF32 {
-				left:   0.0,
-				top:    0.0,
-				width:  (frame.right - frame.left) as f32,
-				height: (frame.bottom - frame.top) as f32,
-			},
-		);
 
 		// draw_string's origin is the text BASELINE. The surface is
 		// control-relative, so use (0, ascent): x=0 is the left edge, y=font_size

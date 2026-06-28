@@ -225,6 +225,7 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		// survives passes even if the popup store didn't persist the write.
 		if let Some(idx) = crate::effect::route::effective_index() {
 			crate::effect::route::set_current_index(idx);
+			Self::log_route_seed(idx, true);
 			return;
 		}
 		if let Some(rp) = E::Params::ROUTE_PARAM {
@@ -232,8 +233,20 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				if let Ok(popup) = p.as_popup() {
 					let idx = (popup.value() - 1).max(0) as u32;
 					crate::effect::route::set_current_index(idx);
+					Self::log_route_seed(idx, false);
 				}
 			}
+		}
+	}
+
+	/// Diagnostic: log the route an instance resolves to, deduped per (id → idx).
+	fn log_route_seed(idx: u32, from_effective: bool) {
+		use std::collections::BTreeMap;
+		use std::sync::Mutex;
+		static LAST: Mutex<BTreeMap<i32, u32>> = Mutex::new(BTreeMap::new());
+		let id = crate::effect::instance::current_instance_id();
+		if LAST.lock().unwrap().insert(id, idx) != Some(idx) {
+			log::info!("[route] seed id={id} -> index {idx} (effective={from_effective})");
 		}
 	}
 
@@ -254,7 +267,7 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			}
 			crate::effect::route::set_effective_index(idx);
 			crate::effect::route::set_current_index(idx);
-			log::info!("[route] flush -> index {idx}");
+			log::info!("[route] flush id={} -> index {idx}", crate::effect::instance::current_instance_id());
 		}
 	}
 
@@ -305,13 +318,38 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		// Route gating: hide the group-start marker of every route that isn't
 		// active (hiding the marker hides the whole group + children).
 		let current_route = crate::effect::route::current_index();
+		// `route_ui_changed` tracks whether any routed param's visibility actually
+		// flipped this pass. PF_UpdateParamUI refreshes a param row but NOT a
+		// collapsed group HEADER once the panel exists (the refocus case: the host
+		// rebuilds the ECW with route groups shown). When a flip happens we ask the
+		// host to rebuild the whole panel (PF_OutFlag_REFRESH_UI) so headers
+		// (dis)appear too — gated on a real flip so it doesn't refresh every tick.
+		let mut route_ui_changed = false;
 		for (marker, route_idx) in E::Params::ROUTED_GROUPS {
 			let visible = *route_idx == current_route;
 			visible_map.push((*marker, visible));
 			if let Ok(mut p) = params.get_mut(*marker) {
+				if p.ui_flags().contains(ae::ParamUIFlags::INVISIBLE) == visible {
+					route_ui_changed = true;
+				}
 				p.set_ui_flag(ae::ParamUIFlags::INVISIBLE, !visible);
 				let _ = p.update_param_ui();
 			}
+		}
+		// Hide the children too: on Premiere, hiding only the group-start marker
+		// doesn't hide the group's contents after an ECW rebuild (refocus).
+		for (member, route_idx) in E::Params::ROUTED_GROUP_MEMBERS {
+			let visible = *route_idx == current_route;
+			if let Ok(mut p) = params.get_mut(*member) {
+				if p.ui_flags().contains(ae::ParamUIFlags::INVISIBLE) == visible {
+					route_ui_changed = true;
+				}
+				p.set_ui_flag(ae::ParamUIFlags::INVISIBLE, !visible);
+				let _ = p.update_param_ui();
+			}
+		}
+		if route_ui_changed {
+			out_data.set_out_flag(ae::OutFlags::RefreshUi, true);
 		}
 
 		if let Some(label_rules) = self.label_rules.get() {
@@ -786,6 +824,27 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		mut out_data: OutData,
 		params: &mut Parameters<E::Params>,
 	) -> Result<(), ae::Error> {
+		// Seed the per-instance id (GetFilterInstanceID) for instance-scoped
+		// commands only — calling it at GlobalSetup/About (no instance exists yet)
+		// trips a host assertion. It keys the same OpaqueEffectData blob the GPU
+		// filter uses, so the UI resolves this instance's state. 0 on After Effects.
+		let seed_instance = || {
+			let id = if in_data.is_premiere() {
+				in_data.effect().filter_instance_id().unwrap_or(0)
+			} else {
+				0
+			};
+			crate::effect::instance::set_current_instance_id(id);
+			{
+				use std::collections::BTreeSet;
+				use std::sync::Mutex;
+				static SEEN: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
+				if SEEN.lock().unwrap().insert(id) {
+					log::info!("[instance] PF GetFilterInstanceID = {id}");
+				}
+			}
+		};
+
 		// Low-level escape hatch for effects that need raw SDK command/event
 		// access (the borrow ends before the match moves `command`).
 		E::on_raw_command(&command, &in_data, &mut out_data, params)?;
@@ -867,10 +926,12 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				out_data.set_return_msg(msg.as_str());
 			}
 			Command::UpdateParamsUi => {
+				seed_instance();
 				self.ensure_ui_rules();
 				self.apply_visibility(params, &in_data, &mut out_data)?;
 			}
 			Command::UserChangedParam { param_index } => {
+				seed_instance();
 				self.ensure_ui_rules();
 				let changed = params.type_at(param_index);
 				let mut cx = crate::effect::ActionCtx::<E::Params>::__new();
@@ -883,6 +944,7 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 				self.apply_visibility(params, &in_data, &mut out_data)?;
 			}
 			Command::Event { mut extra } => {
+				seed_instance();
 				self.handle_event(&in_data, params, &mut extra)?;
 				// Retained-mode refresh. A pending route change (background
 				// Router::set) OR any UI mutation (task progress marks dirty,
@@ -1304,12 +1366,16 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			// — a route change or a dirty label/caption — refresh opportunistically
 			// on the same main-thread tick.
 			Command::Other(_) => {
-				let pending = crate::effect::route::has_pending();
-				let dirty = crate::effect::labels::take_dirty();
-				if pending || dirty {
-					self.ensure_ui_rules();
-					self.apply_visibility(params, &in_data, &mut out_data)?;
-				}
+				seed_instance();
+				// Re-apply every idle tick: on refocus the host rebuilds the ECW
+				// and resets param visibility without necessarily sending
+				// UPDATE_PARAMS_UI, so the route groups would otherwise stay shown.
+				// apply_visibility is idempotent (flag sets), so this just keeps the
+				// gating + captions in sync.
+				let _ = crate::effect::route::has_pending();
+				let _ = crate::effect::labels::take_dirty();
+				self.ensure_ui_rules();
+				self.apply_visibility(params, &in_data, &mut out_data)?;
 			}
 			_ => {}
 		}

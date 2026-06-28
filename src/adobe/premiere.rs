@@ -251,6 +251,27 @@ impl<E: Effect, L: LicenseGate> pr::GpuFilter for GpuFilterAdapter<E, L> {
 			return Ok(());
 		}
 
+		// Seed the per-instance id from the effect runtime instance property so
+		// `on_gpu_frame` and any Router::set resolve this clip's instance — the
+		// same id the PF entry point reads via GetFilterInstanceID.
+		let instance_id = filter
+			.property(pr::Property::Effect_RuntimeInstanceID)
+			.ok()
+			.and_then(|p| match p {
+				pr::PropertyData::UInt32(v) => Some(v as i32),
+				_ => None,
+			})
+			.unwrap_or(0);
+		crate::effect::instance::set_current_instance_id(instance_id);
+		{
+			use std::collections::BTreeSet;
+			use std::sync::Mutex;
+			static SEEN: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
+			if SEEN.lock().unwrap().insert(instance_id) {
+				log::info!("[instance] GPU Effect_RuntimeInstanceID = {instance_id} (node={})", filter.node_id());
+			}
+		}
+
 		let expand_to_canvas = Self::expand_to_canvas(filter, &render_params, frames, out_frame);
 
 		let props = unsafe { GPURenderProperties::new(filter, render_params.clone(), frames, frame_count, out_frame, expand_to_canvas) }?;

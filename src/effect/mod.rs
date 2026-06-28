@@ -36,5 +36,8 @@ pub mod tasks;
 pub mod route;
 pub use route::Route;
 
+pub mod instance;
+pub use instance::{current_instance_id, set_current_instance_id};
+
 pub mod action;
 pub use action::ActionCtx;

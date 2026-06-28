@@ -123,6 +123,11 @@ pub trait ParamsSpec: Copy + Eq + Hash + Debug + Into<usize> + Send + Sync + 'st
 	/// adapter hides each group whose route ≠ the active route. Empty ⇒ the
 	/// effect declares no routes.
 	const ROUTED_GROUPS: &'static [(Self, u32)] = &[];
+	/// `(param/marker, route index)` for every param + sub-marker INSIDE a routed
+	/// group. The adapter hides all members of any route ≠ the active one; hiding
+	/// just the group-start marker doesn't hide children on Premiere after an ECW
+	/// rebuild (refocus). Empty ⇒ no routes.
+	const ROUTED_GROUP_MEMBERS: &'static [(Self, u32)] = &[];
 	/// The auto-injected hidden popup that stores the active route per instance
 	/// (project-persisted). `Some` ⇒ the effect declares routes; the adapter
 	/// reads/writes it to seed/flush the route thread-local.

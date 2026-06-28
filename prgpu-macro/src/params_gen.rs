@@ -171,6 +171,11 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 	// `(group-start marker, route index)` for every routed group.
 	let mut routed_groups: Vec<TokenStream> = Vec::new();
 	collect_routed_groups(&nodes, &routes, &enum_ident, &mut routed_groups);
+	// Every param + sub-marker inside a routed group, so the adapter can hide the
+	// children too — hiding the group-start marker alone doesn't hide children on
+	// Premiere after an ECW rebuild (refocus).
+	let mut routed_members: Vec<TokenStream> = Vec::new();
+	collect_routed_members(&nodes, &routes, &enum_ident, &params, &mut routed_members);
 	let route_param_tokens = if has_routes {
 		quote! { ::core::option::Option::Some(#enum_ident::#route_ident) }
 	} else {
@@ -232,6 +237,7 @@ pub fn generate(input: ParamsInput) -> TokenStream {
 			const LABEL_PARAMS: &'static [Self] = #label_params_tokens;
 			const NAME_DRIVEN_PARAMS: &'static [Self] = #name_driven_params_tokens;
 			const ROUTED_GROUPS: &'static [(Self, u32)] = &[ #( #routed_groups ),* ];
+			const ROUTED_GROUP_MEMBERS: &'static [(Self, u32)] = &[ #( #routed_members ),* ];
 			const ROUTE_PARAM: ::core::option::Option<Self> = #route_param_tokens;
 			type Snapshot = __Snapshot;
 
@@ -363,6 +369,41 @@ fn collect_routed_groups(nodes: &[Node], routes: &[Ident], enum_ident: &Ident, o
 				}
 			}
 			collect_routed_groups(children, routes, enum_ident, out);
+		}
+	}
+}
+
+/// `(param/marker, route index)` for every descendant of each routed group — the
+/// child params plus any sub-group start/end markers. Used to hide the whole
+/// group's contents (not just the start marker) when its route isn't active.
+fn collect_routed_members(nodes: &[Node], routes: &[Ident], enum_ident: &Ident, params: &[ParamDef], out: &mut Vec<TokenStream>) {
+	for node in nodes {
+		if let Node::Group { idx, route, children, .. } = node {
+			if let Some(r) = route {
+				if let Some(ri) = routes.iter().position(|x| x == r) {
+					let ri = lit_u32(ri as u32);
+					let mut members = vec![marker_start(*idx), marker_end(*idx)];
+					collect_descendants(children, params, &mut members);
+					for m in members {
+						out.push(quote! { (#enum_ident::#m, #ri) });
+					}
+				}
+			}
+			collect_routed_members(children, routes, enum_ident, params, out);
+		}
+	}
+}
+
+/// Every param ident + sub-group start/end marker beneath `nodes`.
+fn collect_descendants(nodes: &[Node], params: &[ParamDef], out: &mut Vec<Ident>) {
+	for node in nodes {
+		match node {
+			Node::Param(i) => out.push(params[*i].ident.clone()),
+			Node::Group { idx, children, .. } => {
+				out.push(marker_start(*idx));
+				out.push(marker_end(*idx));
+				collect_descendants(children, params, out);
+			}
 		}
 	}
 }
@@ -568,6 +609,8 @@ fn reg_stmt(p: &ParamDef, enum_ident: &Ident) -> TokenStream {
 					}),
 					|p| {
 						p.set_flag(::after_effects::ParamFlag::SUPERVISE, true);
+						p.set_flag(::after_effects::ParamFlag::CANNOT_TIME_VARY, true);
+						p.set_flag(::after_effects::ParamFlag::CANNOT_INTERP, true);
 						p.set_ui_flag(::after_effects::ParamUIFlags::CONTROL, true);
 						// Don't let the host erase (black-fill) the control area;
 						// we paint only the text, leaving the panel background.

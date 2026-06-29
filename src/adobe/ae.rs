@@ -393,6 +393,22 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			}
 		}
 
+		// Height-adjust multiline labels
+		for &lp in E::Params::LABEL_PARAMS {
+			if let Some(idx) = params.index(lp) {
+				if let Some(ref text) = crate::effect::labels::get(idx) {
+					let newlines = text.chars().filter(|&c| c == '\n').count();
+					if newlines > 0 {
+						let needed = 20u16.saturating_mul(1 + newlines as u16);
+						if let Ok(mut p) = params.get_mut(lp) {
+							p.set_ui_height(needed);
+							let _ = p.update_param_ui();
+						}
+					}
+				}
+			}
+		}
+
 		if self.plugin_id != aegp::PluginId::default() {
 			let effect = in_data.effect();
 			let plugin_id = self.plugin_id;
@@ -463,9 +479,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			return Ok(());
 		}
 
-		// Retained-mode draw: re-evaluate the label's text closure live so each
-		// host repaint paints current state (route, task progress) without
-		// polling. Falls back to the last stash if eval isn't possible.
 		let live = self.eval_label_live(in_data, params, param_idx);
 		let text = live.or(stashed).unwrap_or_default();
 
@@ -474,18 +487,28 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		let surface = drawbot.surface()?;
 		let frame = event.current_frame();
 
-		// Fill the control area with #1d1d1d first (the host erase leaves it black,
-		// or DO_NOT_ERASE leaves it undefined). Painted even for an empty label so
-		// the row reads as the ECW background, not a black box.
 		const BG: f32 = 0x1d as f32 / 255.0;
 		let bg = ae::drawbot::ColorRgba { red: BG, green: BG, blue: BG, alpha: 1.0 };
+
+		let lines: Vec<&str> = if text.contains('\n') {
+			text.split('\n').collect()
+		} else {
+			vec![text.as_str()]
+		};
+		let font_size = supplier.default_font_size()?;
+		let paint_h = font_size * lines.len() as f32;
+		let paint_width = (frame.right - frame.left) as f32;
+
+		// Paint background for the full line count (may exceed frame.height until
+		// UpdateParamsUi resizes the row). Empty text still paints BG so the row
+		// reads as ECW background rather than a black box.
 		let _ = surface.paint_rect(
 			&bg,
 			&ae::drawbot::RectF32 {
 				left:   0.0,
 				top:    0.0,
-				width:  (frame.right - frame.left) as f32,
-				height: (frame.bottom - frame.top) as f32,
+				width:  paint_width,
+				height: paint_h,
 			},
 		);
 		if text.is_empty() {
@@ -493,9 +516,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			return Ok(());
 		}
 
-		// The overlay-theme suite is After-Effects-only. On Premiere it doesn't
-		// exist, so don't even attempt to acquire it (the acquire failure logs a
-		// spurious error); use a light foreground visible on the dark ECW.
 		let light = ae::drawbot::ColorRgba { red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0 };
 		let default_color = if in_data.is_after_effects() {
 			ae::pf::suites::EffectCustomUIOverlayTheme::new()
@@ -504,8 +524,6 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 		} else {
 			light
 		};
-		// A per-label color (Ui::set_label_color), e.g. a yellow HDR warning,
-		// overrides the theme foreground for this row.
 		let color = crate::effect::labels::get_color(param_idx).map_or(default_color, |c| ae::drawbot::ColorRgba {
 			red:   c[0],
 			green: c[1],
@@ -513,28 +531,24 @@ impl<E: Effect, L: LicenseGate> EffectAdapter<E, L> {
 			alpha: c[3],
 		});
 
-		let font_size = supplier.default_font_size()?;
 		let font = supplier.new_default_font(font_size)?;
 		let brush = supplier.new_brush(&color)?;
 
-		// draw_string's origin is the text BASELINE. The surface is
-		// control-relative, so use (0, ascent): x=0 is the left edge, y=font_size
-		// drops the baseline one ascent below the top so glyphs aren't clipped
-		// above. (Testing baseline; tune later for vertical centering.)
-		let origin = ae::drawbot::PointF32 {
-			x: 0.0,
-			y: font_size,
-		};
-		let width = (frame.right - frame.left) as f32;
-		surface.draw_string(
-			&brush,
-			&font,
-			&text,
-			&origin,
-			ae::drawbot::TextAlignment::Left,
-			ae::drawbot::TextTruncation::EndEllipsis,
-			width,
-		)?;
+		for (i, line) in lines.iter().enumerate() {
+			let origin = ae::drawbot::PointF32 {
+				x: 0.0,
+				y: font_size * (i as f32 + 1.0),
+			};
+			surface.draw_string(
+				&brush,
+				&font,
+				line,
+				&origin,
+				ae::drawbot::TextAlignment::Left,
+				ae::drawbot::TextTruncation::EndEllipsis,
+				paint_width,
+			)?;
+		}
 
 		event.set_event_out_flags(ae::EventOutFlags::HANDLED_EVENT);
 		Ok(())

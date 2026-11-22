@@ -41,8 +41,8 @@ log = { version = "0.4", features = ["release_max_level_trace", "max_level_trace
 exaecut-after-effects = "0.6"
 exaecut-premiere = "0.6"
 bytemuck = { version = "1.23.1", features = ["derive", "min_const_generics"] }
-parking_lot = "0.12.3"
-fontdue = "0.9"
+parking_lot = "0.13.0"
+fontdue = "0.9.5"
 paste = "1.0.15"
 rayon = "1.10"
 prgpu-macro = { version = "0.2.0", path = "prgpu-macro" }
@@ -64,7 +64,7 @@ prgpu-build = { version = "0.2.0", path = "prgpu-build" }
 cudarc = { version = "0.19.3", default-features = false, features = ["std", "driver", "fallback-dynamic-loading", "cuda-13010"] }
 
 [dev-dependencies]
-trybuild = "1"
+trybuild = "1.0.123"
 # `params!` expansion references after_effects / premiere, so the integration
 # tests that invoke it need both crates in scope.
 exaecut-after-effects = "0.6"
